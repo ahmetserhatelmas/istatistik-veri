@@ -1,9 +1,12 @@
-name: Saatlik Senkronizasyon
+# Vercel Hobby günlük cron yerine: 4 saatte bir prod /api/cron/sync tetikler.
+# Gerekli GitHub Secrets: APP_URL (https://xxx.vercel.app, sondaki / yok), CRON_SECRET (Vercel ile aynı)
+
+name: Senkronizasyon (4 saat)
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # 4 saatte bir (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
-  workflow_dispatch:        # elle de tetiklenebilir
+    - cron: "0 */4 * * *" # 00, 04, 08, 12, 16, 20 UTC
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -11,13 +14,33 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Sync tetikle
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ secrets.APP_URL }}
         run: |
-          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "${{ secrets.APP_URL }}/api/cron/sync")
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET GitHub Actions secret olarak tanımlı değil (Settings → Secrets → Actions)."
+            exit 1
+          fi
+          if [ -z "${APP_URL:-}" ]; then
+            echo "::error::APP_URL GitHub Actions secret olarak tanımlı değil. Örnek: https://istatistik-veri.vercel.app"
+            exit 1
+          fi
+          BASE="${APP_URL%/}"
+          URL="${BASE}/api/cron/sync"
+          echo "Hedef: ${BASE}/api/cron/sync"
+          STATUS=$(curl -sS -o /tmp/resp.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "$URL") || { echo "::error::curl başarısız (ağ / DNS / yanlış URL?)"; exit 1; }
+          echo "HTTP ${STATUS}"
           cat /tmp/resp.json
           echo ""
+          if [ "$STATUS" = "401" ]; then
+            echo "::error::401 Unauthorized — GitHub’daki CRON_SECRET ile Vercel proje ortamındaki CRON_SECRET birebir aynı olmalı."
+            exit 1
+          fi
           if [ "$STATUS" != "200" ]; then
-            echo "HATA: HTTP $STATUS"
+            echo "::error::Beklenen 200, gelen: ${STATUS}"
             exit 1
           fi
