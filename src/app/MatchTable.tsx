@@ -10,15 +10,21 @@ interface ApiResponse {
 }
 
 // ── wildcard matching ─────────────────────────────────────────────────────────
-// Desteklenen sözdizimi:
-//   *     → herhangi karakter dizisi
-//   ?     → tek herhangi karakter
-//   +     → VEYA ayırıcısı (*5*+*6* = içinde 5 VEYA 6 olan)
+// Kurallar:
+//   - Pattern'de * veya ? yoksa → "içerir" (contains) olarak çalışır
+//   - *     → herhangi karakter dizisi
+//   - ?     → tek herhangi karakter
+//   - +     → VEYA ayırıcısı  (örn: 4.9+3.2 = 4.9 içeren VEYA 3.2 içeren)
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.toLowerCase();
   const orParts = pattern.split("+").map((s) => s.trim()).filter(Boolean);
   return orParts.some((part) => {
-    // * → .* ve ? → . dönüşümü (diğer regex özel karakterleri escape)
+    const hasWildcard = part.includes("*") || part.includes("?");
+    if (!hasWildcard) {
+      // Basit "içerir" modu
+      return val.includes(part.toLowerCase());
+    }
+    // Wildcard modu: * → .* ve ? → .
     const regStr = part
       .replace(/[-[\]{}()|^$\\]/g, "\\$&")
       .replace(/\./g, "\\.")
