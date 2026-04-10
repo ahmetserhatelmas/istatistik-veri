@@ -39,20 +39,20 @@ export const ALL_COLS: ColDef[] = [
   { id: "ms2", label: "MS2", key: "MS2", group: "Maç Sonucu", width: 60 },
 
   // ── Yarı Sonucu ────────────────────────────────────────────────────────────
-  { id: "iy1", label: "IY1", key: "IY1", group: "Yarı Son.", width: 60 },
-  { id: "iyx", label: "IYX", key: "IYX", group: "Yarı Son.", width: 60 },
-  { id: "iy2", label: "IY2", key: "IY2", group: "Yarı Son.", width: 60 },
+  { id: "iy1", label: "IY1", key: "IY1", group: "OKBT", width: 60 },
+  { id: "iyx", label: "IYX", key: "IYX", group: "OKBT", width: 60 },
+  { id: "iy2", label: "IY2", key: "IY2", group: "OKBT", width: 60 },
 
   // ── İlk Yarı Maç Sonucu ────────────────────────────────────────────────────
-  { id: "iyms11", label: "1/1", key: "IYMS11", group: "IY MS", width: 56 },
-  { id: "iyms1x", label: "1/X", key: "IYMS1X", group: "IY MS", width: 56 },
-  { id: "iyms12", label: "1/2", key: "IYMS12", group: "IY MS", width: 56 },
-  { id: "iymsx1", label: "X/1", key: "IYMSX1", group: "IY MS", width: 56 },
-  { id: "iymsxx", label: "X/X", key: "IYMSXX", group: "IY MS", width: 56 },
-  { id: "iymsx2", label: "X/2", key: "IYMSX2", group: "IY MS", width: 56 },
-  { id: "iyms21", label: "2/1", key: "IYMS21", group: "IY MS", width: 56 },
-  { id: "iyms2x", label: "2/X", key: "IYMS2X", group: "IY MS", width: 56 },
-  { id: "iyms22", label: "2/2", key: "IYMS22", group: "IY MS", width: 56 },
+  { id: "iyms11", label: "1/1", key: "IYMS11", group: "Durumlar", width: 56 },
+  { id: "iyms1x", label: "1/X", key: "IYMS1X", group: "Durumlar", width: 56 },
+  { id: "iyms12", label: "1/2", key: "IYMS12", group: "Durumlar", width: 56 },
+  { id: "iymsx1", label: "X/1", key: "IYMSX1", group: "Durumlar", width: 56 },
+  { id: "iymsxx", label: "X/X", key: "IYMSXX", group: "Durumlar", width: 56 },
+  { id: "iymsx2", label: "X/2", key: "IYMSX2", group: "Durumlar", width: 56 },
+  { id: "iyms21", label: "2/1", key: "IYMS21", group: "Durumlar", width: 56 },
+  { id: "iyms2x", label: "2/X", key: "IYMS2X", group: "Durumlar", width: 56 },
+  { id: "iyms22", label: "2/2", key: "IYMS22", group: "Durumlar", width: 56 },
 
   // ── Karşılıklı Gol ─────────────────────────────────────────────────────────
   { id: "kg_var", label: "KG V", key: "KGVAR", group: "KG", width: 60 },
@@ -198,7 +198,9 @@ export const GROUP_COLORS: Record<string, string> = {
   "Skor":             "bg-yellow-900/70",
   "Maç Sonucu":       "bg-blue-900/70",
   "Yarı Son.":        "bg-indigo-900/70",
+  "OKBT":             "bg-indigo-900/70",
   "IY MS":            "bg-violet-900/70",
+  "Durumlar":         "bg-violet-900/70",
   "KG":               "bg-pink-900/70",
   "Tek/Çift":         "bg-rose-900/70",
   "Top.Gol":          "bg-orange-900/70",

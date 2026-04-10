@@ -8,6 +8,23 @@ interface ApiResponse {
   data: Match[]; page: number; limit: number; total: number; totalPages: number;
 }
 
+function formatLastSyncTr(iso: string | null): string {
+  if (!iso) return "";
+  try {
+    return new Intl.DateTimeFormat("tr-TR", {
+      timeZone: "Europe/Istanbul",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(iso));
+  } catch {
+    return "";
+  }
+}
+
 // ── wildcard / contains filtre ────────────────────────────────────────────────
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.toLowerCase();
@@ -41,7 +58,7 @@ function cellVal(row: Match, col: ColDef): string {
 }
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
-const ODDS_GROUPS = new Set(["Maç Sonucu","Yarı Son.","IY MS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","Maç Skoru","IY Skoru"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","OKBT","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","Maç Skoru","IY Skoru"]);
 function cellColor(col: ColDef, val: string) {
   if (SCORE_COLS.has(col.id) && val) return "text-green-400";
   if (ODDS_GROUPS.has(col.group) && val) return "text-amber-300";
@@ -82,6 +99,7 @@ export default function MatchTable() {
   const [page, setPage]           = useState(1);
   const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
 
   // sütun görünürlük
   const [visibleIds, setVisibleIds] = useState<Set<string>>(() => {
@@ -144,11 +162,18 @@ export default function MatchTable() {
       if (v.trim()) p.set(`cf_${id}`, v.trim());
     });
     try {
-      const res = await fetch(`/api/matches?${p}`);
+      const [res, syncRes] = await Promise.all([
+        fetch(`/api/matches?${p}`),
+        fetch("/api/sync-status"),
+      ]);
       const json: ApiResponse = await res.json();
       setMatches(json.data || []);
       setTotal(json.total || 0);
       setTotalPages(json.totalPages || 0);
+      if (syncRes.ok) {
+        const s = (await syncRes.json()) as { lastSyncAt?: string | null };
+        setLastSyncAt(s.lastSyncAt ?? null);
+      }
     } catch { setMatches([]); }
     setLoading(false);
   }, [page, applied, dbColFiltersApplied]);
@@ -204,6 +229,18 @@ export default function MatchTable() {
           <span className="font-bold tracking-tight whitespace-nowrap">Oran Merkezi</span>
           <span className="text-xs text-gray-400 whitespace-nowrap">
             {total.toLocaleString("tr-TR")} maç
+            {lastSyncAt && (
+              <span className="text-gray-500">
+                {" "}
+                · son veri çekimi:{" "}
+                <span
+                  className="text-gray-400 tabular-nums"
+                  title="Europe/Istanbul"
+                >
+                  {formatLastSyncTr(lastSyncAt)}
+                </span>
+              </span>
+            )}
             {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
             {Object.values(colFilters).some(Boolean) && !loading && <span className="text-amber-400"> · {filteredRows.length} eşleşti</span>}
           </span>
