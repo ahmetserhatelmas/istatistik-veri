@@ -1,0 +1,23 @@
+name: Saatlik Senkronizasyon
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # her saat başı
+  workflow_dispatch:        # elle de tetiklenebilir
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync tetikle
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/sync")
+          cat /tmp/resp.json
+          echo ""
+          if [ "$STATUS" != "200" ]; then
+            echo "HATA: HTTP $STATUS"
+            exit 1
+          fi
