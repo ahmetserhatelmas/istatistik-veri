@@ -14,6 +14,30 @@ export interface ColDef {
   width?: number; // px — varsayılan 60
 }
 
+/** Maç skoru (doğru skor) oranları: API `SK{ev}{dep}` — 0-0 … 9-9 + Diğer */
+function buildMaçSkoruColumns(): ColDef[] {
+  const cols: ColDef[] = [];
+  for (let ev = 0; ev <= 9; ev++) {
+    for (let dep = 0; dep <= 9; dep++) {
+      cols.push({
+        id: `sk${ev}${dep}`,
+        label: `${ev}-${dep}`,
+        key: `SK${ev}${dep}`,
+        group: "Maç Skoru",
+        width: 56,
+      });
+    }
+  }
+  cols.push({
+    id: "skdig",
+    label: "Diğer",
+    key: "SKDIGER",
+    group: "Maç Skoru",
+    width: 56,
+  });
+  return cols;
+}
+
 export const ALL_COLS: ColDef[] = [
   // ── Temel ──────────────────────────────────────────────────────────────────
   { id: "id",       label: "Maç Kodu", key: "id",        dbCol: true, group: "Temel", width: 90 },
@@ -162,30 +186,8 @@ export const ALL_COLS: ColDef[] = [
   { id: "ikiysx", label: "DGY-E", key: "IKIYSX", group: "Daha Çok Gol Y.", width: 60 },
   { id: "ikiys2", label: "DGY-2", key: "IKIYS2", group: "Daha Çok Gol Y.", width: 60 },
 
-  // ── Maç Skoru (sonuçlar) ───────────────────────────────────────────────────
-  { id: "sk00", label: "0-0", key: "SK00", group: "Maç Skoru", width: 56 },
-  { id: "sk01", label: "0-1", key: "SK01", group: "Maç Skoru", width: 56 },
-  { id: "sk02", label: "0-2", key: "SK02", group: "Maç Skoru", width: 56 },
-  { id: "sk03", label: "0-3", key: "SK03", group: "Maç Skoru", width: 56 },
-  { id: "sk10", label: "1-0", key: "SK10", group: "Maç Skoru", width: 56 },
-  { id: "sk11", label: "1-1", key: "SK11", group: "Maç Skoru", width: 56 },
-  { id: "sk12", label: "1-2", key: "SK12", group: "Maç Skoru", width: 56 },
-  { id: "sk13", label: "1-3", key: "SK13", group: "Maç Skoru", width: 56 },
-  { id: "sk20", label: "2-0", key: "SK20", group: "Maç Skoru", width: 56 },
-  { id: "sk21", label: "2-1", key: "SK21", group: "Maç Skoru", width: 56 },
-  { id: "sk22", label: "2-2", key: "SK22", group: "Maç Skoru", width: 56 },
-  { id: "sk23", label: "2-3", key: "SK23", group: "Maç Skoru", width: 56 },
-  { id: "sk30", label: "3-0", key: "SK30", group: "Maç Skoru", width: 56 },
-  { id: "sk31", label: "3-1", key: "SK31", group: "Maç Skoru", width: 56 },
-  { id: "sk32", label: "3-2", key: "SK32", group: "Maç Skoru", width: 56 },
-  { id: "sk33", label: "3-3", key: "SK33", group: "Maç Skoru", width: 56 },
-  { id: "sk40", label: "4-0", key: "SK40", group: "Maç Skoru", width: 56 },
-  { id: "sk41", label: "4-1", key: "SK41", group: "Maç Skoru", width: 56 },
-  { id: "sk42", label: "4-2", key: "SK42", group: "Maç Skoru", width: 56 },
-  { id: "sk50", label: "5-0", key: "SK50", group: "Maç Skoru", width: 56 },
-  { id: "sk51", label: "5-1", key: "SK51", group: "Maç Skoru", width: 56 },
-  { id: "sk60", label: "6-0", key: "SK60", group: "Maç Skoru", width: 56 },
-  { id: "skdig", label: "Diğer", key: "SKDIGER", group: "Maç Skoru", width: 56 },
+  // ── Maç Skoru (0-0 … 9-9 + Diğer) ──────────────────────────────────────────
+  ...buildMaçSkoruColumns(),
 
   // ── İlk Yarı Skoru ─────────────────────────────────────────────────────────
   { id: "h1ys_00", label: "IY 0-0", key: "H1YS_1_1",  group: "IY Skoru", width: 60 },
