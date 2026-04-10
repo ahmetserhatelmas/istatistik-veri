@@ -30,7 +30,8 @@ jobs:
           BASE="${APP_URL%/}"
           URL="${BASE}/api/cron/sync"
           echo "Hedef: ${BASE}/api/cron/sync"
-          STATUS=$(curl -sS -o /tmp/resp.json -w "%{http_code}" \
+          # -L: Vercel bazen 308 ile kanonik URL’e yönlendirir; izlenmezse kod 308 kalır
+          STATUS=$(curl -sSL -o /tmp/resp.json -w "%{http_code}" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
             "$URL") || { echo "::error::curl başarısız (ağ / DNS / yanlış URL?)"; exit 1; }
           echo "HTTP ${STATUS}"
