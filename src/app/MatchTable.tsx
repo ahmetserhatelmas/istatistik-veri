@@ -82,7 +82,25 @@ function buildGroupSpans(cols: ColDef[]) {
   return spans;
 }
 
+// ── localStorage yardımcıları ─────────────────────────────────────────────────
+const LS_VISIBLE   = "om_visible_cols";
+const LS_COL_FILT  = "om_col_filters";
+const LS_TOP_FILT  = "om_top_filters";
+
+function lsGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch { return fallback; }
+}
+function lsSet(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
+}
+
 // ── main component ────────────────────────────────────────────────────────────
+const EMPTY_TOP = { tarih_from: "", tarih_to: "", lig: "", takim: "", sonuc_iy: "", sonuc_ms: "", hakem: "", suffix4: "", suffix3: "" };
+
 export default function MatchTable() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(false);
@@ -90,20 +108,28 @@ export default function MatchTable() {
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
 
-  // sütun görünürlük
-  const [visibleIds, setVisibleIds] = useState<Set<string>>(DEFAULT_VISIBLE);
+  // sütun görünürlük — localStorage'dan yükle
+  const [visibleIds, setVisibleIds] = useState<Set<string>>(() => {
+    const saved = lsGet<string[]>(LS_VISIBLE, []);
+    return saved.length ? new Set(saved) : new Set(DEFAULT_VISIBLE);
+  });
   const [showColPanel, setShowColPanel] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // üst filtreler (sunucu tarafı)
-  const [filters, setFilters] = useState({
-    tarih_from: "", tarih_to: "", lig: "", takim: "",
-    sonuc_iy: "", sonuc_ms: "", hakem: "", suffix4: "", suffix3: "",
-  });
-  const [applied, setApplied] = useState(filters);
+  // üst filtreler — localStorage'dan yükle
+  const savedTop = lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP);
+  const [filters, setFilters] = useState({ ...EMPTY_TOP, ...savedTop });
+  const [applied, setApplied] = useState({ ...EMPTY_TOP, ...savedTop });
 
-  // sütun bazlı filtreler (istemci wildcard)
-  const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  // sütun bazlı filtreler — localStorage'dan yükle
+  const [colFilters, setColFilters] = useState<Record<string, string>>(
+    () => lsGet<Record<string, string>>(LS_COL_FILT, {})
+  );
+
+  // localStorage'a kaydet
+  useEffect(() => { lsSet(LS_VISIBLE, Array.from(visibleIds)); }, [visibleIds]);
+  useEffect(() => { lsSet(LS_COL_FILT, colFilters); }, [colFilters]);
+  useEffect(() => { lsSet(LS_TOP_FILT, filters); }, [filters]);
 
   const visibleCols = ALL_COLS.filter((c) => visibleIds.has(c.id));
   const groupSpans = buildGroupSpans(visibleCols);
@@ -156,11 +182,12 @@ export default function MatchTable() {
     });
   }
   function selectAll() { setVisibleIds(new Set(ALL_COLS.map((c) => c.id))); }
-  function resetCols() { setVisibleIds(new Set(DEFAULT_VISIBLE)); }
+  function resetCols() { setVisibleIds(new Set(DEFAULT_VISIBLE)); lsSet(LS_VISIBLE, Array.from(DEFAULT_VISIBLE)); }
 
   function clearFilters() {
-    const e = { tarih_from:"",tarih_to:"",lig:"",takim:"",sonuc_iy:"",sonuc_ms:"",hakem:"",suffix4:"",suffix3:"" };
-    setFilters(e); setApplied(e); setColFilters({}); setPage(1);
+    setFilters(EMPTY_TOP); setApplied(EMPTY_TOP); setColFilters({}); setPage(1);
+    lsSet(LS_TOP_FILT, EMPTY_TOP);
+    lsSet(LS_COL_FILT, {});
   }
 
   const totalCols = visibleCols.length;
