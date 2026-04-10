@@ -3,38 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ALL_COLS, DEFAULT_VISIBLE, GROUP_COLORS, type ColDef } from "@/lib/columns";
 
-// ── types ────────────────────────────────────────────────────────────────────
 type Match = Record<string, unknown>;
 interface ApiResponse {
   data: Match[]; page: number; limit: number; total: number; totalPages: number;
 }
 
-// ── wildcard matching ─────────────────────────────────────────────────────────
-// Kurallar:
-//   - Pattern'de * veya ? yoksa → "içerir" (contains) olarak çalışır
-//   - *     → herhangi karakter dizisi
-//   - ?     → tek herhangi karakter
-//   - +     → VEYA ayırıcısı  (örn: 4.9+3.2 = 4.9 içeren VEYA 3.2 içeren)
+// ── wildcard / contains filtre ────────────────────────────────────────────────
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.toLowerCase();
-  const orParts = pattern.split("+").map((s) => s.trim()).filter(Boolean);
-  return orParts.some((part) => {
-    const hasWildcard = part.includes("*") || part.includes("?");
-    if (!hasWildcard) {
-      // Basit "içerir" modu
-      return val.includes(part.toLowerCase());
-    }
-    // Wildcard modu: * → .* ve ? → .
-    const regStr = part
-      .replace(/[-[\]{}()|^$\\]/g, "\\$&")
-      .replace(/\./g, "\\.")
-      .replace(/\*/g, ".*")
-      .replace(/\?/g, ".");
-    try {
-      return new RegExp(`^${regStr}$`, "i").test(val);
-    } catch {
-      return val.includes(part.toLowerCase());
-    }
+  return pattern.split("+").map((s) => s.trim()).filter(Boolean).some((part) => {
+    if (!part.includes("*") && !part.includes("?")) return val.includes(part.toLowerCase());
+    const re = part.replace(/[-[\]{}()|^$\\]/g,"\\$&").replace(/\./g,"\\.").replace(/\*/g,".*").replace(/\?/g,".");
+    try { return new RegExp(`^${re}$`, "i").test(val); } catch { return val.includes(part.toLowerCase()); }
   });
 }
 
@@ -45,14 +25,13 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
     active.every(([colId, pat]) => {
       const col = cols.find((c) => c.id === colId);
       if (!col) return true;
-      const raw = col.dbCol ? row[col.key] : row[col.key];
+      const raw = row[col.key];
       const val = raw == null ? "" : col.id === "saat" ? String(raw).slice(0, 5) : String(raw);
       return matchWildcard(val, pat.trim());
     })
   );
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
 function cellVal(row: Match, col: ColDef): string {
   const raw = row[col.key] ?? null;
   if (raw == null) return "";
@@ -61,13 +40,9 @@ function cellVal(row: Match, col: ColDef): string {
   return String(raw);
 }
 
-const SCORE_COLS = new Set(["sonuc_iy", "sonuc_ms"]);
-const ODDS_GROUPS = new Set([
-  "Maç Sonucu","Yarı Son.","IY MS","KG","Tek/Çift","Top.Gol",
-  "Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü",
-  "Çift Şans","İlk Gol","Daha Çok Gol Y.","Maç Skoru","IY Skoru",
-]);
-function cellColor(col: ColDef, val: string): string {
+const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","Yarı Son.","IY MS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","Maç Skoru","IY Skoru"]);
+function cellColor(col: ColDef, val: string) {
   if (SCORE_COLS.has(col.id) && val) return "text-green-400";
   if (ODDS_GROUPS.has(col.group) && val) return "text-amber-300";
   return "text-gray-200";
@@ -76,207 +51,260 @@ function cellColor(col: ColDef, val: string): string {
 function buildGroupSpans(cols: ColDef[]) {
   const spans: { group: string; count: number }[] = [];
   for (const c of cols) {
-    if (spans.length && spans[spans.length - 1].group === c.group) spans[spans.length - 1].count++;
+    if (spans.length && spans[spans.length-1].group === c.group) spans[spans.length-1].count++;
     else spans.push({ group: c.group, count: 1 });
   }
   return spans;
 }
 
-// ── localStorage yardımcıları ─────────────────────────────────────────────────
-const LS_VISIBLE   = "om_visible_cols";
-const LS_COL_FILT  = "om_col_filters";
-const LS_TOP_FILT  = "om_top_filters";
+// ── localStorage ──────────────────────────────────────────────────────────────
+const LS_VISIBLE  = "om_visible_cols";
+const LS_COL_FILT = "om_col_filters";
+const LS_TOP_FILT = "om_top_filters";
+const LS_PRESETS  = "om_col_presets";
 
-function lsGet<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw == null) return fallback;
-    return JSON.parse(raw) as T;
-  } catch { return fallback; }
+function lsGet<T>(key: string, fb: T): T {
+  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fb; }
+  catch { return fb; }
 }
-function lsSet(key: string, value: unknown) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota */ }
+function lsSet(key: string, val: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch { /* quota */ }
 }
 
-// ── main component ────────────────────────────────────────────────────────────
-const EMPTY_TOP = { tarih_from: "", tarih_to: "", lig: "", takim: "", sonuc_iy: "", sonuc_ms: "", hakem: "", suffix4: "", suffix3: "" };
+// ── preset (sadece sütun seçimi kaydeder) ─────────────────────────────────────
+interface ColPreset { name: string; ids: string[]; }
+
+const EMPTY_TOP = { tarih_from:"", tarih_to:"", lig:"", takim:"", sonuc_iy:"", sonuc_ms:"", hakem:"", suffix4:"", suffix3:"" };
 
 export default function MatchTable() {
-  const [matches, setMatches] = useState<Match[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
+  const [matches, setMatches]     = useState<Match[]>([]);
+  const [loading, setLoading]     = useState(false);
+  const [page, setPage]           = useState(1);
+  const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
 
-  // sütun görünürlük — localStorage'dan yükle
+  // sütun görünürlük
   const [visibleIds, setVisibleIds] = useState<Set<string>>(() => {
-    const saved = lsGet<string[]>(LS_VISIBLE, []);
-    return saved.length ? new Set(saved) : new Set(DEFAULT_VISIBLE);
+    const s = lsGet<string[]>(LS_VISIBLE, []);
+    return s.length ? new Set(s) : new Set(DEFAULT_VISIBLE);
   });
   const [showColPanel, setShowColPanel] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // üst filtreler — localStorage'dan yükle
-  const savedTop = lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP);
-  const [filters, setFilters] = useState({ ...EMPTY_TOP, ...savedTop });
-  const [applied, setApplied] = useState({ ...EMPTY_TOP, ...savedTop });
+  // sütun presetleri
+  const [colPresets, setColPresets] = useState<ColPreset[]>(() => lsGet<ColPreset[]>(LS_PRESETS, []));
+  const [presetInput, setPresetInput] = useState("");
+  const [saveMsg, setSaveMsg] = useState("");
 
-  // sütun bazlı filtreler — localStorage'dan yükle
-  const [colFilters, setColFilters] = useState<Record<string, string>>(
-    () => lsGet<Record<string, string>>(LS_COL_FILT, {})
+  // üst filtreler
+  const [filters, setFilters] = useState(() => ({ ...EMPTY_TOP, ...lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP) }));
+  const [applied, setApplied] = useState(() => ({ ...EMPTY_TOP, ...lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP) }));
+
+  // sütun bazlı filtreler
+  const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
+
+  // localStorage otomatik kaydet
+  useEffect(() => { lsSet(LS_VISIBLE,  Array.from(visibleIds)); }, [visibleIds]);
+  useEffect(() => { lsSet(LS_COL_FILT, colFilters); },             [colFilters]);
+  useEffect(() => { lsSet(LS_TOP_FILT, filters); },                [filters]);
+
+  const visibleCols  = ALL_COLS.filter((c) => visibleIds.has(c.id));
+  const groupSpans   = buildGroupSpans(visibleCols);
+  const groups       = Array.from(new Set(ALL_COLS.map((c) => c.group)));
+
+  // DB sütunları → server filtresi | raw_data → client filtresi
+  const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
+  const rawColFilters = Object.fromEntries(
+    Object.entries(colFilters).filter(([id]) => !DB_COL_IDS.has(id))
   );
+  const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
 
-  // localStorage'a kaydet
-  useEffect(() => { lsSet(LS_VISIBLE, Array.from(visibleIds)); }, [visibleIds]);
-  useEffect(() => { lsSet(LS_COL_FILT, colFilters); }, [colFilters]);
-  useEffect(() => { lsSet(LS_TOP_FILT, filters); }, [filters]);
+  // Debounce: dbCol filtreleri 400ms sonra server fetch'e yansıt
+  const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
+  useEffect(() => {
+    const dbPart = Object.fromEntries(
+      Object.entries(colFilters).filter(([id, v]) => DB_COL_IDS.has(id) && v.trim())
+    );
+    const timer = setTimeout(() => {
+      setDbColFiltersApplied(dbPart);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colFilters]);
+  const colW         = (c: ColDef) => c.width ?? 60;
 
-  const visibleCols = ALL_COLS.filter((c) => visibleIds.has(c.id));
-  const groupSpans = buildGroupSpans(visibleCols);
-  const groups = Array.from(new Set(ALL_COLS.map((c) => c.group)));
-
-  const filteredRows = applyColFilters(matches, colFilters, visibleCols);
-
-  // ── veri çek ────────────────────────────────────────────────────────────
+  // veri çek
   const fetchMatches = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({ page: String(page), limit: "100" });
-    Object.entries(applied).forEach(([k, v]) => { if (v.trim()) params.set(k, v.trim()); });
+    const p = new URLSearchParams({ page: String(page), limit: "100" });
+    Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
+    // dbCol sütun filtrelerini cf_ prefix ile gönder
+    Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
+      if (v.trim()) p.set(`cf_${id}`, v.trim());
+    });
     try {
-      const res = await fetch(`/api/matches?${params}`);
+      const res = await fetch(`/api/matches?${p}`);
       const json: ApiResponse = await res.json();
       setMatches(json.data || []);
       setTotal(json.total || 0);
       setTotalPages(json.totalPages || 0);
     } catch { setMatches([]); }
     setLoading(false);
-  }, [page, applied]);
-
+  }, [page, applied, dbColFiltersApplied]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
   // panel dışı tıkla kapat
   useEffect(() => {
-    function onDown(e: MouseEvent) {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node))
-        setShowColPanel(false);
-    }
-    if (showColPanel) document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    const fn = (e: MouseEvent) => { if (panelRef.current && !panelRef.current.contains(e.target as Node)) setShowColPanel(false); };
+    if (showColPanel) document.addEventListener("mousedown", fn);
+    return () => document.removeEventListener("mousedown", fn);
   }, [showColPanel]);
 
-  // ── sütun işlemleri ──────────────────────────────────────────────────────
-  function toggleCol(id: string) {
-    setVisibleIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
-  function toggleGroup(group: string) {
-    const ids = ALL_COLS.filter((c) => c.group === group).map((c) => c.id);
+  // sütun işlemleri
+  function toggleCol(id: string) { setVisibleIds((p) => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
+  function toggleGroup(grp: string) {
+    const ids = ALL_COLS.filter((c) => c.group===grp).map((c) => c.id);
     const allOn = ids.every((id) => visibleIds.has(id));
-    setVisibleIds((prev) => {
-      const next = new Set(prev);
-      ids.forEach((id) => (allOn ? next.delete(id) : next.add(id)));
-      return next;
-    });
+    setVisibleIds((p) => { const n=new Set(p); ids.forEach((id) => allOn?n.delete(id):n.add(id)); return n; });
   }
-  function selectAll() { setVisibleIds(new Set(ALL_COLS.map((c) => c.id))); }
-  function resetCols() { setVisibleIds(new Set(DEFAULT_VISIBLE)); lsSet(LS_VISIBLE, Array.from(DEFAULT_VISIBLE)); }
+  function selectAll()  { setVisibleIds(new Set(ALL_COLS.map((c) => c.id))); }
+  function resetCols()  { const d=new Set(DEFAULT_VISIBLE); setVisibleIds(d); lsSet(LS_VISIBLE, Array.from(d)); }
+  function hideAll()    { setVisibleIds(new Set()); }
+
+  // preset işlemleri
+  function saveColPreset() {
+    const name = presetInput.trim();
+    if (!name) return;
+    const updated = [{ name, ids: Array.from(visibleIds) }, ...colPresets.filter((p) => p.name !== name)];
+    setColPresets(updated);
+    lsSet(LS_PRESETS, updated);
+    setPresetInput("");
+    setSaveMsg(`"${name}" kaydedildi`);
+    setTimeout(() => setSaveMsg(""), 2000);
+  }
+  function loadColPreset(p: ColPreset) { setVisibleIds(new Set(p.ids)); }
+  function deleteColPreset(name: string) {
+    const updated = colPresets.filter((p) => p.name !== name);
+    setColPresets(updated);
+    lsSet(LS_PRESETS, updated);
+  }
 
   function clearFilters() {
     setFilters(EMPTY_TOP); setApplied(EMPTY_TOP); setColFilters({}); setPage(1);
-    lsSet(LS_TOP_FILT, EMPTY_TOP);
-    lsSet(LS_COL_FILT, {});
+    lsSet(LS_TOP_FILT, EMPTY_TOP); lsSet(LS_COL_FILT, {});
   }
-
-  const totalCols = visibleCols.length;
-  const colW = (c: ColDef) => c.width ?? 60;
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100 overflow-hidden">
 
-      {/* ═══ MENÜ ÇUBUĞU ═══════════════════════════════════════════════════ */}
+      {/* ── HEADER ── */}
       <header className="flex-none border-b border-gray-800 bg-gray-900">
-        {/* Başlık satırı */}
-        <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-800/60">
-          <div>
-            <span className="font-bold tracking-tight">Oran Merkezi</span>
-            <span className="ml-2 text-xs text-gray-400">
-              {total.toLocaleString("tr-TR")} maç · {visibleCols.length} sütun görünür
-              {Object.values(colFilters).some(Boolean) && (
-                <span className="ml-1 text-amber-400">· {filteredRows.length} satır eşleşti</span>
-              )}
-            </span>
-          </div>
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800/60 flex-wrap">
+          <span className="font-bold tracking-tight whitespace-nowrap">Oran Merkezi</span>
+          <span className="text-xs text-gray-400 whitespace-nowrap">
+            {total.toLocaleString("tr-TR")} maç
+            {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
+            {Object.values(colFilters).some(Boolean) && !loading && <span className="text-amber-400"> · {filteredRows.length} eşleşti</span>}
+          </span>
 
           {/* Üst filtreler */}
-          <div className="ml-4 flex flex-wrap gap-1.5 items-center flex-1">
-            {[
-              { k:"tarih_from", ph:"Tarih ≥", type:"date", w:130 },
-              { k:"tarih_to",   ph:"Tarih ≤", type:"date", w:130 },
-              { k:"lig",        ph:"Lig",      type:"text", w:110 },
-              { k:"takim",      ph:"Takım",    type:"text", w:110 },
-              { k:"sonuc_iy",   ph:"IY Skor",  type:"text", w:80 },
-              { k:"sonuc_ms",   ph:"MS Skor",  type:"text", w:80 },
-              { k:"hakem",      ph:"Hakem",    type:"text", w:100 },
-              { k:"suffix4",    ph:"S4",       type:"text", w:60 },
-              { k:"suffix3",    ph:"S3",       type:"text", w:60 },
-            ].map(({ k, ph, type, w }) => (
-              <input key={k} type={type} placeholder={ph}
-                value={filters[k as keyof typeof filters]}
-                onChange={(e) => setFilters((f) => ({ ...f, [k]: e.target.value }))}
-                style={{ width: w }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            ))}
-            <button onClick={() => { setPage(1); setApplied({ ...filters }); }}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded text-xs font-medium transition">
-              Ara
-            </button>
-            <button onClick={clearFilters}
-              className="bg-gray-700 hover:bg-gray-600 text-white px-2.5 py-1 rounded text-xs transition">
-              Temizle
-            </button>
-          </div>
+          {[
+            { k:"tarih_from", ph:"Tarih ≥", type:"date", w:130 },
+            { k:"tarih_to",   ph:"Tarih ≤", type:"date", w:130 },
+            { k:"lig",        ph:"Lig",     type:"text", w:100 },
+            { k:"takim",      ph:"Takım",   type:"text", w:100 },
+            { k:"sonuc_iy",   ph:"IY",      type:"text", w:60  },
+            { k:"sonuc_ms",   ph:"MS",      type:"text", w:60  },
+            { k:"hakem",      ph:"Hakem",   type:"text", w:90  },
+            { k:"suffix4",    ph:"S4",      type:"text", w:52  },
+            { k:"suffix3",    ph:"S3",      type:"text", w:52  },
+          ].map(({ k, ph, type, w }) => (
+            <input key={k} type={type} placeholder={ph}
+              value={filters[k as keyof typeof filters]}
+              onChange={(e) => setFilters((f) => ({ ...f, [k]: e.target.value }))}
+              style={{ width: w }}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          ))}
+          <button onClick={() => { setPage(1); setApplied({...filters}); }}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded text-xs font-medium transition whitespace-nowrap">
+            Ara
+          </button>
+          <button onClick={clearFilters}
+            className="bg-gray-700 hover:bg-gray-600 text-white px-2.5 py-1 rounded text-xs transition whitespace-nowrap">
+            Temizle
+          </button>
 
           {/* Sütunlar butonu */}
           <div className="relative ml-auto" ref={panelRef}>
             <button onClick={() => setShowColPanel((v) => !v)}
-              className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-xs px-3 py-1.5 rounded transition font-medium">
-              ☰ Sütunlar
+              className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
+              ☰ Sütunlar ({visibleIds.size})
             </button>
 
             {showColPanel && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-[600px] max-h-[75vh] overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-3">
-                {/* Araç çubuğu */}
-                <div className="flex gap-2 mb-3 pb-2 border-b border-gray-700">
-                  <button onClick={selectAll}  className="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Hepsini Seç</button>
+              <div className="absolute right-0 top-full mt-1 z-50 w-[620px] max-h-[80vh] overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-3">
+
+                {/* ── Araç çubuğu ── */}
+                <div className="flex flex-wrap gap-2 mb-3 pb-3 border-b border-gray-700">
+                  <button onClick={selectAll} className="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Hepsini Seç</button>
                   <button onClick={resetCols} className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Varsayılan</button>
-                  <button onClick={() => setVisibleIds(new Set())} className="text-xs bg-red-900/60 hover:bg-red-800/60 px-2 py-1 rounded">Hepsini Gizle</button>
-                  <span className="ml-auto text-xs text-gray-500 self-center">{visibleIds.size} / {ALL_COLS.length} seçili</span>
+                  <button onClick={hideAll}   className="text-xs bg-red-900/60 hover:bg-red-800/60 px-2 py-1 rounded">Hepsini Gizle</button>
+                  <span className="text-xs text-gray-500 self-center ml-auto">{visibleIds.size} / {ALL_COLS.length}</span>
                 </div>
-                {/* Gruplar */}
+
+                {/* ── PRESET KAYDET / YÜKLE ── */}
+                <div className="mb-3 pb-3 border-b border-gray-700">
+                  <p className="text-[11px] text-gray-400 mb-1.5 font-semibold uppercase tracking-wide">Sütun Düzenini Kaydet</p>
+                  <div className="flex gap-1.5 items-center mb-2">
+                    <input
+                      value={presetInput}
+                      onChange={(e) => setPresetInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveColPreset(); }}
+                      placeholder="Preset adı… (örn: Temel görünüm)"
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-blue-500"
+                    />
+                    <button onClick={saveColPreset}
+                      className="bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap">
+                      💾 Kaydet
+                    </button>
+                    {saveMsg && <span className="text-xs text-green-400">{saveMsg}</span>}
+                  </div>
+
+                  {/* Kayıtlı presetler */}
+                  {colPresets.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {colPresets.map((p) => (
+                        <div key={p.name} className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded px-2 py-1">
+                          <button onClick={() => loadColPreset(p)} className="text-xs text-blue-300 hover:text-blue-200 transition">
+                            📂 {p.name}
+                          </button>
+                          <button onClick={() => deleteColPreset(p.name)} className="text-gray-500 hover:text-red-400 transition ml-1 text-xs">
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Sütun grupları ── */}
                 {groups.map((grp) => {
                   const cols = ALL_COLS.filter((c) => c.group === grp);
                   const onCount = cols.filter((c) => visibleIds.has(c.id)).length;
                   const color = GROUP_COLORS[grp] ?? "bg-gray-800";
                   return (
                     <div key={grp} className="mb-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <button onClick={() => toggleGroup(grp)}
-                          className={`text-xs font-semibold px-2 py-0.5 rounded ${color} flex-1 text-left`}>
-                          {grp}
-                          <span className="ml-1 text-gray-400 font-normal">({onCount}/{cols.length})</span>
-                        </button>
-                      </div>
+                      <button onClick={() => toggleGroup(grp)}
+                        className={`text-xs font-semibold px-2 py-0.5 rounded ${color} w-full text-left mb-1`}>
+                        {grp} <span className="text-gray-400 font-normal">({onCount}/{cols.length})</span>
+                      </button>
                       <div className="flex flex-wrap gap-1 pl-1">
                         {cols.map((c) => (
                           <button key={c.id} onClick={() => toggleCol(c.id)}
                             className={`text-[11px] px-2 py-0.5 rounded border transition ${
-                              visibleIds.has(c.id)
-                                ? "bg-blue-700 border-blue-500 text-white"
-                                : "bg-gray-800 border-gray-600 text-gray-400 hover:bg-gray-700"
+                              visibleIds.has(c.id) ? "bg-blue-700 border-blue-500 text-white" : "bg-gray-800 border-gray-600 text-gray-400 hover:bg-gray-700"
                             }`}>
                             {c.label}
                           </button>
@@ -290,15 +318,14 @@ export default function MatchTable() {
           </div>
         </div>
 
-        {/* Grup renk çubuğu — sütun seçici değil, sadece renk referansı; tıklayınca grup toggle */}
-        <div className="flex overflow-x-auto no-scrollbar">
+        {/* Grup renk çubuğu */}
+        <div className="flex overflow-x-auto">
           {groups.map((grp) => {
-            const cnt = ALL_COLS.filter((c) => c.group === grp && visibleIds.has(c.id)).length;
+            const cnt = ALL_COLS.filter((c) => c.group===grp && visibleIds.has(c.id)).length;
             if (cnt === 0) return null;
-            const color = GROUP_COLORS[grp] ?? "bg-gray-800";
             return (
               <button key={grp} onClick={() => toggleGroup(grp)}
-                className={`text-[10px] px-2 py-0.5 whitespace-nowrap border-r border-gray-800/60 ${color} hover:brightness-110 transition`}>
+                className={`text-[10px] px-2 py-0.5 whitespace-nowrap border-r border-gray-800/60 ${GROUP_COLORS[grp]??"bg-gray-800"} hover:brightness-110 transition`}>
                 {grp} <span className="text-gray-400">·{cnt}</span>
               </button>
             );
@@ -306,65 +333,63 @@ export default function MatchTable() {
         </div>
       </header>
 
-      {/* ═══ TABLO ══════════════════════════════════════════════════════════ */}
-      <div className="flex-1 overflow-auto">
-        <table
-          className="text-xs border-collapse"
-          style={{ minWidth: visibleCols.reduce((s, c) => s + colW(c), 0) }}
-        >
+      {/* ── TABLO ── */}
+      <div className="flex-1 overflow-auto relative">
+        {/* Loading overlay */}
+        {loading && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-950/70 backdrop-blur-[1px]">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-10 h-10 border-4 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+              <span className="text-xs text-gray-400">Yükleniyor…</span>
+            </div>
+          </div>
+        )}
+        <table className="text-xs border-collapse" style={{ minWidth: visibleCols.reduce((s,c) => s+colW(c), 0) }}>
           <thead className="sticky top-0 z-20">
-            {/* Grup başlıkları */}
             <tr>
               {groupSpans.map((gs, i) => (
                 <th key={i} colSpan={gs.count}
-                  className={`px-1 py-0.5 text-center text-[10px] font-semibold border-b border-gray-700 whitespace-nowrap ${GROUP_COLORS[gs.group] ?? "bg-gray-900"}`}>
+                  className={`px-1 py-0.5 text-center text-[10px] font-semibold border-b border-gray-700 whitespace-nowrap ${GROUP_COLORS[gs.group]??"bg-gray-900"}`}>
                   {gs.group}
                 </th>
               ))}
             </tr>
-            {/* Sütun isimleri */}
             <tr className="bg-gray-900">
               {visibleCols.map((c) => (
-                <th key={c.id}
-                  style={{ minWidth: colW(c), maxWidth: colW(c) }}
+                <th key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
                   className="px-1.5 py-1 text-left font-medium text-gray-300 whitespace-nowrap border-b border-gray-800 border-r border-gray-800/50">
                   {c.label}
                 </th>
               ))}
             </tr>
-            {/* ── Sütun filtre satırı ── */}
             <tr className="bg-gray-950">
               {visibleCols.map((c) => (
-                <th key={c.id}
-                  style={{ minWidth: colW(c), maxWidth: colW(c) }}
+                <th key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
                   className="px-0.5 py-0.5 border-b border-gray-700 border-r border-gray-800/50">
                   <input
                     value={colFilters[c.id] ?? ""}
                     onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
-                    placeholder="*…*"
-                    title={`Wildcard: *=herhangi, ?=tek harf, +=VEYA\nÖrn: *5* | *5?6* | *5*+*6*`}
+                    placeholder="ara…"
+                    title="Yaz: içerir | *5?6*: wildcard | 4.9+3.2: VEYA"
                     className="w-full bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-blue-500"
                   />
                 </th>
               ))}
             </tr>
           </thead>
-
           <tbody>
             {loading ? (
-              <tr><td colSpan={totalCols} className="text-center py-16 text-gray-500">Yükleniyor…</td></tr>
+              <tr><td colSpan={visibleCols.length} className="py-2" /></tr>
             ) : filteredRows.length === 0 ? (
-              <tr><td colSpan={totalCols} className="text-center py-16 text-gray-500">Veri yok.</td></tr>
+              <tr><td colSpan={visibleCols.length} className="text-center py-16 text-gray-500">Veri yok.</td></tr>
             ) : (
               filteredRows.map((m, ri) => (
-                <tr key={String(m.id ?? ri)}
-                  className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
+                <tr key={String(m.id??ri)} className="border-b border-gray-800/40 hover:bg-gray-800/30 transition-colors">
                   {visibleCols.map((c) => {
                     const val = cellVal(m, c);
                     return (
-                      <td key={c.id}
-                        style={{ minWidth: colW(c), maxWidth: colW(c) }}
-                        className={`px-1.5 py-1 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-800/30 font-mono ${cellColor(c, val)}`}
+                      <td key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
+                        className={`px-1.5 py-1 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-800/30 font-mono ${cellColor(c,val)}`}
                         title={val}>
                         {val}
                       </td>
@@ -377,18 +402,18 @@ export default function MatchTable() {
         </table>
       </div>
 
-      {/* ═══ SAYFALAMA ══════════════════════════════════════════════════════ */}
+      {/* ── SAYFALAMA ── */}
       <div className="flex-none flex items-center justify-between px-4 py-2 border-t border-gray-800 bg-gray-900/60 text-xs text-gray-400">
         <span>
-          Sayfa {page} / {totalPages || 1} · {total.toLocaleString("tr-TR")} maç
+          Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
           {Object.values(colFilters).some(Boolean) && ` · filtreli: ${filteredRows.length}`}
         </span>
         <div className="flex gap-1.5">
           {[
-            { label:"««", disabled: page <= 1, action: () => setPage(1) },
-            { label:"‹", disabled: page <= 1, action: () => setPage((p) => p - 1) },
-            { label:"›", disabled: page >= totalPages, action: () => setPage((p) => p + 1) },
-            { label:"»»", disabled: page >= totalPages, action: () => setPage(totalPages) },
+            { label:"««", disabled:page<=1,          action:()=>setPage(1) },
+            { label:"‹",  disabled:page<=1,          action:()=>setPage((p)=>p-1) },
+            { label:"›",  disabled:page>=totalPages, action:()=>setPage((p)=>p+1) },
+            { label:"»»", disabled:page>=totalPages, action:()=>setPage(totalPages) },
           ].map(({ label, disabled, action }) => (
             <button key={label} disabled={disabled} onClick={action}
               className="bg-gray-800 hover:bg-gray-700 disabled:opacity-30 px-2.5 py-1 rounded transition">

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { ALL_COLS } from "@/lib/columns";
 
-// raw_data içinden çekeceğimiz key'ler
 const RAW_KEYS = Array.from(
   new Set(ALL_COLS.filter((c) => !c.dbCol).map((c) => c.key))
 );
@@ -24,10 +23,28 @@ const DB_COLS = [
   "raw_data",
 ];
 
+// dbCol sütunların id → DB kolon adı + arama tipi
+const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" | "or_teams" }> = {
+  lig_adi:  { col: "lig_adi",       mode: "ilike" },
+  lig_kodu: { col: "lig_kodu",      mode: "ilike" },
+  alt_lig:  { col: "alt_lig_adi",   mode: "ilike" },
+  sezon:    { col: "sezon_adi",     mode: "ilike" },
+  t1:       { col: "t1",            mode: "ilike" },
+  t2:       { col: "t2",            mode: "ilike" },
+  hakem:    { col: "hakem",         mode: "ilike" },
+  sonuc_iy: { col: "sonuc_iy",      mode: "ilike" },
+  sonuc_ms: { col: "sonuc_ms",      mode: "ilike" },
+  suffix4:  { col: "mac_suffix4",   mode: "ilike" },
+  suffix3:  { col: "mac_suffix3",   mode: "ilike" },
+  mbs:      { col: "mac_suffix4",   mode: "ilike" },
+  tarih:    { col: "tarih",         mode: "ilike" },
+  saat:     { col: "saat",          mode: "ilike" },
+};
+
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const page  = Math.max(1, Number(sp.get("page")  || 1));
-  const limit = Math.min(100, Math.max(1, Number(sp.get("limit") || 50)));
+  const limit = Math.min(100, Math.max(1, Number(sp.get("limit") || 100)));
   const offset = (page - 1) * limit;
 
   const supabase = createServiceClient();
@@ -35,6 +52,7 @@ export async function GET(req: NextRequest) {
     .from("matches")
     .select(DB_COLS.join(","), { count: "exact" });
 
+  // ── Üst filtreler (eski) ──────────────────────────────────────────────────
   if (sp.get("tarih_from")) query = query.gte("tarih", sp.get("tarih_from")!);
   if (sp.get("tarih_to"))   query = query.lte("tarih", sp.get("tarih_to")!);
   if (sp.get("lig"))        query = query.ilike("lig_adi", `%${sp.get("lig")}%`);
@@ -43,11 +61,23 @@ export async function GET(req: NextRequest) {
     const t = `%${sp.get("takim")}%`;
     query = query.or(`t1.ilike.${t},t2.ilike.${t}`);
   }
-  if (sp.get("sonuc_iy"))  query = query.eq("sonuc_iy", sp.get("sonuc_iy")!);
-  if (sp.get("sonuc_ms"))  query = query.eq("sonuc_ms", sp.get("sonuc_ms")!);
+  if (sp.get("sonuc_iy"))  query = query.ilike("sonuc_iy", `%${sp.get("sonuc_iy")}%`);
+  if (sp.get("sonuc_ms"))  query = query.ilike("sonuc_ms", `%${sp.get("sonuc_ms")}%`);
   if (sp.get("hakem"))     query = query.ilike("hakem", `%${sp.get("hakem")}%`);
-  if (sp.get("suffix4"))   query = query.eq("mac_suffix4", sp.get("suffix4")!);
-  if (sp.get("suffix3"))   query = query.eq("mac_suffix3", sp.get("suffix3")!);
+  if (sp.get("suffix4"))   query = query.ilike("mac_suffix4", `%${sp.get("suffix4")}%`);
+  if (sp.get("suffix3"))   query = query.ilike("mac_suffix3", `%${sp.get("suffix3")}%`);
+
+  // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
+  for (const [paramKey, val] of sp.entries()) {
+    if (!paramKey.startsWith("cf_") || !val.trim()) continue;
+    const colId = paramKey.slice(3);
+    const def = DB_COL_MAP[colId];
+    if (!def) continue;
+    const v = val.trim();
+    if (def.mode === "ilike") {
+      query = query.ilike(def.col, `%${v}%`);
+    }
+  }
 
   const { data, count, error } = await query
     .order("tarih", { ascending: false })
