@@ -1,3 +1,5 @@
+"use client";
+
 import dynamic from "next/dynamic";
 
 const MatchTable = dynamic(() => import("./MatchTable"), { ssr: false });
