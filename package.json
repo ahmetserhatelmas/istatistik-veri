@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sync:now": "node scripts/manual-sync.mjs",
+    "sync:forward": "node scripts/forward-sync.mjs",
+    "sync:forward:60": "node scripts/forward-sync.mjs 60"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.0",

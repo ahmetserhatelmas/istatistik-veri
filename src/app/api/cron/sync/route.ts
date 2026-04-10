@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { rollingUtcRange, runMatchesDateRangeSync } from "@/lib/sync-matches";
+import { rollingUtcWindow, runMatchesDateRangeSync } from "@/lib/sync-matches";
 
 export const maxDuration = 300;
 
@@ -20,17 +20,25 @@ function authorizeCron(req: NextRequest): boolean {
 /**
  * Vercel Cron: GET /api/cron/sync (Authorization: Bearer CRON_SECRET otomatik).
  * Manuel: ?secret= veya x-cron-secret ile de tetiklenebilir.
- * Kapsam: CRON_SYNC_DAYS (varsayılan 5) — bugün dahil son N gün UTC.
+ * Kapsam (UTC): CRON_SYNC_DAYS_PAST veya CRON_SYNC_DAYS (vars. 5) geriye;
+ * CRON_SYNC_DAYS_FUTURE (vars. 45) ileri — OM’deki güncel fikstür penceresi.
+ * Bitmiş maçlar: DB’de sonuc_ms dolu ise detay çekilmez (SYNC_SKIP_FINISHED_IN_DB=0 ile kapat).
  */
 export async function GET(req: NextRequest) {
   if (!authorizeCron(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const dayCount = Number(process.env.CRON_SYNC_DAYS || "5");
-  const { dateFrom, dateTo } = rollingUtcRange(dayCount);
+  let past = Number(
+    process.env.CRON_SYNC_DAYS_PAST || process.env.CRON_SYNC_DAYS || "5"
+  );
+  if (!Number.isFinite(past) || past < 1) past = 5;
+  let future = Number(process.env.CRON_SYNC_DAYS_FUTURE ?? "45");
+  if (!Number.isFinite(future) || future < 0) future = 45;
+  const { dateFrom, dateTo } = rollingUtcWindow(past, future);
   const bookmaker = process.env.ORAN_BOOKMAKER || "0";
   const sport = process.env.ORAN_SPORT || "FUTBOL";
+  const skipFinishedInDb = process.env.SYNC_SKIP_FINISHED_IN_DB !== "0";
 
   const supabase = createServiceClient();
 
@@ -46,13 +54,18 @@ export async function GET(req: NextRequest) {
   const logId = logRow?.id;
 
   try {
-    const { totalFetched, totalInserted, daysProcessed } =
-      await runMatchesDateRangeSync(supabase, {
-        dateFrom,
-        dateTo,
-        bookmaker,
-        sport,
-      });
+    const {
+      totalFetched,
+      totalInserted,
+      totalSkippedFinished,
+      daysProcessed,
+    } = await runMatchesDateRangeSync(supabase, {
+      dateFrom,
+      dateTo,
+      bookmaker,
+      sport,
+      skipFinishedInDb,
+    });
 
     if (logId) {
       await supabase
@@ -71,9 +84,13 @@ export async function GET(req: NextRequest) {
       source: "cron",
       dateFrom,
       dateTo,
+      pastDays: past,
+      futureDays: future,
       daysProcessed,
       totalFetched,
       totalInserted,
+      totalSkippedFinished,
+      skipFinishedInDb,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   const dateTo = body.dateTo || dateFrom;
   const bookmaker = body.bookmaker || "0";
   const sport = body.sport || "FUTBOL";
+  const skipFinishedInDb = body.skipFinishedInDb !== false;
 
   const supabase = createServiceClient();
 
@@ -32,13 +33,18 @@ export async function POST(req: NextRequest) {
   const logId = logRow?.id;
 
   try {
-    const { totalFetched, totalInserted, daysProcessed } =
-      await runMatchesDateRangeSync(supabase, {
-        dateFrom,
-        dateTo,
-        bookmaker,
-        sport,
-      });
+    const {
+      totalFetched,
+      totalInserted,
+      totalSkippedFinished,
+      daysProcessed,
+    } = await runMatchesDateRangeSync(supabase, {
+      dateFrom,
+      dateTo,
+      bookmaker,
+      sport,
+      skipFinishedInDb,
+    });
 
     if (logId) {
       await supabase
@@ -59,6 +65,8 @@ export async function POST(req: NextRequest) {
       daysProcessed,
       totalFetched,
       totalInserted,
+      totalSkippedFinished,
+      skipFinishedInDb,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

@@ -12,6 +12,16 @@ function formatDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** DB’de kesin sonuç varsa (MS skoru) bu maç için detay çekmeyi atlarız — kredi + gereksiz trafik. */
+function hasStoredFinalScore(sonuc_ms: string | null | undefined): boolean {
+  if (sonuc_ms == null) return false;
+  const s = String(sonuc_ms).trim();
+  if (s === "" || s === "-" || s === "–") return false;
+  return true;
+}
+
+type DbMatchSyncMeta = { tarih: string; sonuc_ms: string | null };
+
 export function eachDayUtc(from: string, to: string): string[] {
   const days: string[] = [];
   const cur = new Date(from + "T00:00:00Z");
@@ -23,21 +33,42 @@ export function eachDayUtc(from: string, to: string): string[] {
   return days;
 }
 
-async function existingIdsForList(
+async function existingSyncMetaForIds(
   supabase: SupabaseClient,
   ids: number[]
-): Promise<Set<number>> {
-  const set = new Set<number>();
+): Promise<Map<number, DbMatchSyncMeta>> {
+  const map = new Map<number, DbMatchSyncMeta>();
   for (let j = 0; j < ids.length; j += EXISTING_ID_CHUNK) {
     const slice = ids.slice(j, j + EXISTING_ID_CHUNK);
     const { data, error } = await supabase
       .from("matches")
-      .select("id")
+      .select("id, tarih, sonuc_ms")
       .in("id", slice);
     if (error) throw new Error(error.message);
-    for (const r of data || []) set.add(r.id as number);
+    for (const r of data || []) {
+      const rawTarih = r.tarih as string;
+      const tarih =
+        typeof rawTarih === "string" ? rawTarih.slice(0, 10) : String(rawTarih);
+      map.set(r.id as number, {
+        tarih,
+        sonuc_ms: (r.sonuc_ms as string | null) ?? null,
+      });
+    }
   }
-  return set;
+  return map;
+}
+
+function idsNeedingDetail(
+  dayIds: number[],
+  metaById: Map<number, DbMatchSyncMeta>,
+  skipFinishedInDb: boolean
+): number[] {
+  if (!skipFinishedInDb) return dayIds;
+  return dayIds.filter((id) => {
+    const row = metaById.get(id);
+    if (!row) return true;
+    return !hasStoredFinalScore(row.sonuc_ms);
+  });
 }
 
 export async function runMatchesDateRangeSync(
@@ -47,13 +78,25 @@ export async function runMatchesDateRangeSync(
     dateTo: string;
     bookmaker?: string;
     sport?: string;
+    /**
+     * true: DB’de sonuc_ms dolu (bitmiş) maçlar için detay çağrısı yapılmaz.
+     * false: tarihsel backfill / tam yenileme (ağır).
+     */
+    skipFinishedInDb?: boolean;
   }
-): Promise<{ totalFetched: number; totalInserted: number; daysProcessed: number }> {
+): Promise<{
+  totalFetched: number;
+  totalInserted: number;
+  totalSkippedFinished: number;
+  daysProcessed: number;
+}> {
   const bookmaker = opts.bookmaker ?? "0";
   const sport = opts.sport ?? "FUTBOL";
+  const skipFinishedInDb = opts.skipFinishedInDb !== false;
   const days = eachDayUtc(opts.dateFrom, opts.dateTo);
   let totalFetched = 0;
   let totalInserted = 0;
+  let totalSkippedFinished = 0;
 
   for (const day of days) {
     const dayIds = await getMatchIds(day, day, bookmaker, sport);
@@ -61,16 +104,21 @@ export async function runMatchesDateRangeSync(
 
     totalFetched += dayIds.length;
 
-    const existingSet = await existingIdsForList(supabase, dayIds);
-    const newIds = dayIds.filter((id) => !existingSet.has(id));
+    const metaById = await existingSyncMetaForIds(supabase, dayIds);
+    const toFetch = idsNeedingDetail(dayIds, metaById, skipFinishedInDb);
+    totalSkippedFinished += dayIds.length - toFetch.length;
 
-    for (let i = 0; i < newIds.length; i += BATCH_SIZE) {
-      const chunk = newIds.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+      const chunk = toFetch.slice(i, i + BATCH_SIZE);
       const rows = await getMatchDetails(chunk, bookmaker, sport);
       if (rows.length > 0) {
+        const stamped = rows.map((r) => ({
+          ...r,
+          updated_at: new Date().toISOString(),
+        }));
         const { error } = await supabase
           .from("matches")
-          .upsert(rows, { onConflict: "id" });
+          .upsert(stamped, { onConflict: "id" });
         if (error) throw new Error(error.message);
         totalInserted += rows.length;
       }
@@ -78,14 +126,39 @@ export async function runMatchesDateRangeSync(
     }
   }
 
-  return { totalFetched, totalInserted, daysProcessed: days.length };
+  return {
+    totalFetched,
+    totalInserted,
+    totalSkippedFinished,
+    daysProcessed: days.length,
+  };
 }
 
-/** Son N günü (bugün dahil) UTC tarihleriyle döndürür. */
-export function rollingUtcRange(dayCount: number): { dateFrom: string; dateTo: string } {
-  const safe = Math.min(Math.max(1, dayCount), 14);
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - (safe - 1));
+/**
+ * UTC takvim “bugünü” merkez alır: geçmiş (bugün dahil) + ileri günler.
+ * Oran Merkezi’nde görünen ileri tarihli maçlar MacIdListesi’nde maç tarihine göre döner;
+ * sadece geçmişe bakmak bu ID’leri hiç sorgulamaz.
+ */
+export function rollingUtcWindow(
+  pastDays: number,
+  futureDays: number
+): { dateFrom: string; dateTo: string } {
+  const p = Number.isFinite(pastDays) ? pastDays : 5;
+  const f = Number.isFinite(futureDays) ? futureDays : 45;
+  const past = Math.min(Math.max(1, Math.floor(p)), 90);
+  const future = Math.min(Math.max(0, Math.floor(f)), 180);
+  const now = new Date();
+  const todayUtc = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
+  const start = new Date(todayUtc);
+  start.setUTCDate(start.getUTCDate() - (past - 1));
+  const end = new Date(todayUtc);
+  end.setUTCDate(end.getUTCDate() + future);
   return { dateFrom: formatDate(start), dateTo: formatDate(end) };
+}
+
+/** Sadece geçmişe dönük pencere (bugün dahil son N gün). İleri fikstür içermez. */
+export function rollingUtcRange(dayCount: number): { dateFrom: string; dateTo: string } {
+  return rollingUtcWindow(dayCount, 0);
 }
