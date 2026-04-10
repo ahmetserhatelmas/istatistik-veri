@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ALL_COLS, DEFAULT_VISIBLE, GROUP_COLORS, type ColDef } from "@/lib/columns";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ALL_COLS, DEFAULT_VISIBLE, GROUP_COLORS, mergeAllCols, type ColDef } from "@/lib/columns";
 
 type Match = Record<string, unknown>;
 interface ApiResponse {
@@ -100,6 +100,18 @@ export default function MatchTable() {
   const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [rawKeyUnion, setRawKeyUnion] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/matches/raw-keys")
+      .then((r) => r.json())
+      .then((j: { keys?: string[] }) => {
+        setRawKeyUnion(Array.isArray(j.keys) ? j.keys : []);
+      })
+      .catch(() => setRawKeyUnion([]));
+  }, []);
+
+  const mergedCols = useMemo(() => mergeAllCols(rawKeyUnion), [rawKeyUnion]);
 
   // sütun görünürlük
   const [visibleIds, setVisibleIds] = useState<Set<string>>(() => {
@@ -126,9 +138,9 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_COL_FILT, colFilters); },             [colFilters]);
   useEffect(() => { lsSet(LS_TOP_FILT, filters); },                [filters]);
 
-  const visibleCols  = ALL_COLS.filter((c) => visibleIds.has(c.id));
+  const visibleCols  = mergedCols.filter((c) => visibleIds.has(c.id));
   const groupSpans   = buildGroupSpans(visibleCols);
-  const groups       = Array.from(new Set(ALL_COLS.map((c) => c.group)));
+  const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
 
   // DB sütunları → server filtresi | raw_data → client filtresi
   const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
@@ -189,11 +201,11 @@ export default function MatchTable() {
   // sütun işlemleri
   function toggleCol(id: string) { setVisibleIds((p) => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
   function toggleGroup(grp: string) {
-    const ids = ALL_COLS.filter((c) => c.group===grp).map((c) => c.id);
+    const ids = mergedCols.filter((c) => c.group===grp).map((c) => c.id);
     const allOn = ids.every((id) => visibleIds.has(id));
     setVisibleIds((p) => { const n=new Set(p); ids.forEach((id) => allOn?n.delete(id):n.add(id)); return n; });
   }
-  function selectAll()  { setVisibleIds(new Set(ALL_COLS.map((c) => c.id))); }
+  function selectAll()  { setVisibleIds(new Set(mergedCols.map((c) => c.id))); }
   function resetCols()  { const d=new Set(DEFAULT_VISIBLE); setVisibleIds(d); lsSet(LS_VISIBLE, Array.from(d)); }
   function hideAll()    { setVisibleIds(new Set()); }
 
@@ -288,7 +300,7 @@ export default function MatchTable() {
                   <button onClick={selectAll} className="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Hepsini Seç</button>
                   <button onClick={resetCols} className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Varsayılan</button>
                   <button onClick={hideAll}   className="text-xs bg-red-900/60 hover:bg-red-800/60 px-2 py-1 rounded">Hepsini Gizle</button>
-                  <span className="text-xs text-gray-500 self-center ml-auto">{visibleIds.size} / {ALL_COLS.length}</span>
+                  <span className="text-xs text-gray-500 self-center ml-auto">{visibleIds.size} / {mergedCols.length}</span>
                 </div>
 
                 {/* ── PRESET KAYDET / YÜKLE ── */}
@@ -328,7 +340,7 @@ export default function MatchTable() {
 
                 {/* ── Sütun grupları ── */}
                 {groups.map((grp) => {
-                  const cols = ALL_COLS.filter((c) => c.group === grp);
+                  const cols = mergedCols.filter((c) => c.group === grp);
                   const onCount = cols.filter((c) => visibleIds.has(c.id)).length;
                   const color = GROUP_COLORS[grp] ?? "bg-gray-800";
                   return (
@@ -358,7 +370,7 @@ export default function MatchTable() {
         {/* Grup renk çubuğu */}
         <div className="flex overflow-x-auto">
           {groups.map((grp) => {
-            const cnt = ALL_COLS.filter((c) => c.group===grp && visibleIds.has(c.id)).length;
+            const cnt = mergedCols.filter((c) => c.group===grp && visibleIds.has(c.id)).length;
             if (cnt === 0) return null;
             return (
               <button key={grp} onClick={() => toggleGroup(grp)}

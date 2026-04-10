@@ -22,16 +22,28 @@ export const ALL_COLS: ColDef[] = [
   { id: "saat",     label: "Saat",     key: "saat",       dbCol: true, group: "Temel", width: 56 },
   { id: "lig_kodu", label: "Lig Kodu", key: "lig_kodu",   dbCol: true, group: "Temel", width: 80 },
   { id: "lig_adi",  label: "Lig Adı",  key: "lig_adi",    dbCol: true, group: "Temel", width: 150 },
+  { id: "lig_id",   label: "Lig ID",   key: "lig_id",     dbCol: true, group: "Temel", width: 72 },
   { id: "alt_lig",  label: "Alt Lig",  key: "alt_lig_adi",dbCol: true, group: "Temel", width: 130 },
+  { id: "alt_lig_id", label: "Alt Lig ID", key: "alt_lig_id", dbCol: true, group: "Temel", width: 80 },
   { id: "sezon",    label: "Sezon",    key: "sezon_adi",  dbCol: true, group: "Temel", width: 90 },
+  { id: "sezon_id", label: "Sezon ID", key: "sezon_id",   dbCol: true, group: "Temel", width: 72 },
   { id: "mbs",      label: "MBS",      key: "mac_suffix4",dbCol: true, group: "Temel", width: 60 },
   { id: "t1",       label: "Ev Sahibi",key: "t1",         dbCol: true, group: "Temel", width: 150 },
   { id: "t2",       label: "Deplasman",key: "t2",         dbCol: true, group: "Temel", width: 150 },
   { id: "kod_ms",   label: "MS Kod",   key: "kod_ms",     dbCol: true, group: "Temel", width: 72 },
+  { id: "kod_cs",   label: "ÇŞ Kod",   key: "kod_cs",     dbCol: true, group: "Temel", width: 72 },
+  { id: "kod_iy",   label: "IY Kod",   key: "kod_iy",     dbCol: true, group: "Temel", width: 72 },
+  { id: "kod_au",   label: "A/Ü Kod",  key: "kod_au",     dbCol: true, group: "Temel", width: 72 },
+  { id: "sport_turu", label: "Spor",   key: "sport_turu", dbCol: true, group: "Temel", width: 80 },
+  { id: "bookmaker_id", label: "Bookmaker ID", key: "bookmaker_id", dbCol: true, group: "Temel", width: 96 },
 
   // ── Maç Skoru ──────────────────────────────────────────────────────────────
   { id: "sonuc_iy", label: "IY",  key: "sonuc_iy", dbCol: true, group: "Skor", width: 60 },
   { id: "sonuc_ms", label: "MS",  key: "sonuc_ms", dbCol: true, group: "Skor", width: 60 },
+  { id: "ft1", label: "FT1", key: "ft1", dbCol: true, group: "Skor", width: 48 },
+  { id: "ft2", label: "FT2", key: "ft2", dbCol: true, group: "Skor", width: 48 },
+  { id: "ht1", label: "HT1", key: "ht1", dbCol: true, group: "Skor", width: 48 },
+  { id: "ht2", label: "HT2", key: "ht2", dbCol: true, group: "Skor", width: 48 },
 
   // ── Maç Sonucu ─────────────────────────────────────────────────────────────
   { id: "ms1", label: "MS1", key: "MS1", group: "Maç Sonucu", width: 60 },
@@ -187,10 +199,80 @@ export const ALL_COLS: ColDef[] = [
   { id: "h1ys_dg", label: "IY Diğ", key: "H1YS_1_13", group: "IY Skoru", width: 60 },
 
   // ── Hakem / Diğer ──────────────────────────────────────────────────────────
-  { id: "hakem",   label: "Hakem",  key: "hakem",  dbCol: true, group: "Diğer", width: 130 },
-  { id: "suffix4", label: "S4",     key: "mac_suffix4", dbCol: true, group: "Diğer", width: 52 },
-  { id: "suffix3", label: "S3",     key: "mac_suffix3", dbCol: true, group: "Diğer", width: 52 },
+  { id: "hakem",       label: "Hakem",              key: "hakem",         dbCol: true, group: "Diğer", width: 130 },
+  { id: "t1_antrenor", label: "Ev teknik direktör", key: "t1_antrenor",   dbCol: true, group: "Diğer", width: 140 },
+  { id: "t2_antrenor", label: "Dep teknik direktör",key: "t2_antrenor",   dbCol: true, group: "Diğer", width: 140 },
+  { id: "t1i",         label: "Ev takım ID",        key: "t1i",           dbCol: true, group: "Diğer", width: 72 },
+  { id: "t2i",         label: "Dep takım ID",       key: "t2i",           dbCol: true, group: "Diğer", width: 72 },
+  { id: "suffix4",     label: "S4",                 key: "mac_suffix4",   dbCol: true, group: "Diğer", width: 52 },
+  { id: "suffix3",     label: "S3",                 key: "mac_suffix3",   dbCol: true, group: "Diğer", width: 52 },
 ];
+
+/** API / DB alan adlarını karşılaştırmak (T1ANTRENOR ↔ t1_antrenor) */
+function normFieldKey(k: string): string {
+  return k.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** ALL_COLS’ta zaten karşılığı varsa ham raw_data sütunu ekleme */
+export function isRawKeyCoveredByKnownCol(rawKey: string): boolean {
+  const n = normFieldKey(rawKey);
+  return ALL_COLS.some(
+    (c) => c.key === rawKey || normFieldKey(c.key) === n
+  );
+}
+
+/** Oran API alan adı → daha okunaklı başlık (Ham veri grubu) */
+export const RAW_FRIENDLY_LABELS: Record<string, string> = {
+  T1ANTRENOR: "Ev teknik direktör",
+  T2ANTRENOR: "Dep teknik direktör",
+  T1I: "Ev takım ID",
+  T2I: "Dep takım ID",
+  LIGKODU: "Lig kodu (API)",
+  LIGADI: "Lig adı (API)",
+  LIGID: "Lig ID",
+  ALTLIGADI: "Alt lig (API)",
+  ALTLIGID: "Alt lig ID",
+  SEZONADI: "Sezon (API)",
+  SEZONID: "Sezon ID",
+  KODMS: "Kod MS (API)",
+  KODCS: "Kod ÇŞ (API)",
+  KODIY: "Kod IY (API)",
+  KODAU: "Kod A/Ü (API)",
+  HAKEM: "Hakem (API)",
+  SONUCIY: "Sonuç IY (API)",
+  SONUCMS: "Sonuç MS (API)",
+};
+
+const RAW_GROUP = "Ham veri (API)";
+
+function rawKeyToColId(k: string): string {
+  const safe = k.replace(/[^a-zA-Z0-9_]/g, "_");
+  return `raw_${safe}`;
+}
+
+/** raw_data’da olup ALL_COLS’ta olmayan her alan için sütun tanımı */
+export function extraRawColDefs(rawKeys: string[]): ColDef[] {
+  const out: ColDef[] = [];
+  const seen = new Set<string>();
+  for (const k of rawKeys) {
+    if (!k || isRawKeyCoveredByKnownCol(k)) continue;
+    const id = rawKeyToColId(k);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      label: RAW_FRIENDLY_LABELS[k] ?? k,
+      key: k,
+      group: RAW_GROUP,
+      width: 72,
+    });
+  }
+  return out;
+}
+
+export function mergeAllCols(rawKeysFromDb: string[]): ColDef[] {
+  return [...ALL_COLS, ...extraRawColDefs(rawKeysFromDb)];
+}
 
 /** Grup ismine göre renk */
 export const GROUP_COLORS: Record<string, string> = {
@@ -215,6 +297,7 @@ export const GROUP_COLORS: Record<string, string> = {
   "Maç Skoru":        "bg-fuchsia-900/70",
   "IY Skoru":         "bg-purple-900/70",
   "Diğer":            "bg-slate-700",
+  [RAW_GROUP]:        "bg-zinc-800",
 };
 
 /** Varsayılan görünür sütunlar (sayfa ilk açılışında) */
