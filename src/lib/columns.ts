@@ -51,7 +51,7 @@ export const ALL_COLS: ColDef[] = [
   { id: "alt_lig_id", label: "Alt Lig ID", key: "alt_lig_id", dbCol: true, group: "Temel", width: 80 },
   { id: "sezon",    label: "Sezon",    key: "sezon_adi",  dbCol: true, group: "Temel", width: 90 },
   { id: "sezon_id", label: "Sezon ID", key: "sezon_id",   dbCol: true, group: "Temel", width: 72 },
-  { id: "mbs",      label: "MBS",      key: "mac_suffix4",dbCol: true, group: "Temel", width: 60 },
+  { id: "mbs",      label: "S4",       key: "mac_suffix4",dbCol: true, group: "Temel", width: 60 },
   { id: "t1",       label: "Ev Sahibi",key: "t1",         dbCol: true, group: "Temel", width: 150 },
   { id: "t2",       label: "Deplasman",key: "t2",         dbCol: true, group: "Temel", width: 150 },
   { id: "kod_ms",   label: "MS Kod",   key: "kod_ms",     dbCol: true, group: "Temel", width: 72 },

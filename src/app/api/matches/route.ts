@@ -27,6 +27,7 @@ const DB_COLS = [
 
 // dbCol sütunların id → DB kolon adı + arama tipi
 const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
+  id:       { col: "id",            mode: "eq" },
   lig_adi:  { col: "lig_adi",       mode: "ilike" },
   lig_kodu: { col: "lig_kodu",      mode: "ilike" },
   alt_lig:  { col: "alt_lig_adi",   mode: "ilike" },
@@ -92,8 +93,14 @@ export async function GET(req: NextRequest) {
     if (def.mode === "ilike") {
       query = query.ilike(def.col, `%${v}%`);
     } else if (def.mode === "eq") {
-      const n = Number(v);
-      query = query.eq(def.col, Number.isFinite(n) ? n : v);
+      // id (bigint) için özel: sayıya çevir; diğer text eq için string
+      if (def.col === "id") {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0) query = query.eq(def.col, n);
+      } else {
+        const n = Number(v);
+        query = query.eq(def.col, Number.isFinite(n) ? n : v);
+      }
     }
   }
 

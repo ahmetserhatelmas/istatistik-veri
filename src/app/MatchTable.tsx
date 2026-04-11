@@ -130,12 +130,18 @@ export default function MatchTable() {
   const [filters, setFilters] = useState(() => ({ ...EMPTY_TOP, ...lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP) }));
   const [applied, setApplied] = useState(() => ({ ...EMPTY_TOP, ...lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP) }));
 
-  // sütun bazlı filtreler
+  // sütun bazlı filtreler — display (her tuşta) vs committed (Enter ile)
   const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
+  const [colFiltersCommitted, setColFiltersCommitted] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
+
+  function commitColFilters(next: Record<string,string>) {
+    setColFiltersCommitted(next);
+    lsSet(LS_COL_FILT, next);
+    setPage(1);
+  }
 
   // localStorage otomatik kaydet
   useEffect(() => { lsSet(LS_VISIBLE,  Array.from(visibleIds)); }, [visibleIds]);
-  useEffect(() => { lsSet(LS_COL_FILT, colFilters); },             [colFilters]);
   useEffect(() => { lsSet(LS_TOP_FILT, filters); },                [filters]);
 
   const visibleCols  = mergedCols.filter((c) => visibleIds.has(c.id));
@@ -145,23 +151,19 @@ export default function MatchTable() {
   // DB sütunları → server filtresi | raw_data → client filtresi
   const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
   const rawColFilters = Object.fromEntries(
-    Object.entries(colFilters).filter(([id]) => !DB_COL_IDS.has(id))
+    Object.entries(colFiltersCommitted).filter(([id]) => !DB_COL_IDS.has(id))
   );
   const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
 
-  // Debounce: dbCol filtreleri 400ms sonra server fetch'e yansıt
+  // dbCol filtreleri değişince server fetch
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
-      Object.entries(colFilters).filter(([id, v]) => DB_COL_IDS.has(id) && v.trim())
+      Object.entries(colFiltersCommitted).filter(([id, v]) => DB_COL_IDS.has(id) && v.trim())
     );
-    const timer = setTimeout(() => {
-      setDbColFiltersApplied(dbPart);
-      setPage(1);
-    }, 400);
-    return () => clearTimeout(timer);
+    setDbColFiltersApplied(dbPart);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colFilters]);
+  }, [colFiltersCommitted]);
   const colW         = (c: ColDef) => c.width ?? 60;
 
   // veri çek
@@ -228,7 +230,9 @@ export default function MatchTable() {
   }
 
   function clearFilters() {
-    setFilters(EMPTY_TOP); setApplied(EMPTY_TOP); setColFilters({}); setPage(1);
+    setFilters(EMPTY_TOP); setApplied(EMPTY_TOP);
+    setColFilters({}); setColFiltersCommitted({});
+    setPage(1);
     lsSet(LS_TOP_FILT, EMPTY_TOP); lsSet(LS_COL_FILT, {});
   }
 
@@ -254,7 +258,7 @@ export default function MatchTable() {
               </span>
             )}
             {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
-            {Object.values(colFilters).some(Boolean) && !loading && <span className="text-amber-400"> · {filteredRows.length} eşleşti</span>}
+            {Object.values(colFiltersCommitted).some(Boolean) && !loading && <span className="text-amber-400"> · {filteredRows.length} eşleşti</span>}
           </span>
 
           {/* Üst filtreler */}
@@ -418,9 +422,21 @@ export default function MatchTable() {
                   <input
                     value={colFilters[c.id] ?? ""}
                     onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
-                    placeholder="ara…"
-                    title="Yaz: içerir | *5?6*: wildcard | 4.9+3.2: VEYA"
-                    className="w-full bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[10px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const next = { ...colFilters, [c.id]: (e.target as HTMLInputElement).value };
+                        commitColFilters(next);
+                      } else if (e.key === "Escape") {
+                        const next = { ...colFilters, [c.id]: "" };
+                        setColFilters(next);
+                        commitColFilters(next);
+                      }
+                    }}
+                    placeholder="ara… (Enter)"
+                    title="Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
+                    className={`w-full bg-gray-900 border rounded px-1 py-0.5 text-[10px] text-gray-300 placeholder-gray-600 focus:outline-none focus:border-blue-500 ${
+                      colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
+                    }`}
                   />
                 </th>
               ))}
@@ -455,7 +471,7 @@ export default function MatchTable() {
       <div className="flex-none flex items-center justify-between px-4 py-2 border-t border-gray-800 bg-gray-900/60 text-xs text-gray-400">
         <span>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
-          {Object.values(colFilters).some(Boolean) && ` · filtreli: ${filteredRows.length}`}
+          {Object.values(colFiltersCommitted).some(Boolean) && ` · filtreli: ${filteredRows.length}`}
         </span>
         <div className="flex gap-1.5">
           {[
