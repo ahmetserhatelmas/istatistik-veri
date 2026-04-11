@@ -68,9 +68,17 @@ export async function GET(req: NextRequest) {
     .from("matches")
     .select(DB_COLS.join(","), { count: "exact" });
 
-  // ── Üst filtreler (eski) ──────────────────────────────────────────────────
-  if (sp.get("tarih_from")) query = query.gte("tarih", sp.get("tarih_from")!);
-  if (sp.get("tarih_to"))   query = query.lte("tarih", sp.get("tarih_to")!);
+  // ── Üst filtreler ────────────────────────────────────────────────────────────
+  const tarihFrom = sp.get("tarih_from") || "";
+  const tarihTo   = sp.get("tarih_to")   || "";
+  // Tek tarih girilmişse o günü tam göster (from = to)
+  if (tarihFrom && tarihTo) {
+    query = query.gte("tarih", tarihFrom).lte("tarih", tarihTo);
+  } else if (tarihFrom) {
+    query = query.gte("tarih", tarihFrom).lte("tarih", tarihFrom);
+  } else if (tarihTo) {
+    query = query.lte("tarih", tarihTo);
+  }
   if (sp.get("lig"))        query = query.ilike("lig_adi", `%${sp.get("lig")}%`);
   if (sp.get("alt_lig"))    query = query.ilike("alt_lig_adi", `%${sp.get("alt_lig")}%`);
   if (sp.get("takim")) {
