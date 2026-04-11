@@ -42,7 +42,7 @@ export const ALL_COLS: ColDef[] = [
   // ── Temel ──────────────────────────────────────────────────────────────────
   { id: "id",       label: "Maç Kodu", key: "id",        dbCol: true, group: "Temel", width: 90 },
   { id: "tarih",    label: "Tarih",    key: "tarih",      dbCol: true, group: "Temel", width: 96 },
-  { id: "gun",      label: "Gün",      key: "TARIH_TR_GUNLU", group: "Temel", width: 72 },
+  { id: "gun",      label: "Gün",      key: "TARIH_TR_GUNLU", group: "Temel", width: 88 },
   { id: "saat",     label: "Saat",     key: "saat",       dbCol: true, group: "Temel", width: 56 },
   { id: "lig_kodu", label: "Lig Kodu", key: "lig_kodu",   dbCol: true, group: "Temel", width: 80 },
   { id: "lig_adi",  label: "Lig Adı",  key: "lig_adi",    dbCol: true, group: "Temel", width: 150 },

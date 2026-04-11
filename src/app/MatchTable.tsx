@@ -49,11 +49,29 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
   );
 }
 
+const GUN_FMT = new Intl.DateTimeFormat("tr-TR", { weekday: "long" });
+
 function cellVal(row: Match, col: ColDef): string {
   const raw = row[col.key] ?? null;
   if (raw == null) return "";
   if (col.id === "saat") return String(raw).slice(0, 5);
   if (col.id === "tarih") return String(raw).slice(0, 10);
+  if (col.id === "gun") {
+    // tarih alanından gün adını türet (Pazartesi, Salı, …)
+    const tarih = String(row["tarih"] ?? "");
+    if (!tarih) return "";
+    try {
+      // "DD.MM.YYYY" veya "YYYY-MM-DD" her iki format
+      let d: Date;
+      if (/^\d{2}\.\d{2}\.\d{4}/.test(tarih)) {
+        const [day, mon, year] = tarih.split(".");
+        d = new Date(`${year}-${mon}-${day}`);
+      } else {
+        d = new Date(tarih.slice(0, 10));
+      }
+      return isNaN(d.getTime()) ? "" : GUN_FMT.format(d);
+    } catch { return ""; }
+  }
   return String(raw);
 }
 
