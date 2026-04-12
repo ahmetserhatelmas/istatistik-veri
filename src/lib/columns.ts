@@ -39,47 +39,50 @@ function buildMaçSkoruColumns(): ColDef[] {
 }
 
 export const ALL_COLS: ColDef[] = [
-  // ── Temel ──────────────────────────────────────────────────────────────────
-  { id: "id",       label: "Maç Kodu", key: "id",        dbCol: true, group: "Temel", width: 90 },
-  { id: "tarih",    label: "Tarih",    key: "tarih",      dbCol: true, group: "Temel", width: 96 },
-  { id: "gun",      label: "Gün",      key: "TARIH_TR_GUNLU", group: "Temel", width: 88 },
-  { id: "saat",     label: "Saat",     key: "saat",       dbCol: true, group: "Temel", width: 56 },
-  { id: "lig_kodu", label: "Lig Kodu", key: "lig_kodu",   dbCol: true, group: "Temel", width: 80 },
-  { id: "lig_adi",  label: "Lig Adı",  key: "lig_adi",    dbCol: true, group: "Temel", width: 150 },
-  { id: "lig_id",   label: "Lig ID",   key: "lig_id",     dbCol: true, group: "Temel", width: 72 },
-  { id: "alt_lig",  label: "Alt Lig",  key: "alt_lig_adi",dbCol: true, group: "Temel", width: 130 },
-  { id: "alt_lig_id", label: "Alt Lig ID", key: "alt_lig_id", dbCol: true, group: "Temel", width: 80 },
-  { id: "sezon",    label: "Sezon",    key: "sezon_adi",  dbCol: true, group: "Temel", width: 90 },
-  { id: "sezon_id", label: "Sezon ID", key: "sezon_id",   dbCol: true, group: "Temel", width: 72 },
-  { id: "mbs",      label: "S4",       key: "mac_suffix4",dbCol: true, group: "Temel", width: 60 },
-  { id: "t1",       label: "Ev Sahibi",key: "t1",         dbCol: true, group: "Temel", width: 150 },
-  { id: "t2",       label: "Deplasman",key: "t2",         dbCol: true, group: "Temel", width: 150 },
-  { id: "kod_ms",   label: "MS Kod",   key: "kod_ms",     dbCol: true, group: "Temel", width: 72 },
-  { id: "kod_cs",   label: "ÇŞ Kod",   key: "kod_cs",     dbCol: true, group: "Temel", width: 72 },
-  { id: "kod_iy",   label: "IY Kod",   key: "kod_iy",     dbCol: true, group: "Temel", width: 72 },
-  { id: "kod_au",   label: "A/Ü Kod",  key: "kod_au",     dbCol: true, group: "Temel", width: 72 },
-  { id: "sport_turu", label: "Spor",   key: "sport_turu", dbCol: true, group: "Temel", width: 80 },
-  { id: "bookmaker_id", label: "Bookmaker ID", key: "bookmaker_id", dbCol: true, group: "Temel", width: 96 },
+  // ── Tarih ──────────────────────────────────────────────────────────────────
+  { id: "tarih",    label: "Tarih",    key: "tarih",       dbCol: true, group: "Tarih", width: 96 },
+  { id: "gun",      label: "Gün",      key: "TARIH_TR_GUNLU",           group: "Tarih", width: 88 },
+  { id: "saat",     label: "Saat",     key: "saat",        dbCol: true, group: "Tarih", width: 56 },
 
-  // ── Maç Skoru ──────────────────────────────────────────────────────────────
+  // ── Lig Bilgisi ────────────────────────────────────────────────────────────
+  { id: "lig_kodu", label: "Lig Kodu", key: "lig_kodu",    dbCol: true, group: "Lig Bilgisi", width: 80 },
+  { id: "lig_adi",  label: "Lig Adı",  key: "lig_adi",     dbCol: true, group: "Lig Bilgisi", width: 150 },
+  { id: "lig_id",   label: "Lig ID",   key: "lig_id",      dbCol: true, group: "Lig Bilgisi", width: 60 },
+  { id: "alt_lig",  label: "Alt Lig",  key: "alt_lig_adi", dbCol: true, group: "Lig Bilgisi", width: 130 },
+  { id: "alt_lig_id", label: "Alt Lig ID", key: "alt_lig_id", dbCol: true, group: "Lig Bilgisi", width: 72 },
+  { id: "sezon",    label: "Sezon Adı",key: "sezon_adi",   dbCol: true, group: "Lig Bilgisi", width: 90 },
+  { id: "sezon_id", label: "Sezon ID", key: "sezon_id",    dbCol: true, group: "Lig Bilgisi", width: 60 },
+
+  // ── Maç Kodu ve MS Kodu ────────────────────────────────────────────────────
+  { id: "id",       label: "Maç Kodu",  key: "id",         dbCol: true, group: "Maç Kodu ve MS Kodu", width: 90 },
+  { id: "mbs",      label: "MKT",       key: "mac_suffix4",dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
+  { id: "kod_ms",   label: "MS Kodu",   key: "kod_ms",     dbCol: true, group: "Maç Kodu ve MS Kodu", width: 72 },
+  { id: "suffix3",  label: "MsMKT",     key: "mac_suffix3",dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
+
+  // ── MBS ────────────────────────────────────────────────────────────────────
+  { id: "suffix4",  label: "MBS",       key: "mac_suffix4",dbCol: true, group: "MBS", width: 56 },
+
+  // ── Takımlar ───────────────────────────────────────────────────────────────
+  { id: "t1",  label: "Ev Sahibi", key: "t1",  dbCol: true, group: "Takımlar", width: 150 },
+  { id: "t1i", label: "T1 ID",     key: "t1i", dbCol: true, group: "Takımlar", width: 60 },
+  { id: "t2",  label: "Deplasman", key: "t2",  dbCol: true, group: "Takımlar", width: 150 },
+  { id: "t2i", label: "T2 ID",     key: "t2i", dbCol: true, group: "Takımlar", width: 60 },
+
+  // ── Skor ───────────────────────────────────────────────────────────────────
   { id: "sonuc_iy", label: "IY",  key: "sonuc_iy", dbCol: true, group: "Skor", width: 60 },
   { id: "sonuc_ms", label: "MS",  key: "sonuc_ms", dbCol: true, group: "Skor", width: 60 },
-  { id: "ft1", label: "FT1", key: "ft1", dbCol: true, group: "Skor", width: 48 },
-  { id: "ft2", label: "FT2", key: "ft2", dbCol: true, group: "Skor", width: 48 },
-  { id: "ht1", label: "HT1", key: "ht1", dbCol: true, group: "Skor", width: 48 },
-  { id: "ht2", label: "HT2", key: "ht2", dbCol: true, group: "Skor", width: 48 },
 
   // ── Maç Sonucu ─────────────────────────────────────────────────────────────
-  { id: "ms1", label: "MS1", key: "MS1", group: "Maç Sonucu", width: 60 },
-  { id: "msx", label: "MSX", key: "MSX", group: "Maç Sonucu", width: 60 },
-  { id: "ms2", label: "MS2", key: "MS2", group: "Maç Sonucu", width: 60 },
+  { id: "ms1", label: "1",   key: "MS1", group: "Maç Sonucu", width: 60 },
+  { id: "msx", label: "X",   key: "MSX", group: "Maç Sonucu", width: 60 },
+  { id: "ms2", label: "2",   key: "MS2", group: "Maç Sonucu", width: 60 },
 
-  // ── Yarı Sonucu ────────────────────────────────────────────────────────────
+  // ── OKBT (IY Sonucu) ───────────────────────────────────────────────────────
   { id: "iy1", label: "IY1", key: "IY1", group: "OKBT", width: 60 },
   { id: "iyx", label: "IYX", key: "IYX", group: "OKBT", width: 60 },
   { id: "iy2", label: "IY2", key: "IY2", group: "OKBT", width: 60 },
 
-  // ── İlk Yarı Maç Sonucu ────────────────────────────────────────────────────
+  // ── Durumlar (IY/MS kombinasyonu) ──────────────────────────────────────────
   { id: "iyms11", label: "1/1", key: "IYMS11", group: "Durumlar", width: 56 },
   { id: "iyms1x", label: "1/X", key: "IYMS1X", group: "Durumlar", width: 56 },
   { id: "iyms12", label: "1/2", key: "IYMS12", group: "Durumlar", width: 56 },
@@ -98,13 +101,13 @@ export const ALL_COLS: ColDef[] = [
   { id: "tek",  label: "TEK",  key: "KTCT", group: "Tek/Çift", width: 60 },
   { id: "cift", label: "ÇİFT", key: "KTCC", group: "Tek/Çift", width: 60 },
 
-  // ── Toplam Gol Sayısı ──────────────────────────────────────────────────────
+  // ── Toplam Gol ────────────────────────────────────────────────────────────
   { id: "tg01", label: "0-1", key: "TG01", group: "Top.Gol", width: 56 },
   { id: "tg23", label: "2-3", key: "TG23", group: "Top.Gol", width: 56 },
   { id: "tg45", label: "4-5", key: "TG45", group: "Top.Gol", width: 56 },
   { id: "tg6",  label: "6+",  key: "TG6",  group: "Top.Gol", width: 56 },
 
-  // ── Alt Üst ────────────────────────────────────────────────────────────────
+  // ── Alt/Üst ───────────────────────────────────────────────────────────────
   { id: "a05", label: "0.5A", key: "A05", group: "Alt/Üst", width: 56 },
   { id: "u05", label: "0.5Ü", key: "U05", group: "Alt/Üst", width: 56 },
   { id: "a15", label: "1.5A", key: "A15", group: "Alt/Üst", width: 56 },
@@ -118,7 +121,7 @@ export const ALL_COLS: ColDef[] = [
   { id: "a55", label: "5.5A", key: "A55", group: "Alt/Üst", width: 56 },
   { id: "u55", label: "5.5Ü", key: "U55", group: "Alt/Üst", width: 56 },
 
-  // ── IY Alt Üst ─────────────────────────────────────────────────────────────
+  // ── IY Alt/Üst ────────────────────────────────────────────────────────────
   { id: "iya05", label: "IY 0.5A", key: "IYA05", group: "IY A/Ü", width: 64 },
   { id: "iyu05", label: "IY 0.5Ü", key: "IYU05", group: "IY A/Ü", width: 64 },
   { id: "iya15", label: "IY 1.5A", key: "IYA15", group: "IY A/Ü", width: 64 },
@@ -126,7 +129,7 @@ export const ALL_COLS: ColDef[] = [
   { id: "iya25", label: "IY 2.5A", key: "IYA25", group: "IY A/Ü", width: 64 },
   { id: "iyu25", label: "IY 2.5Ü", key: "IYU25", group: "IY A/Ü", width: 64 },
 
-  // ── Ev Alt Üst ─────────────────────────────────────────────────────────────
+  // ── Ev Alt/Üst ────────────────────────────────────────────────────────────
   { id: "eaua05", label: "E 0.5A", key: "EAUA05", group: "Ev A/Ü", width: 60 },
   { id: "eauu05", label: "E 0.5Ü", key: "EAUU05", group: "Ev A/Ü", width: 60 },
   { id: "eaua15", label: "E 1.5A", key: "EAUA15", group: "Ev A/Ü", width: 60 },
@@ -134,7 +137,7 @@ export const ALL_COLS: ColDef[] = [
   { id: "eaua25", label: "E 2.5A", key: "EAUA25", group: "Ev A/Ü", width: 60 },
   { id: "eauu25", label: "E 2.5Ü", key: "EAUU25", group: "Ev A/Ü", width: 60 },
 
-  // ── Deplasman Alt Üst ──────────────────────────────────────────────────────
+  // ── Dep Alt/Üst ───────────────────────────────────────────────────────────
   { id: "daua05", label: "D 0.5A", key: "DAUA05", group: "Dep A/Ü", width: 60 },
   { id: "dauu05", label: "D 0.5Ü", key: "DAUU05", group: "Dep A/Ü", width: 60 },
   { id: "daua15", label: "D 1.5A", key: "DAUA15", group: "Dep A/Ü", width: 60 },
@@ -142,7 +145,7 @@ export const ALL_COLS: ColDef[] = [
   { id: "daua25", label: "D 2.5A", key: "DAUA25", group: "Dep A/Ü", width: 60 },
   { id: "dauu25", label: "D 2.5Ü", key: "DAUU25", group: "Dep A/Ü", width: 60 },
 
-  // ── MS + Alt Üst ───────────────────────────────────────────────────────────
+  // ── MS + Alt/Üst ──────────────────────────────────────────────────────────
   { id: "msau15_1a", label: "MS1&1.5A", key: "MSAU15_1A", group: "MS A/Ü", width: 68 },
   { id: "msau15_1u", label: "MS1&1.5Ü", key: "MSAU15_1U", group: "MS A/Ü", width: 68 },
   { id: "msau15_xa", label: "MSX&1.5A", key: "MSAU15_XA", group: "MS A/Ü", width: 68 },
@@ -168,28 +171,28 @@ export const ALL_COLS: ColDef[] = [
   { id: "msau45_2a", label: "MS2&4.5A", key: "MSAU45_2A", group: "MS A/Ü", width: 68 },
   { id: "msau45_2u", label: "MS2&4.5Ü", key: "MSAU45_2U", group: "MS A/Ü", width: 68 },
 
-  // ── Çift Şans ──────────────────────────────────────────────────────────────
-  { id: "iy_cs1",  label: "İYÇŞ1", key: "ECK1Y1",  group: "Çift Şans", width: 60 },
-  { id: "iy_csx",  label: "İYÇŞX", key: "ECK1YX",  group: "Çift Şans", width: 60 },
-  { id: "iy_cs2",  label: "İYÇŞ2", key: "ECK1Y2",  group: "Çift Şans", width: 60 },
-  { id: "ms_cs1x", label: "MSÇŞ1", key: "CS1X",    group: "Çift Şans", width: 60 },
-  { id: "ms_cs12", label: "MSÇŞX", key: "CS12",    group: "Çift Şans", width: 60 },
-  { id: "ms_csx2", label: "MSÇŞ2", key: "CSX2",    group: "Çift Şans", width: 60 },
+  // ── Çift Şans ─────────────────────────────────────────────────────────────
+  { id: "iy_cs1",  label: "İYÇŞ1", key: "ECK1Y1", group: "Çift Şans", width: 60 },
+  { id: "iy_csx",  label: "İYÇŞX", key: "ECK1YX", group: "Çift Şans", width: 60 },
+  { id: "iy_cs2",  label: "İYÇŞ2", key: "ECK1Y2", group: "Çift Şans", width: 60 },
+  { id: "ms_cs1x", label: "MSÇŞ1", key: "CS1X",   group: "Çift Şans", width: 60 },
+  { id: "ms_cs12", label: "MSÇŞX", key: "CS12",   group: "Çift Şans", width: 60 },
+  { id: "ms_csx2", label: "MSÇŞ2", key: "CSX2",   group: "Çift Şans", width: 60 },
 
-  // ── İlk Gol ────────────────────────────────────────────────────────────────
+  // ── İlk Gol ───────────────────────────────────────────────────────────────
   { id: "ig1", label: "İlk G.1", key: "IG1", group: "İlk Gol", width: 64 },
   { id: "igo", label: "İlk G.Y", key: "IGO", group: "İlk Gol", width: 64 },
   { id: "ig2", label: "İlk G.2", key: "IG2", group: "İlk Gol", width: 64 },
 
-  // ── Daha Çok Gol - Yarı ────────────────────────────────────────────────────
+  // ── Daha Çok Gol Yarısı ───────────────────────────────────────────────────
   { id: "ikiys1", label: "DGY-1", key: "IKIYS1", group: "Daha Çok Gol Y.", width: 60 },
   { id: "ikiysx", label: "DGY-E", key: "IKIYSX", group: "Daha Çok Gol Y.", width: 60 },
   { id: "ikiys2", label: "DGY-2", key: "IKIYS2", group: "Daha Çok Gol Y.", width: 60 },
 
-  // ── Maç Skoru (0-0 … 9-9 + Diğer) ──────────────────────────────────────────
+  // ── Maç Skoru (0-0 … 9-9 + Diğer) ────────────────────────────────────────
   ...buildMaçSkoruColumns(),
 
-  // ── İlk Yarı Skoru ─────────────────────────────────────────────────────────
+  // ── IY Skoru ──────────────────────────────────────────────────────────────
   { id: "h1ys_00", label: "IY 0-0", key: "H1YS_1_1",  group: "IY Skoru", width: 60 },
   { id: "h1ys_01", label: "IY 0-1", key: "H1YS_2_1",  group: "IY Skoru", width: 60 },
   { id: "h1ys_10", label: "IY 1-0", key: "H1YS_1_2",  group: "IY Skoru", width: 60 },
@@ -200,14 +203,13 @@ export const ALL_COLS: ColDef[] = [
   { id: "h1ys_22", label: "IY 2-2", key: "H1YS_2_3",  group: "IY Skoru", width: 60 },
   { id: "h1ys_dg", label: "IY Diğ", key: "H1YS_1_13", group: "IY Skoru", width: 60 },
 
-  // ── Hakem / Diğer ──────────────────────────────────────────────────────────
-  { id: "hakem",       label: "Hakem",              key: "hakem",         dbCol: true, group: "Diğer", width: 130 },
-  { id: "t1_antrenor", label: "Ev teknik direktör", key: "t1_antrenor",   dbCol: true, group: "Diğer", width: 140 },
-  { id: "t2_antrenor", label: "Dep teknik direktör",key: "t2_antrenor",   dbCol: true, group: "Diğer", width: 140 },
-  { id: "t1i",         label: "Ev takım ID",        key: "t1i",           dbCol: true, group: "Diğer", width: 72 },
-  { id: "t2i",         label: "Dep takım ID",       key: "t2i",           dbCol: true, group: "Diğer", width: 72 },
-  { id: "suffix4",     label: "S4",                 key: "mac_suffix4",   dbCol: true, group: "Diğer", width: 52 },
-  { id: "suffix3",     label: "S3",                 key: "mac_suffix3",   dbCol: true, group: "Diğer", width: 52 },
+  // ── Diğer ─────────────────────────────────────────────────────────────────
+  { id: "hakem",       label: "Hakem",               key: "hakem",       dbCol: true, group: "Diğer", width: 130 },
+  { id: "t1_antrenor", label: "Ev teknik direktör",  key: "t1_antrenor", dbCol: true, group: "Diğer", width: 140 },
+  { id: "t2_antrenor", label: "Dep teknik direktör", key: "t2_antrenor", dbCol: true, group: "Diğer", width: 140 },
+  { id: "kod_cs",  label: "ÇŞ Kod",  key: "kod_cs",  dbCol: true, group: "Diğer", width: 72 },
+  { id: "kod_iy",  label: "IY Kod",  key: "kod_iy",  dbCol: true, group: "Diğer", width: 72 },
+  { id: "kod_au",  label: "A/Ü Kod", key: "kod_au",  dbCol: true, group: "Diğer", width: 72 },
 ];
 
 /** API / DB alan adlarını karşılaştırmak (T1ANTRENOR ↔ t1_antrenor) */
@@ -278,37 +280,39 @@ export function mergeAllCols(rawKeysFromDb: string[]): ColDef[] {
 
 /** Grup ismine göre renk */
 export const GROUP_COLORS: Record<string, string> = {
-  "Temel":            "bg-slate-300",
-  "Skor":             "bg-yellow-200",
-  "Maç Sonucu":       "bg-blue-200",
-  "Yarı Son.":        "bg-indigo-200",
-  "OKBT":             "bg-indigo-200",
-  "IY MS":            "bg-violet-200",
-  "Durumlar":         "bg-violet-200",
-  "KG":               "bg-pink-200",
-  "Tek/Çift":         "bg-rose-200",
-  "Top.Gol":          "bg-orange-200",
-  "Alt/Üst":          "bg-green-200",
-  "IY A/Ü":           "bg-teal-200",
-  "Ev A/Ü":           "bg-cyan-200",
-  "Dep A/Ü":          "bg-sky-200",
-  "MS A/Ü":           "bg-lime-200",
-  "Çift Şans":        "bg-emerald-200",
-  "İlk Gol":          "bg-amber-200",
-  "Daha Çok Gol Y.":  "bg-red-200",
-  "Maç Skoru":        "bg-fuchsia-200",
-  "IY Skoru":         "bg-purple-200",
-  "Diğer":            "bg-slate-200",
-  [RAW_GROUP]:        "bg-zinc-200",
+  "Tarih":                  "bg-slate-300",
+  "Lig Bilgisi":            "bg-yellow-200",
+  "Maç Kodu ve MS Kodu":    "bg-blue-200",
+  "MBS":                    "bg-indigo-200",
+  "Takımlar":               "bg-orange-200",
+  "Skor":                   "bg-green-200",
+  "Maç Sonucu":             "bg-blue-200",
+  "OKBT":                   "bg-indigo-200",
+  "Durumlar":               "bg-violet-200",
+  "KG":                     "bg-pink-200",
+  "Tek/Çift":               "bg-rose-200",
+  "Top.Gol":                "bg-orange-200",
+  "Alt/Üst":                "bg-green-200",
+  "IY A/Ü":                 "bg-teal-200",
+  "Ev A/Ü":                 "bg-cyan-200",
+  "Dep A/Ü":                "bg-sky-200",
+  "MS A/Ü":                 "bg-lime-200",
+  "Çift Şans":              "bg-emerald-200",
+  "İlk Gol":                "bg-amber-200",
+  "Daha Çok Gol Y.":        "bg-red-200",
+  "Maç Skoru":              "bg-fuchsia-200",
+  "IY Skoru":               "bg-purple-200",
+  "Diğer":                  "bg-slate-200",
+  [RAW_GROUP]:              "bg-zinc-200",
 };
 
 /** Varsayılan görünür sütunlar (sayfa ilk açılışında) */
 export const DEFAULT_VISIBLE = new Set<string>([
-  "id","tarih","gun","saat","lig_adi","t1","t2",
+  "tarih","gun","saat",
+  "lig_kodu","lig_adi","lig_id","alt_lig","alt_lig_id","sezon","sezon_id",
+  "id","mbs","kod_ms","suffix3",
+  "suffix4",
+  "t1","t1i","t2","t2i",
   "sonuc_iy","sonuc_ms",
   "ms1","msx","ms2",
-  "iy1","iyx","iy2",
-  "kg_var","kg_yok",
-  "a25","u25",
-  "hakem","suffix4",
 ]);

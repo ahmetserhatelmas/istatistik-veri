@@ -51,17 +51,26 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
 
 const GUN_FMT = new Intl.DateTimeFormat("tr-TR", { weekday: "long" });
 
+function digitSum(val: unknown): string {
+  const s = String(val ?? "").replace(/\D/g, "");
+  if (!s) return "";
+  return String(s.split("").reduce((acc, d) => acc + Number(d), 0));
+}
+
 function cellVal(row: Match, col: ColDef): string {
+  // Hesaplanan (computed) sütunlar
+  if (col.id === "mbs")     return digitSum(row["id"]);       // MKT = maç kodu basamak toplamı
+  if (col.id === "suffix3") return digitSum(row["kod_ms"]);   // MsMKT = MS kodu basamak toplamı
+  if (col.id === "suffix4") return digitSum(row["id"]);       // MBS standalone = aynı değer
+
   const raw = row[col.key] ?? null;
   if (raw == null) return "";
   if (col.id === "saat") return String(raw).slice(0, 5);
   if (col.id === "tarih") return String(raw).slice(0, 10);
   if (col.id === "gun") {
-    // tarih alanından gün adını türet (Pazartesi, Salı, …)
     const tarih = String(row["tarih"] ?? "");
     if (!tarih) return "";
     try {
-      // "DD.MM.YYYY" veya "YYYY-MM-DD" her iki format
       let d: Date;
       if (/^\d{2}\.\d{2}\.\d{4}/.test(tarih)) {
         const [day, mon, year] = tarih.split(".");
@@ -358,11 +367,16 @@ export default function MatchTable() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   const handleSort = (colId: string) => {
-    setSortCol((prev) => {
-      if (prev === colId) { setSortDir((d) => d === "asc" ? "desc" : "asc"); return colId; }
+    if (sortCol !== colId) {
+      setSortCol(colId);
       setSortDir("asc");
-      return colId;
-    });
+    } else if (sortDir === "asc") {
+      setSortDir("desc");
+    } else {
+      // desc'ten sonra sıralamayı kaldır
+      setSortCol(null);
+      setSortDir("asc");
+    }
   };
 
   const sortedRows = useMemo(() => {
