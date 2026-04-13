@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import {
+  normalizeTarihFilterInput,
+  splitTarihOrPatterns,
+  tarihPartToIlike,
+} from "@/lib/tarih-pattern";
 
 function flattenRawValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
@@ -44,7 +49,7 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   suffix4:  { col: "mac_suffix4",   mode: "ilike" },
   suffix3:  { col: "mac_suffix3",   mode: "ilike" },
   mbs:      { col: "mac_suffix4",   mode: "ilike" },
-  tarih:    { col: "tarih",         mode: "ilike" },
+  // tarih: cf_tarih ayrı işlenir (tarih_arama + * ? joker / virgül-VEYA)
   saat:     { col: "saat",          mode: "ilike" },
   kod_ms:   { col: "kod_ms",        mode: "eq" },
   kod_cs:   { col: "kod_cs",        mode: "eq" },
@@ -92,6 +97,24 @@ export async function GET(req: NextRequest) {
   if (sp.get("suffix3"))   query = query.ilike("mac_suffix3", `%${sp.get("suffix3")}%`);
 
   // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
+  const cfTarihRaw = sp.get("cf_tarih")?.trim() ?? "";
+  if (cfTarihRaw) {
+    const normalized = normalizeTarihFilterInput(cfTarihRaw);
+    const parts = splitTarihOrPatterns(normalized);
+    if (parts.length === 1) {
+      query = query.ilike("tarih_arama", tarihPartToIlike(parts[0]!));
+    } else {
+      const orExpr = parts
+        .map((p) => {
+          const like = tarihPartToIlike(p);
+          const q = like.replace(/"/g, '""');
+          return `tarih_arama.ilike."${q}"`;
+        })
+        .join(",");
+      query = query.or(orExpr);
+    }
+  }
+
   for (const [paramKey, val] of sp.entries()) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
@@ -117,7 +140,20 @@ export async function GET(req: NextRequest) {
     .order("saat",  { ascending: false, nullsFirst: false })
     .range(offset, offset + limit - 1);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    const msg = error.message || "";
+    if (/tarih_arama/i.test(msg)) {
+      return NextResponse.json(
+        {
+          error:
+            "tarih_arama kolonu yok. sql/add-tarih-arama.sql dosyasını Supabase SQL Editor’da bir kez çalıştırın; böylece tarih joker filtreleri sayfalama ile doğru çalışır.",
+          detail: msg,
+        },
+        { status: 503 }
+      );
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   type RawRow = Record<string, unknown>;
   const rows = ((data as unknown) as RawRow[] || []).map((row: RawRow) => {
