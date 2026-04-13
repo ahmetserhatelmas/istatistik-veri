@@ -471,11 +471,12 @@ export default function MatchTable() {
     lsSet(LS_PRESETS, updated);
   }
 
-  function clearFilters() {
-    setFilters(EMPTY_TOP); setApplied(EMPTY_TOP);
-    setColFilters({}); setColFiltersCommitted({});
+  /** Tüm sütun filtre inputlarını temizle (görünür/gizli fark etmez) */
+  function clearColumnFiltersOnly() {
+    setColFilters({});
+    setColFiltersCommitted({});
+    lsSet(LS_COL_FILT, {});
     setPage(1);
-    lsSet(LS_TOP_FILT, EMPTY_TOP); lsSet(LS_COL_FILT, {});
   }
 
   return (
@@ -507,6 +508,13 @@ export default function MatchTable() {
                 <span className="font-semibold text-gray-900">{balance}</span>
               </span>
             )}
+            <button
+              type="button"
+              onClick={clearColumnFiltersOnly}
+              title="Tüm sütun filtrelerini sıfırlar (ara kutuları)"
+              className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
+              Sütunları temizle
+            </button>
             <button onClick={() => setShowColPanel((v) => !v)}
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               ☰ Sütunlar ({visibleIds.size})
