@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ALL_COLS, DEFAULT_VISIBLE, GROUP_COLORS, mergeAllCols, type ColDef } from "@/lib/columns";
+import { okbtBasamakHucreDegeri } from "@/lib/okbt-basamak-toplamlari";
 
 type Match = Record<string, unknown>;
 interface ApiResponse {
@@ -51,6 +52,19 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
 
 const GUN_FMT = new Intl.DateTimeFormat("tr-TR", { weekday: "long" });
 
+/** Tabloda gösterim: gün.ay.yıl (ISO YYYY-MM-DD veya DD.MM.YYYY giriş). */
+function formatTarihGünAyYıl(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^\d{2}\.\d{2}\.\d{4}/.test(s)) return s.slice(0, 10);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return `${d}.${mo}.${y}`;
+  }
+  return s.slice(0, 10);
+}
+
 function digitSum(val: unknown): string {
   const s = String(val ?? "").replace(/\D/g, "");
   if (!s) return "";
@@ -62,11 +76,16 @@ function cellVal(row: Match, col: ColDef): string {
   if (col.id === "mbs")     return digitSum(row["id"]);       // MKT = maç kodu basamak toplamı
   if (col.id === "suffix3") return digitSum(row["kod_ms"]);   // MsMKT = MS kodu basamak toplamı
   if (col.id === "suffix4") return digitSum(row["id"]);       // MBS standalone = aynı değer
+  if (col.id.startsWith("obktb_")) {
+    const i = Number(col.id.slice(6));
+    if (!Number.isInteger(i) || i < 0 || i > 14) return "";
+    return okbtBasamakHucreDegeri(row["kod_iy"], i);
+  }
 
   const raw = row[col.key] ?? null;
   if (raw == null) return "";
   if (col.id === "saat") return String(raw).slice(0, 5);
-  if (col.id === "tarih") return String(raw).slice(0, 10);
+  if (col.id === "tarih") return formatTarihGünAyYıl(raw);
   if (col.id === "gun") {
     const tarih = String(row["tarih"] ?? "");
     if (!tarih) return "";
@@ -85,7 +104,39 @@ function cellVal(row: Match, col: ColDef): string {
 }
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
-const ODDS_GROUPS = new Set(["Maç Sonucu","OKBT","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","Maç Skoru","IY Skoru"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","OKBT","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","IY Skoru"]);
+const RAW_API_GROUP = "Ham veri (API)";
+
+/** Maç kodu son 4 ile eşleştirilecek hücreler (oran merkezi: tüm oyun kodlarında son 4). */
+const KOD_SUFFIX_SKIP_COLS = new Set([
+  "tarih","gun","saat",
+  "lig_kodu","lig_adi","lig_id","alt_lig","alt_lig_id","sezon","sezon_id",
+  "t1","t1i","t2","t2i",
+  "sonuc_iy","sonuc_ms",
+  "hakem","t1_antrenor","t2_antrenor",
+  "mbs","suffix3","suffix4",
+]);
+
+function shouldScanColForKodSuffix(col: ColDef): boolean {
+  if (col.id.startsWith("obktb_")) return false;
+  if (KOD_SUFFIX_SKIP_COLS.has(col.id)) return false;
+  if (ODDS_GROUPS.has(col.group)) return true;
+  if (col.id === "id" || col.id === "kod_ms" || col.id === "kod_cs" || col.id === "kod_iy" || col.id === "kod_au") return true;
+  if (col.group === RAW_API_GROUP) return true;
+  return false;
+}
+
+/** Rakamlar üzerinden son N hane eşlemesi (5 haneli oyun kodu veya maç id). */
+function cellDigitsEndWith(val: string, suffix: string): boolean {
+  const d = val.replace(/\D/g, "");
+  return d.length >= suffix.length && d.endsWith(suffix);
+}
+
+function normalizeKodSon4(raw: string): string | null {
+  const d = raw.replace(/\D/g, "");
+  if (d.length < 4) return null;
+  return d.slice(-4);
+}
 
 /** Tamamlanmış bir maçta hangi hücre "tuttu" → green (MS bazlı) | orange (IY bazlı) | null */
 function computeMatchHit(col: ColDef, row: Match): "green" | "orange" | null {
@@ -239,16 +290,8 @@ function computeMatchHit(col: ColDef, row: Match): "green" | "orange" | null {
       return !known.some(([h,a]) => ht1 === h && ht2 === a) ? "orange" : null;
     }
 
-    // ── Maç Skoru (sk00–sk99 + skdig) ─────────────────────────────────────────
-    case "skdig": return hasFt && (ft1 > 9 || ft2 > 9) ? "green" : null;
-
-    default: {
-      if (!hasFt) return null;
-      if (col.id.startsWith("sk") && col.id !== "skdig") {
-        return col.id === `sk${ft1}${ft2}` && ft1 <= 9 && ft2 <= 9 ? "green" : null;
-      }
+    default:
       return null;
-    }
   }
 }
 
@@ -271,6 +314,7 @@ const LS_VISIBLE  = "om_visible_cols";
 const LS_COL_FILT = "om_col_filters";
 const LS_TOP_FILT = "om_top_filters";
 const LS_PRESETS  = "om_col_presets";
+const LS_KOD_SON4 = "om_kod_son4_vurgula";
 
 function lsGet<T>(key: string, fb: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fb; }
@@ -341,6 +385,10 @@ export default function MatchTable() {
   const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
   const [colFiltersCommitted, setColFiltersCommitted] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
 
+  /** Satır süzmeden yalnızca oyun kodu hücrelerinde son-4 vurgusu (oran merkezi davranışı). */
+  const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
+  useEffect(() => { lsSet(LS_KOD_SON4, kodSon4Highlight); }, [kodSon4Highlight]);
+
   function commitColFilters(next: Record<string,string>) {
     setColFiltersCommitted(next);
     lsSet(LS_COL_FILT, next);
@@ -407,6 +455,14 @@ export default function MatchTable() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colFiltersCommitted]);
   const colW         = (c: ColDef) => c.width ?? 60;
+
+  const kodSuffix4Active = useMemo(() => {
+    return (
+      normalizeKodSon4(applied.suffix4 ?? "") ??
+      normalizeKodSon4(dbColFiltersApplied.suffix4 ?? "") ??
+      normalizeKodSon4(kodSon4Highlight)
+    );
+  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSon4Highlight]);
 
   // veri çek
   const fetchMatches = useCallback(async () => {
@@ -498,7 +554,36 @@ export default function MatchTable() {
             )}
             {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
             {Object.values(colFiltersCommitted).some(Boolean) && !loading && <span className="text-amber-600"> · {filteredRows.length} eşleşti</span>}
+            {kodSuffix4Active && !loading && (
+              <span className="text-amber-800 whitespace-nowrap" title="Tüm oyun kodu sütunlarında son 4 rakam eşleşmesi vurgulanır">
+                · son 4: <span className="font-mono font-semibold">{kodSuffix4Active}</span>
+              </span>
+            )}
           </span>
+
+          <label className="flex items-center gap-1.5 text-[11px] text-gray-800 whitespace-nowrap shrink-0" title="Maç kodunun son 4 rakamı; tablodaki tüm oyun kodu hücrelerinde aynı soneki arar (oran merkezi). Sunucu filtresi değildir.">
+            <span className="hidden sm:inline">Oyun kodu son 4</span>
+            <span className="sm:hidden">Son 4</span>
+            <input
+              value={kodSon4Highlight}
+              onChange={(e) => setKodSon4Highlight(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setKodSon4Highlight("");
+              }}
+              placeholder="5754"
+              maxLength={16}
+              className="w-[4.5rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
+            />
+            {kodSon4Highlight.trim() ? (
+              <button
+                type="button"
+                onClick={() => setKodSon4Highlight("")}
+                className="text-gray-600 hover:text-gray-900 px-0.5"
+                title="Vurguyu kaldır">
+                ✕
+              </button>
+            ) : null}
+          </label>
 
           {/* Sütunlar butonu */}
           <div className="relative ml-auto flex items-center gap-3" ref={panelRef}>
@@ -686,8 +771,14 @@ export default function MatchTable() {
                   <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors">
                     {visibleCols.map((c) => {
                       const val = cellVal(m, c);
+                      const kodSonHit =
+                        !!kodSuffix4Active &&
+                        shouldScanColForKodSuffix(c) &&
+                        cellDigitsEndWith(val, kodSuffix4Active);
                       let cls: string;
-                      if (SCORE_COLS.has(c.id) && val) {
+                      if (kodSonHit) {
+                        cls = "bg-yellow-300/90 text-gray-900 font-semibold";
+                      } else if (SCORE_COLS.has(c.id) && val) {
                         cls = "text-green-700 font-semibold";
                       } else if (computeMatchHit(c, m)) {
                         cls = HIT_COLORS[hitIdx++ % 2];

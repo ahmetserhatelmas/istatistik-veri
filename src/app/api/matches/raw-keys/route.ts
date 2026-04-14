@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
+import { isRawKeyExcludedFromColumns } from "@/lib/columns";
 
 /** raw_data içinde geçen tüm alan adlarının birleşimi (örnek satırlardan; sütun paneli için) */
 const SAMPLE = 2500;
@@ -19,7 +20,9 @@ export async function GET() {
     for (const row of data ?? []) {
       const rd = row.raw_data as Record<string, unknown> | null;
       if (rd && typeof rd === "object" && !Array.isArray(rd)) {
-        for (const k of Object.keys(rd)) keys.add(k);
+        for (const k of Object.keys(rd)) {
+          if (!isRawKeyExcludedFromColumns(k)) keys.add(k);
+        }
       }
     }
 

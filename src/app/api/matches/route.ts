@@ -6,6 +6,9 @@ import {
   tarihPartToIlike,
 } from "@/lib/tarih-pattern";
 
+/** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
+export const maxDuration = 60;
+
 function flattenRawValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (typeof v === "object") return JSON.stringify(v);
@@ -63,15 +66,29 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
 };
 
 export async function GET(req: NextRequest) {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
+    return NextResponse.json(
+      { error: "Supabase ortam değişkenleri eksik (.env: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)." },
+      { status: 500 }
+    );
+  }
+
   const sp = req.nextUrl.searchParams;
   const page  = Math.max(1, Number(sp.get("page")  || 1));
   const limit = Math.min(100, Math.max(1, Number(sp.get("limit") || 100)));
   const offset = (page - 1) * limit;
 
+  const cfTarihRaw = sp.get("cf_tarih")?.trim() ?? "";
+  const tarihFiltParts = cfTarihRaw
+    ? splitTarihOrPatterns(normalizeTarihFilterInput(cfTarihRaw))
+    : [];
+  /** exact COUNT(*) + ILIKE '%…%' ~400k satırda 7–10s+ → zaman aşımı; planned yaklaşık sayım */
+  const countMode = tarihFiltParts.length > 0 ? ("planned" as const) : ("exact" as const);
+
   const supabase = createServiceClient();
   let query = supabase
     .from("matches")
-    .select(DB_COLS.join(","), { count: "exact" });
+    .select(DB_COLS.join(","), { count: countMode });
 
   // ── Üst filtreler ────────────────────────────────────────────────────────────
   const tarihFrom = sp.get("tarih_from") || "";
@@ -97,27 +114,24 @@ export async function GET(req: NextRequest) {
   if (sp.get("suffix3"))   query = query.ilike("mac_suffix3", `%${sp.get("suffix3")}%`);
 
   // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
-  const cfTarihRaw = sp.get("cf_tarih")?.trim() ?? "";
-  if (cfTarihRaw) {
-    const normalized = normalizeTarihFilterInput(cfTarihRaw);
-    const parts = splitTarihOrPatterns(normalized);
-    if (parts.length === 1) {
-      query = query.ilike("tarih_arama", tarihPartToIlike(parts[0]!));
-    } else {
-      const orExpr = parts
-        .map((p) => {
-          const like = tarihPartToIlike(p);
-          const q = like.replace(/"/g, '""');
-          return `tarih_arama.ilike."${q}"`;
-        })
-        .join(",");
-      query = query.or(orExpr);
-    }
+  if (tarihFiltParts.length === 1) {
+    query = query.ilike("tarih_arama", tarihPartToIlike(tarihFiltParts[0]!));
+  } else if (tarihFiltParts.length > 1) {
+    const orExpr = tarihFiltParts
+      .map((p) => {
+        const like = tarihPartToIlike(p);
+        const q = like.replace(/"/g, '""');
+        return `tarih_arama.ilike."${q}"`;
+      })
+      .join(",");
+    query = query.or(orExpr);
   }
+  /* tarihFiltParts.length === 0 ve cf_tarih dolu: sadece ayraç → filtre yok */
 
   for (const [paramKey, val] of sp.entries()) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
+    if (colId === "tarih") continue;
     const def = DB_COL_MAP[colId];
     if (!def) continue;
     const v = val.trim();
@@ -141,18 +155,24 @@ export async function GET(req: NextRequest) {
     .range(offset, offset + limit - 1);
 
   if (error) {
-    const msg = error.message || "";
-    if (/tarih_arama/i.test(msg)) {
+    const e = error as { message?: string; details?: string; hint?: string; code?: string };
+    const msg = [e.message, e.details, e.hint].filter(Boolean).join(" | ");
+    const missingTarihArama =
+      /tarih_arama/i.test(msg) ||
+      (e.code === "42703" && /tarih_arama|matches\./i.test(msg)) ||
+      /schema cache.*tarih_arama|Could not find.*tarih_arama/i.test(msg);
+    if (missingTarihArama) {
       return NextResponse.json(
         {
           error:
-            "tarih_arama kolonu yok. sql/add-tarih-arama.sql dosyasını Supabase SQL Editor’da bir kez çalıştırın; böylece tarih joker filtreleri sayfalama ile doğru çalışır.",
+            "tarih_arama kolonu yok veya API şemada görünmüyor. sql/add-tarih-arama.sql (+ gerekirse patch) çalıştırın; Supabase’te tabloyu yenileyin.",
           detail: msg,
+          code: e.code,
         },
         { status: 503 }
       );
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: e.message ?? "Bilinmeyen hata", detail: msg, code: e.code }, { status: 500 });
   }
 
   type RawRow = Record<string, unknown>;
@@ -166,11 +186,12 @@ export async function GET(req: NextRequest) {
     return flat;
   });
 
+  const total = count ?? 0;
   return NextResponse.json({
     data: rows,
     page,
     limit,
-    total: count,
-    totalPages: Math.ceil((count || 0) / limit),
+    total,
+    totalPages: Math.ceil(total / limit),
   });
 }

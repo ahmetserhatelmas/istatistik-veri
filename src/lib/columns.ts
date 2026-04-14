@@ -5,6 +5,8 @@
  * dbCol: true → raw_data yerine doğrudan matches sütununda
  * group: grup başlığı (renk/gruplama için)
  */
+import { OKBT_BASAMAK_GROUP, OKBT_BASAMAK_LABELS } from "./okbt-basamak-toplamlari";
+
 export interface ColDef {
   id: string;
   label: string;
@@ -14,28 +16,15 @@ export interface ColDef {
   width?: number; // px — varsayılan 60
 }
 
-/** Maç skoru (doğru skor) oranları: API `SK{ev}{dep}` — 0-0 … 9-9 + Diğer */
-function buildMaçSkoruColumns(): ColDef[] {
-  const cols: ColDef[] = [];
-  for (let ev = 0; ev <= 9; ev++) {
-    for (let dep = 0; dep <= 9; dep++) {
-      cols.push({
-        id: `sk${ev}${dep}`,
-        label: `${ev}-${dep}`,
-        key: `SK${ev}${dep}`,
-        group: "Maç Skoru",
-        width: 56,
-      });
-    }
-  }
-  cols.push({
-    id: "skdig",
-    label: "Diğer",
-    key: "SKDIGER",
-    group: "Maç Skoru",
-    width: 56,
-  });
-  return cols;
+/** IY Kodu (`kod_iy`) basamaklarından 15 toplam — OKBT / oran merkezi mantığı. */
+function buildOkbtBasamakCols(): ColDef[] {
+  return OKBT_BASAMAK_LABELS.map((label, i) => ({
+    id: `obktb_${i}`,
+    label,
+    key: `__obkt_basamak_${i}`,
+    group: OKBT_BASAMAK_GROUP,
+    width: 54,
+  }));
 }
 
 export const ALL_COLS: ColDef[] = [
@@ -81,6 +70,8 @@ export const ALL_COLS: ColDef[] = [
   { id: "iy1", label: "IY1", key: "IY1", group: "OKBT", width: 60 },
   { id: "iyx", label: "IYX", key: "IYX", group: "OKBT", width: 60 },
   { id: "iy2", label: "IY2", key: "IY2", group: "OKBT", width: 60 },
+
+  ...buildOkbtBasamakCols(),
 
   // ── Durumlar (IY/MS kombinasyonu) ──────────────────────────────────────────
   { id: "iyms11", label: "1/1", key: "IYMS11", group: "Durumlar", width: 56 },
@@ -189,9 +180,6 @@ export const ALL_COLS: ColDef[] = [
   { id: "ikiysx", label: "DGY-E", key: "IKIYSX", group: "Daha Çok Gol Y.", width: 60 },
   { id: "ikiys2", label: "DGY-2", key: "IKIYS2", group: "Daha Çok Gol Y.", width: 60 },
 
-  // ── Maç Skoru (0-0 … 9-9 + Diğer) ────────────────────────────────────────
-  ...buildMaçSkoruColumns(),
-
   // ── IY Skoru ──────────────────────────────────────────────────────────────
   { id: "h1ys_00", label: "IY 0-0", key: "H1YS_1_1",  group: "IY Skoru", width: 60 },
   { id: "h1ys_01", label: "IY 0-1", key: "H1YS_2_1",  group: "IY Skoru", width: 60 },
@@ -217,12 +205,118 @@ function normFieldKey(k: string): string {
   return k.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-/** ALL_COLS’ta zaten karşılığı varsa ham raw_data sütunu ekleme */
+/** ALL_COLS'ta zaten karşılığı varsa ham raw_data sütunu ekleme */
 export function isRawKeyCoveredByKnownCol(rawKey: string): boolean {
   const n = normFieldKey(rawKey);
   return ALL_COLS.some(
     (c) => c.key === rawKey || normFieldKey(c.key) === n
   );
+}
+
+/**
+ * Ham veri (raw_data) anahtarları — sütun panelinde ve tabloda gösterilmez.
+ *
+ * POLİTİKA: Yalnızca kullanıcının resimlerde gösterdiği tam kodlar veya
+ * çok kesin seri kalıpları. Geniş prefix (startsWith) kullanılmaz; fazla
+ * silmesin.
+ */
+
+/** Tam eşleşmeyle gizlenecek ham veri anahtarları (büyük/küçük harf yok sayılır). */
+const RAW_KEY_EXACT_EXCLUDE = new Set<string>([
+  // ─── 1. resim ───────────────────────────────────────────────────────────
+  "A65", "A75", "A85",
+  "AGG1", "AGG2",
+  // ─── 2. resim ───────────────────────────────────────────────────────────
+  "DCSOP1P", "DCSOP2P", "DCSOP3P", "DCSOP4P", "DCSOPE",
+  "DGYE", "DGYH", "DGYKOLMAZ", "DGYKOLUR",
+  "DIYDGATAMAZ", "DIYDGATAR",
+  // ─── 3. resim ───────────────────────────────────────────────────────────
+  // DURUMH: sadece bu ikisi; DURUMHMS* vs. durmalı
+  "DURUMH1YS_1", "DURUMH1YS_1X",
+  // DURUMHMS: yalnızca 15/16/17/25/26/27 ve _1x
+  "DURUMHMS15", "DURUMHMS16", "DURUMHMS17",
+  "DURUMHMS25", "DURUMHMS26", "DURUMHMS27",
+  "DURUMHMS_1X",
+  // FT/HT tek tek
+  "FT1", "FT2", "FTH1", "FTH2",
+  "HT1", "HT2",
+  "HTFT11", "HTFT12", "HTFT21", "HTFT22",
+  "HTH1", "HTH2",
+  "HMSX", "HMSH1", "HMSH2",
+  // ─── diğer ──────────────────────────────────────────────────────────────
+  "METOD2",
+  // KODAU tam eşleşmeler — sadece bunlar, KODAU35/45/55 ve KODAUD_* durmalı
+  "KODAU65", "KODAU75", "KODAU85",
+  // KODHMS (underscore'suz, tam sayı) — sadece 15-17 ve 25-27
+  "KODHMS15", "KODHMS16", "KODHMS17",
+  "KODHMS25", "KODHMS26", "KODHMS27",
+  // Yeni (resim 6)
+  "P4_1", "P4_2",
+  "U65", "U75", "U85",
+  "UFT1", "UFT2",
+  "UOE", "UOH",
+]);
+
+export function isRawKeyExcludedFromColumns(rawKey: string): boolean {
+  const U = rawKey.trim().toUpperCase();
+  if (!U) return true;
+  if (RAW_KEY_EXACT_EXCLUDE.has(U)) return true;
+
+  // ── H1YSH_* ve H1YS_[12]_* ──────────────────────────────────────────────
+  if (U.startsWith("H1YSH_")) return true;
+  if (/^H1YS_[12]_\d+$/.test(U)) return true;
+
+  // ── HMS seri kalıpları ───────────────────────────────────────────────────
+  if (/^HMS(15|16|17|25|26|27)_/.test(U)) return true;
+  if (/^HMSH_[12]_\d+$/.test(U)) return true;
+  if (/^HMS_[12]_\d+$/.test(U)) return true;
+
+  // ── KODHMS_ (underscore'lu): 3-9 ve 15-19 mavi; 1-2, 10-14, 21+ beyaz ──
+  {
+    const m = U.match(/^KODHMS_(\d+)$/);
+    if (m) {
+      const n = Number(m[1]);
+      if ((n >= 3 && n <= 9) || (n >= 15 && n <= 19)) return true;
+    }
+  }
+
+  // ── KODAU1Y_: 4-13 mavi; 1-3 beyaz ─────────────────────────────────────
+  {
+    const m = U.match(/^KODAU1Y_(\d+)$/);
+    if (m) {
+      const n = Number(m[1]);
+      if (n >= 4 && n <= 13) return true;
+    }
+  }
+
+  // ── KODAUE_: 5-13 mavi; 1-4 beyaz ──────────────────────────────────────
+  {
+    const m = U.match(/^KODAUE_(\d+)$/);
+    if (m) {
+      const n = Number(m[1]);
+      if (n >= 5 && n <= 13) return true;
+    }
+  }
+
+  // ── KODAU_: 5-19 mavi; 1-4 ve 20 beyaz ─────────────────────────────────
+  {
+    const m = U.match(/^KODAU_(\d+)$/);
+    if (m) {
+      const n = Number(m[1]);
+      if (n >= 5 && n <= 19) return true;
+    }
+  }
+
+  // ── AU serileri (KOD'suz) — tümü mavi ───────────────────────────────────
+  if (/^AU1Y_[AU]_\d+$/.test(U)) return true;
+  if (/^AUD_[AU]_\d+$/.test(U)) return true;
+  if (/^AUE_[AU]_\d+$/.test(U)) return true;
+  if (/^AU_[AU]_\d+$/.test(U)) return true;
+
+  // ── LIMIT_* — tümü mavi ─────────────────────────────────────────────────
+  if (U.startsWith("LIMIT_")) return true;
+
+  return false;
 }
 
 /** Oran API alan adı → daha okunaklı başlık (Ham veri grubu) */
@@ -254,12 +348,12 @@ function rawKeyToColId(k: string): string {
   return `raw_${safe}`;
 }
 
-/** raw_data’da olup ALL_COLS’ta olmayan her alan için sütun tanımı */
+/** raw_data'da olup ALL_COLS'ta olmayan her alan için sütun tanımı */
 export function extraRawColDefs(rawKeys: string[]): ColDef[] {
   const out: ColDef[] = [];
   const seen = new Set<string>();
   for (const k of rawKeys) {
-    if (!k || isRawKeyCoveredByKnownCol(k)) continue;
+    if (!k || isRawKeyCoveredByKnownCol(k) || isRawKeyExcludedFromColumns(k)) continue;
     const id = rawKeyToColId(k);
     if (seen.has(id)) continue;
     seen.add(id);
@@ -288,6 +382,7 @@ export const GROUP_COLORS: Record<string, string> = {
   "Skor":                   "bg-green-200",
   "Maç Sonucu":             "bg-blue-200",
   "OKBT":                   "bg-indigo-200",
+  [OKBT_BASAMAK_GROUP]:     "bg-indigo-100",
   "Durumlar":               "bg-violet-200",
   "KG":                     "bg-pink-200",
   "Tek/Çift":               "bg-rose-200",
@@ -300,7 +395,6 @@ export const GROUP_COLORS: Record<string, string> = {
   "Çift Şans":              "bg-emerald-200",
   "İlk Gol":                "bg-amber-200",
   "Daha Çok Gol Y.":        "bg-red-200",
-  "Maç Skoru":              "bg-fuchsia-200",
   "IY Skoru":               "bg-purple-200",
   "Diğer":                  "bg-slate-200",
   [RAW_GROUP]:              "bg-zinc-200",

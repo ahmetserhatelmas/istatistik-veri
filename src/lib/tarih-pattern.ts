@@ -1,6 +1,6 @@
 /**
  * Tarih sütunu filtreleri: * ve ? jokerleri + VEYA listesi (+ veya virgül).
- * Sunucuda `tarih_arama` (generated) kolonu üzerinde ILIKE ile kullanılır.
+ * Sunucuda `tarih_arama` (trigger ile doldurulan metin) üzerinde ILIKE ile kullanılır.
  */
 
 /** Joker içeren parça → tam satır ILIKE; düz metin → içerir (%…%). */
