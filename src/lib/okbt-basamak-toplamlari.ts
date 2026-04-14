@@ -24,11 +24,15 @@ export const OKBT_BASAMAK_LABELS = [
   "A+B+C+D+E",
 ] as const;
 
-/** IY kodundan A,B,C,D,E (0–9). */
+/** IY kodundan A,B,C,D,E (0–9).
+ *  Kod 5 rakamdan kısaysa eksik pozisyonlar (D, E) sıfır sayılır;
+ *  5'ten uzunsa son 5 rakam alınır. */
 export function parseIyKodBesBasamak(kodRaw: unknown): [number, number, number, number, number] | null {
   const digits = String(kodRaw ?? "").replace(/\D/g, "");
-  if (digits.length < 5) return null;
-  const d = digits.length > 5 ? digits.slice(-5) : digits;
+  if (digits.length < 1) return null;
+  // 5'ten uzunsa son 5 rakam; kısaysa SOLDAN sıfır doldurup 5'e tamamla (eksik basamaklar A, B… → 0)
+  // Örn: "48" → "00048" → A=0 B=0 C=0 D=4 E=8
+  const d = digits.length >= 5 ? digits.slice(-5) : digits.padStart(5, "0");
   const a = Number(d[0]);
   const b = Number(d[1]);
   const c = Number(d[2]);

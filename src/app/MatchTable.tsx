@@ -107,7 +107,54 @@ const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
 const ODDS_GROUPS = new Set(["Maç Sonucu","OKBT","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","IY Skoru"]);
 const RAW_API_GROUP = "Ham veri (API)";
 
-/** Maç kodu son 4 ile eşleştirilecek hücreler (oran merkezi: tüm oyun kodlarında son 4). */
+// ── Hane seçici (digit-position click) ───────────────────────────────────────
+/** Kod/oran sütunları: hücreye tıklayınca hangi rakam haneleri filtrelensin? */
+const DIGIT_CLICK_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
+
+function isDigitClickCol(col: ColDef): boolean {
+  return DIGIT_CLICK_COL_IDS.has(col.id) || ODDS_GROUPS.has(col.group) || col.group === RAW_API_GROUP;
+}
+
+/**
+ * Sütunun tipik değer şablonu: rakamlar '0', ayraçlar olduğu gibi.
+ * Widget bunu karaktere göre çizer: rakam → tıklanabilir kutu, diğerleri → ayraç etiketi.
+ * Örn. skor sütunu → "0-0", oran → "0.00", kod → "00000"
+ */
+function digitClickTemplate(col: ColDef): string {
+  if (col.id === "id") return "0000000";          // 7 haneli maç kodu
+  if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "00000"; // 5 haneli oyun kodu
+  if (col.id === "sonuc_iy" || col.id === "sonuc_ms") return "0-0";           // skor: X-Y
+  // Oran grupları: "0.00" (noktalı 3 rakam); Alt/Üst gibi bazıları "0.5" da olabilir
+  if (ODDS_GROUPS.has(col.group)) return "0.00";
+  return "00000"; // varsayılan
+}
+
+/**
+ * Seçili hane konumlarına göre wildcard pattern üretir.
+ * Val içindeki her karakter sırayla işlenir; rakam ise konumu sayılır.
+ * Seçili rakam pozisyonu (1-indexed, soldan) → rakam olduğu gibi kalır.
+ * Seçilmemiş rakam → "?" (tek karakter joker).
+ * Rakam olmayan karakterler (nokta, tire vb.) olduğu gibi kalır.
+ * Örn. "24895" + pos=[2,3] → "?48??"
+ * Örn. "2.35"  + pos=[2,3] → "?.35"
+ */
+function buildDigitPosPattern(val: string, positions: number[]): string {
+  if (!positions.length) return val;
+  const posSet = new Set(positions);
+  let digitIdx = 0;
+  let result = "";
+  for (const ch of val) {
+    if (/\d/.test(ch)) {
+      digitIdx++;
+      result += posSet.has(digitIdx) ? ch : "?";
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
+/** Oyun kodu / oran hücreleri — sonek vurgusu (son3–5 hane; kaynak kod seçilebilir). */
 const KOD_SUFFIX_SKIP_COLS = new Set([
   "tarih","gun","saat",
   "lig_kodu","lig_adi","lig_id","alt_lig","alt_lig_id","sezon","sezon_id",
@@ -132,10 +179,15 @@ function cellDigitsEndWith(val: string, suffix: string): boolean {
   return d.length >= suffix.length && d.endsWith(suffix);
 }
 
-function normalizeKodSon4(raw: string): string | null {
+/** Son N rakam (ör. 3–5); yeterli rakam yoksa null. */
+function normalizeKodSuffixDigits(raw: string, n: number): string | null {
   const d = raw.replace(/\D/g, "");
-  if (d.length < 4) return null;
-  return d.slice(-4);
+  if (d.length < n) return null;
+  return d.slice(-n);
+}
+
+function rowKodSuffix(row: Match, refKey: string, n: number): string | null {
+  return normalizeKodSuffixDigits(String(row[refKey] ?? ""), n);
 }
 
 /** Tamamlanmış bir maçta hangi hücre "tuttu" → green (MS bazlı) | orange (IY bazlı) | null */
@@ -309,12 +361,71 @@ function buildGroupSpans(cols: ColDef[]) {
   return spans;
 }
 
+/** Görünür sütun sırası: prevOrder + görünürde olup listede olmayanlar (merged sırasıyla sonda). */
+function orderedVisibleCols(mergedCols: ColDef[], visibleIds: Set<string>, prevOrder: string[]): ColDef[] {
+  const visible = mergedCols.filter((c) => visibleIds.has(c.id));
+  const visSet = new Set(visible.map((c) => c.id));
+  const out: ColDef[] = [];
+  const used = new Set<string>();
+  for (const id of prevOrder) {
+    if (!visSet.has(id)) continue;
+    const col = mergedCols.find((c) => c.id === id);
+    if (col) {
+      out.push(col);
+      used.add(id);
+    }
+  }
+  for (const c of visible) {
+    if (!used.has(c.id)) out.push(c);
+  }
+  return out;
+}
+
+function reorderColOrder(
+  mergedCols: ColDef[],
+  visibleIds: Set<string>,
+  prevOrder: string[],
+  fromId: string,
+  toId: string,
+): string[] {
+  const orderedIds = orderedVisibleCols(mergedCols, visibleIds, prevOrder).map((c) => c.id);
+  const fi = orderedIds.indexOf(fromId);
+  const ti = orderedIds.indexOf(toId);
+  if (fi < 0 || ti < 0 || fi === ti) return prevOrder;
+  const next = [...orderedIds];
+  const [moved] = next.splice(fi, 1);
+  next.splice(ti, 0, moved);
+  return next;
+}
+
+const COL_W_MIN = 40;
+const COL_W_MAX = 900;
+
 // ── localStorage ──────────────────────────────────────────────────────────────
 const LS_VISIBLE  = "om_visible_cols";
 const LS_COL_FILT = "om_col_filters";
 const LS_TOP_FILT = "om_top_filters";
 const LS_PRESETS  = "om_col_presets";
 const LS_KOD_SON4 = "om_kod_son4_vurgula";
+const LS_KOD_SON_N = "om_kod_son_n";
+const LS_KOD_SON_REF = "om_kod_son_ref";
+const LS_COL_CLICK_POS = "om_col_click_pos";
+const LS_COL_ORDER = "om_col_order";
+const LS_COL_WIDTHS = "om_col_widths";
+const LS_SHOW_DIGIT_ROW = "om_show_digit_row";
+const LS_VIEW_PRESETS = "om_view_presets";
+
+const KOD_SUFFIX_LENS = [3, 4, 5] as const;
+type KodSuffixN = (typeof KOD_SUFFIX_LENS)[number];
+
+const KOD_SUFFIX_REF_OPTIONS = [
+  { key: "id", label: "Maç kodu" },
+  { key: "kod_ms", label: "MS kodu" },
+  { key: "kod_iy", label: "İY kodu" },
+  { key: "kod_cs", label: "ÇŞ kodu" },
+  { key: "kod_au", label: "A/Ü kodu" },
+] as const;
+type KodSuffixRefKey = (typeof KOD_SUFFIX_REF_OPTIONS)[number]["key"];
 
 function lsGet<T>(key: string, fb: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fb; }
@@ -326,6 +437,27 @@ function lsSet(key: string, val: unknown) {
 
 // ── preset (sadece sütun seçimi kaydeder) ─────────────────────────────────────
 interface ColPreset { name: string; ids: string[]; }
+
+/** Tam görünüm kaydı: sütun seçimi + filtreler + sıralama + düzen */
+interface ViewPreset {
+  name: string;
+  createdAt: string;
+  // sütunlar
+  visibleIds: string[];
+  colOrder: string[];
+  colWidths: Record<string, number>;
+  colClickPos: Record<string, number[]>;
+  // filtreler
+  topFilters: Record<string, string>;
+  colFilters: Record<string, string>;
+  // sıralama
+  sortCol: string | null;
+  sortDir: "asc" | "desc";
+  // kod sonek
+  kodSon4: string;
+  kodSuffixN: number;
+  kodSuffixRefKey: string;
+}
 
 const EMPTY_TOP = { tarih_from:"", tarih_to:"", lig:"", takim:"", sonuc_iy:"", sonuc_ms:"", hakem:"", suffix4:"", suffix3:"" };
 
@@ -385,9 +517,19 @@ export default function MatchTable() {
   const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
   const [colFiltersCommitted, setColFiltersCommitted] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
 
-  /** Satır süzmeden yalnızca oyun kodu hücrelerinde son-4 vurgusu (oran merkezi davranışı). */
+  /** Satır süzmeden oyun kodu hücrelerinde sonek vurgusu; N ve kaynak kod seçilebilir. */
   const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
+  const [kodSuffixN, setKodSuffixN] = useState<KodSuffixN>(() => {
+    const v = lsGet<number>(LS_KOD_SON_N, 4);
+    return v === 3 || v === 4 || v === 5 ? v : 4;
+  });
+  const [kodSuffixRefKey, setKodSuffixRefKey] = useState<KodSuffixRefKey>(() => {
+    const k = lsGet<string>(LS_KOD_SON_REF, "id");
+    return KOD_SUFFIX_REF_OPTIONS.some((o) => o.key === k) ? (k as KodSuffixRefKey) : "id";
+  });
   useEffect(() => { lsSet(LS_KOD_SON4, kodSon4Highlight); }, [kodSon4Highlight]);
+  useEffect(() => { lsSet(LS_KOD_SON_N, kodSuffixN); }, [kodSuffixN]);
+  useEffect(() => { lsSet(LS_KOD_SON_REF, kodSuffixRefKey); }, [kodSuffixRefKey]);
 
   function commitColFilters(next: Record<string,string>) {
     setColFiltersCommitted(next);
@@ -395,11 +537,65 @@ export default function MatchTable() {
     setPage(1);
   }
 
+  // sütun sırası ve genişlikleri (Excel benzeri)
+  const [colOrder, setColOrder] = useState<string[]>(() => lsGet<string[]>(LS_COL_ORDER, []));
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => lsGet<Record<string, number>>(LS_COL_WIDTHS, {}));
+  const resizeRef = useRef<{ id: string; startX: number; startW: number } | null>(null);
+
+  // hane seçici (digit-position click): hangi sütunda hangi hane pozisyonları seçili?
+  // Boş dizi = H (tam değer), [1,3] = 1. ve 3. rakamlar sabit, geri kalanlar joker
+  const [colClickPos, setColClickPos] = useState<Record<string, number[]>>(
+    () => lsGet<Record<string, number[]>>(LS_COL_CLICK_POS, {})
+  );
+  // hane seçici satırı görünür mü?
+  const [showDigitRow, setShowDigitRow] = useState<boolean>(
+    () => lsGet<boolean>(LS_SHOW_DIGIT_ROW, false)
+  );
+
+  useEffect(() => { lsSet(LS_COL_ORDER, colOrder); }, [colOrder]);
+  useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
+  useEffect(() => { lsSet(LS_COL_CLICK_POS, colClickPos); }, [colClickPos]);
+  useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
+
+  // görünüm presetleri
+  const [viewPresets, setViewPresets] = useState<ViewPreset[]>(
+    () => lsGet<ViewPreset[]>(LS_VIEW_PRESETS, [])
+  );
+  const [viewPresetInput, setViewPresetInput] = useState("");
+  const [viewSaveMsg, setViewSaveMsg] = useState("");
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const dx = e.clientX - r.startX;
+      const w = Math.min(COL_W_MAX, Math.max(COL_W_MIN, r.startW + dx));
+      setColWidths((prev) => ({ ...prev, [r.id]: w }));
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
   // localStorage otomatik kaydet
   useEffect(() => { lsSet(LS_VISIBLE,  Array.from(visibleIds)); }, [visibleIds]);
   useEffect(() => { lsSet(LS_TOP_FILT, filters); },                [filters]);
 
-  const visibleCols  = mergedCols.filter((c) => visibleIds.has(c.id));
+  const colW = useCallback(
+    (c: ColDef) => colWidths[c.id] ?? c.width ?? 60,
+    [colWidths]
+  );
+
+  const visibleCols = useMemo(
+    () => orderedVisibleCols(mergedCols, visibleIds, colOrder),
+    [mergedCols, visibleIds, colOrder]
+  );
   const groupSpans   = buildGroupSpans(visibleCols);
   const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
 
@@ -454,15 +650,17 @@ export default function MatchTable() {
     setDbColFiltersApplied(dbPart);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colFiltersCommitted]);
-  const colW         = (c: ColDef) => c.width ?? 60;
 
-  const kodSuffix4Active = useMemo(() => {
+  /** Üst / sütun filtresi veya bu kutudan: tüm satırlarda aynı sonek. Boşsa satıra göre seçilen kodun son N hanesi. */
+  const globalKodSuffix = useMemo(() => {
     return (
-      normalizeKodSon4(applied.suffix4 ?? "") ??
-      normalizeKodSon4(dbColFiltersApplied.suffix4 ?? "") ??
-      normalizeKodSon4(kodSon4Highlight)
+      normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN) ??
+      normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN) ??
+      normalizeKodSuffixDigits(kodSon4Highlight.trim(), kodSuffixN)
     );
-  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSon4Highlight]);
+  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSon4Highlight, kodSuffixN]);
+
+  const kodSuffixRefLabel = KOD_SUFFIX_REF_OPTIONS.find((o) => o.key === kodSuffixRefKey)?.label ?? kodSuffixRefKey;
 
   // veri çek
   const fetchMatches = useCallback(async () => {
@@ -554,36 +752,61 @@ export default function MatchTable() {
             )}
             {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
             {Object.values(colFiltersCommitted).some(Boolean) && !loading && <span className="text-amber-600"> · {filteredRows.length} eşleşti</span>}
-            {kodSuffix4Active && !loading && (
-              <span className="text-amber-800 whitespace-nowrap" title="Tüm oyun kodu sütunlarında son 4 rakam eşleşmesi vurgulanır">
-                · son 4: <span className="font-mono font-semibold">{kodSuffix4Active}</span>
+            {globalKodSuffix && !loading && (
+              <span
+                className="text-amber-800 whitespace-nowrap"
+                title={`Tüm oyun kodu hücrelerinde son ${kodSuffixN} rakam; üst/sütun filtresi veya kutu ile sabit sonek.`}>
+                · son {kodSuffixN}: <span className="font-mono font-semibold">{globalKodSuffix}</span>
               </span>
             )}
           </span>
 
-          <label className="flex items-center gap-1.5 text-[11px] text-gray-800 whitespace-nowrap shrink-0" title="Maç kodunun son 4 rakamı; tablodaki tüm oyun kodu hücrelerinde aynı soneki arar (oran merkezi). Sunucu filtresi değildir.">
-            <span className="hidden sm:inline">Oyun kodu son 4</span>
-            <span className="sm:hidden">Son 4</span>
+          <div
+            className="flex items-center gap-1 text-[11px] text-gray-800 whitespace-nowrap shrink-0"
+            title="Kaynak: her satırda bu alanın son N rakamı ile eşleşen oyun kodu hücreleri sarı vurgulanır (sütun filtresi değil; üst kutu boş olsa da açıktır). Kaynak sütunun kendi hücresi satır modunda vurgulanmaz. Kutuya yazarsanız sabit sonek kullanılır. Sunucu filtresi değildir.">
+            <label className="flex items-center gap-0.5">
+              <span className="hidden sm:inline text-gray-700">Kod</span>
+              <select
+                value={kodSuffixRefKey}
+                onChange={(e) => setKodSuffixRefKey(e.target.value as KodSuffixRefKey)}
+                className="max-w-[7.5rem] sm:max-w-none bg-white border border-gray-400 rounded px-0.5 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
+                {KOD_SUFFIX_REF_OPTIONS.map((o) => (
+                  <option key={o.key} value={o.key}>{o.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-0.5">
+              <span className="text-gray-700">son</span>
+              <select
+                value={kodSuffixN}
+                onChange={(e) => setKodSuffixN(Number(e.target.value) as KodSuffixN)}
+                className="bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
+                {KOD_SUFFIX_LENS.map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
             <input
               value={kodSon4Highlight}
               onChange={(e) => setKodSon4Highlight(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setKodSon4Highlight("");
               }}
-              placeholder="5754"
+              placeholder={kodSuffixN === 3 ? "575" : kodSuffixN === 5 ? "15754" : "5754"}
               maxLength={16}
-              className="w-[4.5rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
+              title={`İsteğe bağlı: tam ${kodSuffixN} haneyi (veya daha uzun rakam girin, son ${kodSuffixN} alınır). Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
+              className="w-[4.75rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
             />
             {kodSon4Highlight.trim() ? (
               <button
                 type="button"
                 onClick={() => setKodSon4Highlight("")}
                 className="text-gray-600 hover:text-gray-900 px-0.5"
-                title="Vurguyu kaldır">
-                ✕
+                title="Kutuyu temizle (satıra göre vurgu)">
+                {"\u2715"}
               </button>
             ) : null}
-          </label>
+          </div>
 
           {/* Sütunlar butonu */}
           <div className="relative ml-auto flex items-center gap-3" ref={panelRef}>
@@ -599,6 +822,18 @@ export default function MatchTable() {
               title="Tüm sütun filtrelerini sıfırlar (ara kutuları)"
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               Sütunları temizle
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDigitRow((v) => !v)}
+              title="Hane seçici satırını göster / gizle"
+              className={`border text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap ${
+                showDigitRow
+                  ? "bg-green-700 border-green-800 text-white hover:bg-green-600"
+                  : "bg-white border-gray-300 text-gray-900 hover:bg-gray-100"
+              }`}
+            >
+              {showDigitRow ? "⊞ Hane ✓" : "⊞ Hane"}
             </button>
             <button onClick={() => setShowColPanel((v) => !v)}
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
@@ -616,7 +851,127 @@ export default function MatchTable() {
                   <span className="text-xs text-gray-700 self-center ml-auto">{visibleIds.size} / {mergedCols.length}</span>
                 </div>
 
-                {/* ── PRESET KAYDET / YÜKLE ── */}
+                {/* ── GÖRÜNÜM KAYDET / YÜKLE (tam filtre + düzen) ── */}
+                <div className="mb-3 pb-3 border-b border-gray-700">
+                  <p className="text-[11px] text-gray-800 mb-1 font-semibold uppercase tracking-wide">Görünüm Kaydet</p>
+                  <p className="text-[10px] text-gray-600 mb-1.5">Tüm filtreler, sütunlar, sıralama ve hane seçimleri birlikte kaydedilir.</p>
+                  <div className="flex gap-1.5 items-center mb-2">
+                    <input
+                      value={viewPresetInput}
+                      onChange={(e) => setViewPresetInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const name = viewPresetInput.trim();
+                          if (!name) return;
+                          const preset: ViewPreset = {
+                            name,
+                            createdAt: new Date().toISOString(),
+                            visibleIds: Array.from(visibleIds),
+                            colOrder,
+                            colWidths,
+                            colClickPos,
+                            topFilters: { ...filters },
+                            colFilters: { ...colFiltersCommitted },
+                            sortCol,
+                            sortDir,
+                            kodSon4: kodSon4Highlight,
+                            kodSuffixN,
+                            kodSuffixRefKey,
+                          };
+                          const updated = [preset, ...viewPresets.filter((v) => v.name !== name)];
+                          setViewPresets(updated);
+                          lsSet(LS_VIEW_PRESETS, updated);
+                          setViewPresetInput("");
+                          setViewSaveMsg(`"${name}" kaydedildi`);
+                          setTimeout(() => setViewSaveMsg(""), 2500);
+                        }
+                      }}
+                      placeholder="Görünüm adı… (Enter ile kaydet)"
+                      className="flex-1 bg-white border border-gray-300 rounded px-2 py-1 text-xs text-gray-900 focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const name = viewPresetInput.trim();
+                        if (!name) return;
+                        const preset: ViewPreset = {
+                          name,
+                          createdAt: new Date().toISOString(),
+                          visibleIds: Array.from(visibleIds),
+                          colOrder,
+                          colWidths,
+                          colClickPos,
+                          topFilters: { ...filters },
+                          colFilters: { ...colFiltersCommitted },
+                          sortCol,
+                          sortDir,
+                          kodSon4: kodSon4Highlight,
+                          kodSuffixN,
+                          kodSuffixRefKey,
+                        };
+                        const updated = [preset, ...viewPresets.filter((v) => v.name !== name)];
+                        setViewPresets(updated);
+                        lsSet(LS_VIEW_PRESETS, updated);
+                        setViewPresetInput("");
+                        setViewSaveMsg(`"${name}" kaydedildi`);
+                        setTimeout(() => setViewSaveMsg(""), 2500);
+                      }}
+                      className="bg-blue-700 hover:bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap">
+                      {"\uD83D\uDCBE"} Kaydet
+                    </button>
+                    {viewSaveMsg && <span className="text-xs text-green-600">{viewSaveMsg}</span>}
+                  </div>
+                  {viewPresets.length > 0 && (
+                    <div className="flex flex-col gap-1">
+                      {viewPresets.map((vp) => (
+                        <div key={vp.name} className="flex items-center gap-1 bg-blue-50 border border-blue-200 rounded px-2 py-1">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs font-medium text-blue-900 truncate block">{vp.name}</span>
+                            <span className="text-[10px] text-gray-500">
+                              {new Date(vp.createdAt).toLocaleDateString("tr-TR")} ·{" "}
+                              {Object.values(vp.colFilters).filter(Boolean).length} sütun filtresi
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            title="Bu görünümü yükle"
+                            onClick={() => {
+                              setVisibleIds(new Set(vp.visibleIds));
+                              setColOrder(vp.colOrder);
+                              setColWidths(vp.colWidths);
+                              setColClickPos(vp.colClickPos);
+                              setFilters({ ...EMPTY_TOP, ...vp.topFilters });
+                              setApplied({ ...EMPTY_TOP, ...vp.topFilters });
+                              setColFilters(vp.colFilters);
+                              commitColFilters(vp.colFilters);
+                              setSortCol(vp.sortCol);
+                              setSortDir(vp.sortDir);
+                              setKodSon4Highlight(vp.kodSon4);
+                              setKodSuffixN(vp.kodSuffixN as KodSuffixN);
+                              setKodSuffixRefKey(vp.kodSuffixRefKey as KodSuffixRefKey);
+                              setShowColPanel(false);
+                            }}
+                            className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded transition whitespace-nowrap">
+                            {"\uD83D\uDCC2"} Yükle
+                          </button>
+                          <button
+                            type="button"
+                            title="Sil"
+                            onClick={() => {
+                              const updated = viewPresets.filter((v) => v.name !== vp.name);
+                              setViewPresets(updated);
+                              lsSet(LS_VIEW_PRESETS, updated);
+                            }}
+                            className="text-gray-500 hover:text-red-500 transition text-xs px-1">
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── PRESET KAYDET / YÜKLE (yalnızca sütun seçimi) ── */}
                 <div className="mb-3 pb-3 border-b border-gray-700">
                   <p className="text-[11px] text-gray-800 mb-1.5 font-semibold uppercase tracking-wide">Sütun Düzenini Kaydet</p>
                   <div className="flex gap-1.5 items-center mb-2">
@@ -706,7 +1061,7 @@ export default function MatchTable() {
             </div>
           </div>
         )}
-        <table className="text-xs border-collapse" style={{ minWidth: visibleCols.reduce((s,c) => s+colW(c), 0) }}>
+        <table className="text-xs border-collapse table-fixed" style={{ minWidth: visibleCols.reduce((s,c) => s+colW(c), 0) }}>
           <thead className="sticky top-0 z-20">
             <tr>
               {groupSpans.map((gs, i) => (
@@ -718,45 +1073,150 @@ export default function MatchTable() {
             </tr>
             <tr className="bg-gray-300">
               {visibleCols.map((c) => (
-                <th key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
-                  onClick={() => handleSort(c.id)}
-                  className="px-1.5 py-1 text-left font-medium text-gray-900 whitespace-nowrap border-b border-gray-400 border-r border-gray-400 cursor-pointer select-none hover:bg-gray-400/40 transition-colors">
-                  <span className="flex items-center gap-0.5">
-                    {c.label}
-                    {sortCol === c.id
-                      ? <span className="text-blue-700 text-[10px]">{sortDir === "asc" ? " ▲" : " ▼"}</span>
-                      : <span className="text-gray-400 text-[10px] opacity-0 group-hover:opacity-100"> ⇅</span>
-                    }
-                  </span>
-                </th>
-              ))}
-            </tr>
-            <tr className="bg-gray-200">
-              {visibleCols.map((c) => (
-                <th key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
-                  className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
-                  <input
-                    id={`cf-input-${c.id}`}
-                    value={colFilters[c.id] ?? ""}
-                    onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const next = { ...colFilters, [c.id]: (e.target as HTMLInputElement).value };
-                        commitColFilters(next);
-                      } else if (e.key === "Escape") {
-                        const next = { ...colFilters, [c.id]: "" };
-                        setColFilters(next);
-                        commitColFilters(next);
-                      }
+                <th
+                  key={c.id}
+                  style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                  className="relative px-1.5 py-1 text-left font-medium text-gray-900 whitespace-nowrap border-b border-gray-400 border-r border-gray-400 select-none group"
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const fromId = e.dataTransfer.getData("text/plain");
+                    if (!fromId || fromId === c.id) return;
+                    setColOrder((prev) => reorderColOrder(mergedCols, visibleIds, prev, fromId, c.id));
+                  }}
+                >
+                  <div className="flex items-stretch gap-0.5 pr-2">
+                    <span
+                      draggable
+                      title="Sürükleyerek sırala"
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData("text/plain", c.id);
+                        e.dataTransfer.effectAllowed = "move";
+                      }}
+                      className="cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-800 px-0.5 -ml-0.5 shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {"\u22EE\u22EE"}
+                    </span>
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-0.5 text-left font-medium text-gray-900 hover:bg-gray-400/40 rounded px-0.5 -mx-0.5 cursor-pointer"
+                      onClick={() => handleSort(c.id)}
+                    >
+                      <span className="truncate">{c.label}</span>
+                      {sortCol === c.id ? (
+                        <span className="text-blue-700 text-[10px] shrink-0">
+                          {sortDir === "asc" ? " \u25B2" : " \u25BC"}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-[10px] opacity-0 group-hover:opacity-100 shrink-0">
+                          {" \u21C5"}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  <div
+                    role="separator"
+                    title="Genişlet / daralt"
+                    className="absolute top-0 right-0 z-10 h-full w-1 cursor-col-resize hover:bg-blue-500/50"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      resizeRef.current = { id: c.id, startX: e.clientX, startW: colW(c) };
                     }}
-                    placeholder="ara… (Enter)"
-                    title="Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
-                    className={`w-full bg-gray-100 border border-gray-400 rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
-                      colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
-                    }`}
                   />
                 </th>
               ))}
+            </tr>
+            {/* ── Hane seçici satırı (gizlenebilir) ── */}
+            {showDigitRow && (
+              <tr className="bg-gray-50 border-b border-gray-300">
+                {visibleCols.map((c) => {
+                  const isDigitCol = isDigitClickCol(c);
+                  const tmpl = digitClickTemplate(c);
+                  const selPos: number[] = colClickPos[c.id] ?? [];
+                  const isHMode = selPos.length === 0;
+                  const tmplItems: { ch: string; digitPos: number | null }[] = [];
+                  let dIdx = 0;
+                  for (const ch of tmpl) {
+                    if (/\d/.test(ch)) { dIdx++; tmplItems.push({ ch, digitPos: dIdx }); }
+                    else { tmplItems.push({ ch, digitPos: null }); }
+                  }
+                  return (
+                    <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                      className="px-0.5 py-0.5 border-r border-gray-300"
+                      title="H = tam değer · kutular = rakam pozisyonu. Hücreye tıklayınca seçili rakamlar sabit, diğerleri ? joker.">
+                      {isDigitCol ? (
+                        <div className="flex items-center gap-px overflow-x-hidden">
+                          <button type="button"
+                            className={`text-[8px] leading-none px-0.5 py-px rounded border font-bold shrink-0 transition-colors ${isHMode ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}
+                            onClick={() => setColClickPos((prev) => ({ ...prev, [c.id]: [] }))}
+                            title="H: tam değer">H</button>
+                          {tmplItems.map((item, ti) =>
+                            item.digitPos !== null ? (
+                              <button key={ti} type="button"
+                                className={`text-[8px] leading-none w-[13px] flex items-center justify-center rounded border shrink-0 transition-colors ${selPos.includes(item.digitPos) ? "bg-green-600 border-green-700 text-white font-bold" : "bg-white border-gray-400 text-gray-600 hover:bg-green-100"}`}
+                                onClick={() => setColClickPos((prev) => {
+                                  const cur = prev[c.id] ?? [];
+                                  const pos = item.digitPos!;
+                                  const isSel = cur.includes(pos);
+                                  return { ...prev, [c.id]: isSel ? cur.filter((x) => x !== pos) : [...cur, pos].sort((a, b) => a - b) };
+                                })}
+                                title={`${item.digitPos}. rakam`}>{item.digitPos}</button>
+                            ) : (
+                              <span key={ti} className="text-[8px] text-gray-400 shrink-0 select-none px-px">{item.ch}</span>
+                            )
+                          )}
+                        </div>
+                      ) : null}
+                    </th>
+                  );
+                })}
+              </tr>
+            )}
+            <tr className="bg-gray-200">
+              {visibleCols.map((c) => {
+                const isDigitCol = isDigitClickCol(c);
+                const tmpl = digitClickTemplate(c);
+                const selPos: number[] = colClickPos[c.id] ?? [];
+                const isHMode = selPos.length === 0;
+                return (
+                  <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                    className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
+                    <input
+                      id={`cf-input-${c.id}`}
+                      value={colFilters[c.id] ?? ""}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const next = { ...colFilters, [c.id]: (e.target as HTMLInputElement).value };
+                          commitColFilters(next);
+                        } else if (e.key === "Escape") {
+                          const next = { ...colFilters, [c.id]: "" };
+                          setColFilters(next);
+                          commitColFilters(next);
+                        }
+                      }}
+                      placeholder={(() => {
+                        if (!isDigitCol || isHMode || !showDigitRow) return "ara… (Enter)";
+                        let dI = 0; let ph = "";
+                        for (const ch of tmpl) {
+                          if (/\d/.test(ch)) { dI++; ph += selPos.includes(dI) ? "#" : "?"; }
+                          else { ph += ch; }
+                        }
+                        return ph + "…";
+                      })()}
+                      title="Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
+                      className={`w-full bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
+                        colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
+                      }`}
+                    />
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -771,10 +1231,15 @@ export default function MatchTable() {
                   <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors">
                     {visibleCols.map((c) => {
                       const val = cellVal(m, c);
+                      const suffixForRow =
+                        globalKodSuffix ?? rowKodSuffix(m, kodSuffixRefKey, kodSuffixN);
+                      // Satır modunda sonek kaynak sütundan türetilir; o sütunun kendi hücresi her zaman eşleşirdi (yanlış tam sarı).
+                      const skipRefSourceCol = !globalKodSuffix && c.key === kodSuffixRefKey;
                       const kodSonHit =
-                        !!kodSuffix4Active &&
+                        !skipRefSourceCol &&
+                        !!suffixForRow &&
                         shouldScanColForKodSuffix(c) &&
-                        cellDigitsEndWith(val, kodSuffix4Active);
+                        cellDigitsEndWith(val, suffixForRow);
                       let cls: string;
                       if (kodSonHit) {
                         cls = "bg-yellow-300/90 text-gray-900 font-semibold";
@@ -788,12 +1253,18 @@ export default function MatchTable() {
                         cls = "text-gray-900";
                       }
                       return (
-                        <td key={c.id} style={{ minWidth:colW(c), maxWidth:colW(c) }}
+                        <td key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                           className={`px-1.5 py-1 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-400 font-mono cursor-pointer ${cls}`}
                           title={val}
                           onClick={() => {
                             if (!val) return;
-                            const next = { ...colFilters, [c.id]: val };
+                            // Hane seçici aktifse seçili pozisyonlara göre wildcard pattern üret
+                            const positions = colClickPos[c.id] ?? [];
+                            const filterVal =
+                              positions.length > 0 && isDigitClickCol(c)
+                                ? buildDigitPosPattern(val, positions)
+                                : val;
+                            const next = { ...colFilters, [c.id]: filterVal };
                             setColFilters(next);
                             commitColFilters(next);
                             // Filtre inputunu odakla & tüm metni seç (düzenlenebilsin)
