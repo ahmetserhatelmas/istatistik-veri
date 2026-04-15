@@ -118,6 +118,9 @@ const RAW_API_GROUP = "Ham veri (API)";
 /** Kod/oran sütunları: hücreye tıklayınca hangi rakam haneleri filtrelensin? */
 const DIGIT_CLICK_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
 
+/** Maç Sonucu 1/X/2 — API’de raw_data->>MS* ile tam DB (dbCol değil, cf_* ile gönderilir). */
+const MS_ODDS_FILTER_IDS = new Set(["ms1", "msx", "ms2"]);
+
 function isDigitClickCol(col: ColDef): boolean {
   return DIGIT_CLICK_COL_IDS.has(col.id) || ODDS_GROUPS.has(col.group) || col.group === RAW_API_GROUP;
 }
@@ -619,10 +622,13 @@ export default function MatchTable() {
   const groupSpans   = buildGroupSpans(visibleCols);
   const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
 
-  // DB sütunları → server (jokerli kod da API’de tam DB); raw_data vb. → client
+  // DB sütunları + MS 1/X/2 → server; diğer raw_data alanları → client
   const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
   const rawColFilters = Object.fromEntries(
-    Object.entries(colFiltersCommitted).filter(([id]) => !DB_COL_IDS.has(id))
+    Object.entries(colFiltersCommitted).filter(([id]) => {
+      if (MS_ODDS_FILTER_IDS.has(id)) return false;
+      return !DB_COL_IDS.has(id);
+    })
   );
   const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
 
@@ -647,7 +653,11 @@ export default function MatchTable() {
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
-      Object.entries(colFiltersCommitted).filter(([id, v]) => DB_COL_IDS.has(id) && v.trim())
+      Object.entries(colFiltersCommitted).filter(([id, v]) => {
+        if (!v.trim()) return false;
+        if (MS_ODDS_FILTER_IDS.has(id)) return true;
+        return DB_COL_IDS.has(id);
+      })
     );
     setDbColFiltersApplied(dbPart);
   // eslint-disable-next-line react-hooks/exhaustive-deps

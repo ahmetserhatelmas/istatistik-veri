@@ -129,6 +129,39 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   return query.or(orExpr);
 }
 
+/** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
+const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
+  ms1: "ms1",
+  msx: "msx",
+  ms2: "ms2",
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function applyMsOddsColumnFilter(query: any, col: "ms1" | "msx" | "ms2", v: string): any {
+  const parts = splitCfOrParts(v);
+  if (!parts.length) return query;
+
+  type Br = { pat: string };
+  const branches: Br[] = [];
+  for (const p of parts) {
+    if (p.includes("*") || p.includes("?")) {
+      branches.push({ pat: cfPatternToIlikePattern(p) });
+    } else {
+      branches.push({ pat: `%${p}%` });
+    }
+  }
+  if (branches.length === 1) {
+    return query.ilike(col, branches[0]!.pat);
+  }
+  const orExpr = branches
+    .map(({ pat }) => {
+      const esc = pat.replace(/"/g, '""');
+      return `${col}.ilike."${esc}"`;
+    })
+    .join(",");
+  return query.or(orExpr);
+}
+
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
 const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
 const KS_N_OK = new Set([3, 4, 5]);
@@ -150,8 +183,9 @@ export async function GET(req: NextRequest) {
   const tarihFiltParts = cfTarihRaw
     ? splitTarihOrPatterns(normalizeTarihFilterInput(cfTarihRaw))
     : [];
-  /** exact COUNT(*) + ILIKE '%…%' ~400k satırda 7–10s+ → zaman aşımı; planned yaklaşık sayım */
-  const countMode = tarihFiltParts.length > 0 ? ("planned" as const) : ("exact" as const);
+  const hasCfMsOdds = Boolean(
+    sp.get("cf_ms1")?.trim() || sp.get("cf_msx")?.trim() || sp.get("cf_ms2")?.trim()
+  );
 
   const ksRef = sp.get("ks_ref")?.trim() ?? "";
   const ksN = Number(sp.get("ks_n"));
@@ -172,6 +206,10 @@ export async function GET(req: NextRequest) {
       useKsView = true;
     }
   }
+
+  /** Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım */
+  const countMode =
+    tarihFiltParts.length > 0 || useKsView || hasCfMsOdds ? ("planned" as const) : ("exact" as const);
 
   const supabase = createServiceClient();
   const fromTable = useKsView ? "matches_with_suffix_cols" : "matches";
@@ -221,6 +259,11 @@ export async function GET(req: NextRequest) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
     if (colId === "tarih") continue;
+    const msCol = MS_ODDS_DB_COL[colId];
+    if (msCol) {
+      query = applyMsOddsColumnFilter(query, msCol, val.trim());
+      continue;
+    }
     const def = DB_COL_MAP[colId];
     if (!def) continue;
     const v = val.trim();
@@ -257,11 +300,11 @@ export async function GET(req: NextRequest) {
     const statementTimeout =
       e.code === "57014" ||
       /statement timeout|canceling statement due to statement timeout/i.test(msg);
-    if (statementTimeout && useKsView) {
+    if (statementTimeout) {
       return NextResponse.json(
         {
           error:
-            "Kod sonek sorgusu zaman aşımına uğradı. Önce sql/create-matches-suffix-view.sql (matches_sfx_mod + VIEW), ardından sql/add-matches-suffix-expression-indexes.sql çalıştırın; indeksler görünümle aynı fonksiyonu kullanmalı.",
+            "Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql (Supabase Editor). CONCURRENTLY → add-matches-ms-odds-trgm-indexes-concurrent.sql (psql, satır satır).",
           detail: msg,
           code: e.code,
         },
