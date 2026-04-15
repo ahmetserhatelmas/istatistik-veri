@@ -1,0 +1,12 @@
+-- Sütun filtrelerinde Maç Kodu / oyun kodları için ? * (+ VEYA) ile tam tablo araması.
+-- API: cf_id / cf_kod_* joker → id_arama, kod_*_arama üzerinde ilike.
+--
+-- Büyük tabloda tek seferde çoklu ALTER → "upstream timeout" (Editor limiti).
+-- Çözüm sırası:
+--   1) Aşağıdaki 01–05 dosyalarını TEK TEK çalıştırın (her biri bitene kadar bekleyin).
+--   2) Hâlâ timeout: Supabase → Project Settings → Database → Connection string
+--      "URI" veya "psql" ile doğrudan Postgres’e bağlanın (Dashboard değil).
+--      psql içinde: SET statement_timeout = 0; sonra ilgili tek ALTER.
+--   3) Tüm kolonlar oluşunca: sql/create-matches-suffix-view.sql yeniden (m.* güncellensin).
+--
+-- Bu dosya artık yalnızca yönlendirme; gerçek DDL: add-matches-code-arama-columns-01-id.sql … 05.

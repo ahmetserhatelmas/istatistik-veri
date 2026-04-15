@@ -6,7 +6,14 @@ import { okbtBasamakHucreDegeri } from "@/lib/okbt-basamak-toplamlari";
 
 type Match = Record<string, unknown>;
 interface ApiResponse {
-  data: Match[]; page: number; limit: number; total: number; totalPages: number;
+  data?: Match[];
+  page?: number;
+  limit?: number;
+  total?: number;
+  totalPages?: number;
+  error?: string;
+  detail?: string;
+  code?: string;
 }
 
 function formatLastSyncTr(iso: string | null): string {
@@ -467,6 +474,8 @@ export default function MatchTable() {
   const [page, setPage]           = useState(1);
   const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
+  /** API 500/503 vb.; boş tablo ile karışmasın diye ayrı gösterilir */
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [balance, setBalance]      = useState<string | null>(null);
   const [rawKeyUnion, setRawKeyUnion] = useState<string[]>([]);
@@ -503,6 +512,8 @@ export default function MatchTable() {
   });
   const [showColPanel, setShowColPanel] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  /** Ardışık fetch’lerde yalnızca son yanıtın state yazması için. */
+  const matchesFetchGenRef = useRef(0);
 
   // sütun presetleri
   const [colPresets, setColPresets] = useState<ColPreset[]>(() => lsGet<ColPreset[]>(LS_PRESETS, []));
@@ -529,6 +540,15 @@ export default function MatchTable() {
   });
   useEffect(() => { lsSet(LS_KOD_SON4, kodSon4Highlight); }, [kodSon4Highlight]);
   useEffect(() => { lsSet(LS_KOD_SON_N, kodSuffixN); }, [kodSuffixN]);
+  // son 3/4/5 değişince kutudaki rakamları en fazla N ile sınırla (son N rakam)
+  useEffect(() => {
+    setKodSon4Highlight((prev) => {
+      const d = prev.replace(/\D/g, "");
+      if (d.length <= kodSuffixN) return d;
+      return d.slice(-kodSuffixN);
+    });
+    setPage(1);
+  }, [kodSuffixN]);
   useEffect(() => { lsSet(LS_KOD_SON_REF, kodSuffixRefKey); }, [kodSuffixRefKey]);
 
   function commitColFilters(next: Record<string,string>) {
@@ -599,7 +619,7 @@ export default function MatchTable() {
   const groupSpans   = buildGroupSpans(visibleCols);
   const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
 
-  // DB sütunları → server filtresi | raw_data → client filtresi
+  // DB sütunları → server (jokerli kod da API’de tam DB); raw_data vb. → client
   const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
   const rawColFilters = Object.fromEntries(
     Object.entries(colFiltersCommitted).filter(([id]) => !DB_COL_IDS.has(id))
@@ -623,24 +643,6 @@ export default function MatchTable() {
     }
   };
 
-  const sortedRows = useMemo(() => {
-    if (!sortCol) return filteredRows;
-    const col = mergedCols.find((c) => c.id === sortCol);
-    if (!col) return filteredRows;
-    return [...filteredRows].sort((a, b) => {
-      const av = cellVal(a, col);
-      const bv = cellVal(b, col);
-      const an = Number(av), bn = Number(bv);
-      let cmp: number;
-      if (av !== "" && bv !== "" && !isNaN(an) && !isNaN(bn)) {
-        cmp = an - bn;
-      } else {
-        cmp = av.localeCompare(bv, "tr", { sensitivity: "base" });
-      }
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-  }, [filteredRows, sortCol, sortDir, mergedCols]);
-
   // dbCol filtreleri değişince server fetch
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
@@ -662,31 +664,104 @@ export default function MatchTable() {
 
   const kodSuffixRefLabel = KOD_SUFFIX_REF_OPTIONS.find((o) => o.key === kodSuffixRefKey)?.label ?? kodSuffixRefKey;
 
+  /** Üst / cf MBS filtresi aktifse satır alanı mac_suffix4; yoksa Kod açılır listesindeki alan. */
+  const kodSuffixFilterRowKey = useMemo(() => {
+    const fromApplied = normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN);
+    const fromCf = normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN);
+    if (fromApplied != null || fromCf != null) return "mac_suffix4";
+    return kodSuffixRefKey;
+  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSuffixN, kodSuffixRefKey]);
+
+  /** Sabit sonek varken yalnızca o son N haneye uyan satırlar (sarı vurgu + liste birlikte). */
+  const kodSuffixFilteredRows = useMemo(() => {
+    if (!globalKodSuffix) return filteredRows;
+    return filteredRows.filter((row) => {
+      const suf = normalizeKodSuffixDigits(String(row[kodSuffixFilterRowKey] ?? ""), kodSuffixN);
+      return suf === globalKodSuffix;
+    });
+  }, [filteredRows, globalKodSuffix, kodSuffixN, kodSuffixFilterRowKey]);
+
+  const sortedRows = useMemo(() => {
+    if (!sortCol) return kodSuffixFilteredRows;
+    const col = mergedCols.find((c) => c.id === sortCol);
+    if (!col) return kodSuffixFilteredRows;
+    return [...kodSuffixFilteredRows].sort((a, b) => {
+      const av = cellVal(a, col);
+      const bv = cellVal(b, col);
+      const an = Number(av), bn = Number(bv);
+      let cmp: number;
+      if (av !== "" && bv !== "" && !isNaN(an) && !isNaN(bn)) {
+        cmp = an - bn;
+      } else {
+        cmp = av.localeCompare(bv, "tr", { sensitivity: "base" });
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [kodSuffixFilteredRows, sortCol, sortDir, mergedCols]);
+
   // veri çek
   const fetchMatches = useCallback(async () => {
+    const myGen = ++matchesFetchGenRef.current;
     setLoading(true);
+    setFetchError(null);
     const p = new URLSearchParams({ page: String(page), limit: "100" });
     Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
     // dbCol sütun filtrelerini cf_ prefix ile gönder
     Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
       if (v.trim()) p.set(`cf_${id}`, v.trim());
     });
+    // Üst kod kutusu: MBS üst/sütun filtresi yoksa tüm DB’de son N hane (API + görünüm)
+    const fromAppliedS4 = normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN);
+    const fromCfS4 = normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN);
+    const gHighlight = normalizeKodSuffixDigits(kodSon4Highlight.trim(), kodSuffixN);
+    if (fromAppliedS4 == null && fromCfS4 == null && gHighlight != null) {
+      p.set("ks_ref", kodSuffixRefKey);
+      p.set("ks_n", String(kodSuffixN));
+      p.set("ks_suffix", gHighlight);
+    }
     try {
       const [res, syncRes] = await Promise.all([
         fetch(`/api/matches?${p}`),
         fetch("/api/sync-status"),
       ]);
       const json: ApiResponse = await res.json();
+      if (matchesFetchGenRef.current !== myGen) return;
+      if (!res.ok) {
+        const hint =
+          json.error ||
+          json.detail ||
+          (typeof json === "object" && json && "message" in json
+            ? String((json as { message?: string }).message)
+            : "");
+        setFetchError(hint.trim() || `Sunucu hatası (${res.status})`);
+        setMatches([]);
+        setTotal(0);
+        setTotalPages(0);
+        return;
+      }
+      const tp = Math.max(0, json.totalPages ?? 0);
+      const t = json.total ?? 0;
       setMatches(json.data || []);
-      setTotal(json.total || 0);
-      setTotalPages(json.totalPages || 0);
+      setTotal(t);
+      setTotalPages(tp);
+      // Dar filtre sonrası toplam sayfa küçülürken sayfa eski kalırsa API boş sayfa döner → "Veri yok"
+      if (tp > 0 && page > tp) setPage(tp);
+      else if (tp === 0 && page !== 1) setPage(1);
       if (syncRes.ok) {
         const s = (await syncRes.json()) as { lastSyncAt?: string | null };
-        setLastSyncAt(s.lastSyncAt ?? null);
+        if (matchesFetchGenRef.current === myGen) {
+          setLastSyncAt(s.lastSyncAt ?? null);
+        }
       }
-    } catch { setMatches([]); }
-    setLoading(false);
-  }, [page, applied, dbColFiltersApplied]);
+    } catch {
+      if (matchesFetchGenRef.current === myGen) {
+        setMatches([]);
+        setFetchError("Ağ hatası veya yanıt okunamadı.");
+      }
+    } finally {
+      if (matchesFetchGenRef.current === myGen) setLoading(false);
+    }
+  }, [page, applied, dbColFiltersApplied, kodSuffixN, kodSuffixRefKey, kodSon4Highlight]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
   // panel dışı tıkla kapat
@@ -738,6 +813,13 @@ export default function MatchTable() {
 
       {/* ── HEADER ── */}
       <header className="flex-none border-b border-gray-300 bg-gray-300">
+        {fetchError && (
+          <div
+            className="px-4 py-1.5 text-xs text-red-900 bg-red-100 border-b border-red-200"
+            role="alert">
+            {fetchError}
+          </div>
+        )}
         <div className="flex items-center gap-2 px-4 py-2 flex-wrap">
           <span className="text-xs text-gray-700 whitespace-nowrap">
             {total.toLocaleString("tr-TR")} maç
@@ -751,11 +833,13 @@ export default function MatchTable() {
               </span>
             )}
             {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
-            {Object.values(colFiltersCommitted).some(Boolean) && !loading && <span className="text-amber-600"> · {filteredRows.length} eşleşti</span>}
+            {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && !loading && (
+              <span className="text-amber-600"> · {kodSuffixFilteredRows.length} eşleşti</span>
+            )}
             {globalKodSuffix && !loading && (
               <span
                 className="text-amber-800 whitespace-nowrap"
-                title={`Tüm oyun kodu hücrelerinde son ${kodSuffixN} rakam; üst/sütun filtresi veya kutu ile sabit sonek.`}>
+                title={`Son ${kodSuffixN} rakam eşleşmesi: tablo yalnızca bu soneki taşıyan satırları listeler; oyun kodu hücreleri sarı vurgulanır.`}>
                 · son {kodSuffixN}: <span className="font-mono font-semibold">{globalKodSuffix}</span>
               </span>
             )}
@@ -763,12 +847,15 @@ export default function MatchTable() {
 
           <div
             className="flex items-center gap-1 text-[11px] text-gray-800 whitespace-nowrap shrink-0"
-            title="Kaynak: her satırda bu alanın son N rakamı ile eşleşen oyun kodu hücreleri sarı vurgulanır (sütun filtresi değil; üst kutu boş olsa da açıktır). Kaynak sütunun kendi hücresi satır modunda vurgulanmaz. Kutuya yazarsanız sabit sonek kullanılır. Sunucu filtresi değildir.">
+            title="Kutuya N rakam yazınca tablo yalnızca seçili kod alanında bu son N haneye sahip satırları gösterir ve oyun kodu hücrelerinde sarı vurgu yapar. Kutu boşken satır bazlı vurgu (filtre yok). Üst MBS (suffix4) filtresi varsa sonek mac_suffix4 üzerinden süzülür.">
             <label className="flex items-center gap-0.5">
               <span className="hidden sm:inline text-gray-700">Kod</span>
               <select
                 value={kodSuffixRefKey}
-                onChange={(e) => setKodSuffixRefKey(e.target.value as KodSuffixRefKey)}
+                onChange={(e) => {
+                  setKodSuffixRefKey(e.target.value as KodSuffixRefKey);
+                  setPage(1);
+                }}
                 className="max-w-[7.5rem] sm:max-w-none bg-white border border-gray-400 rounded px-0.5 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
                 {KOD_SUFFIX_REF_OPTIONS.map((o) => (
                   <option key={o.key} value={o.key}>{o.label}</option>
@@ -779,7 +866,10 @@ export default function MatchTable() {
               <span className="text-gray-700">son</span>
               <select
                 value={kodSuffixN}
-                onChange={(e) => setKodSuffixN(Number(e.target.value) as KodSuffixN)}
+                onChange={(e) => {
+                  setKodSuffixN(Number(e.target.value) as KodSuffixN);
+                  setPage(1);
+                }}
                 className="bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
                 {KOD_SUFFIX_LENS.map((n) => (
                   <option key={n} value={n}>{n}</option>
@@ -787,20 +877,32 @@ export default function MatchTable() {
               </select>
             </label>
             <input
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={kodSon4Highlight}
-              onChange={(e) => setKodSon4Highlight(e.target.value)}
+              onChange={(e) => {
+                const d = e.target.value.replace(/\D/g, "").slice(0, kodSuffixN);
+                setKodSon4Highlight(d);
+                setPage(1);
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Escape") setKodSon4Highlight("");
+                if (e.key === "Escape") {
+                  setKodSon4Highlight("");
+                  setPage(1);
+                }
               }}
               placeholder={kodSuffixN === 3 ? "575" : kodSuffixN === 5 ? "15754" : "5754"}
-              maxLength={16}
-              title={`İsteğe bağlı: tam ${kodSuffixN} haneyi (veya daha uzun rakam girin, son ${kodSuffixN} alınır). Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
-              className="w-[4.75rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
+              maxLength={kodSuffixN}
+              title={`En fazla ${kodSuffixN} rakam. Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
+              className="w-[5.25rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
             />
             {kodSon4Highlight.trim() ? (
               <button
                 type="button"
-                onClick={() => setKodSon4Highlight("")}
+                onClick={() => {
+                  setKodSon4Highlight("");
+                  setPage(1);
+                }}
                 className="text-gray-600 hover:text-gray-900 px-0.5"
                 title="Kutuyu temizle (satıra göre vurgu)">
                 {"\u2715"}
@@ -949,6 +1051,7 @@ export default function MatchTable() {
                               setKodSon4Highlight(vp.kodSon4);
                               setKodSuffixN(vp.kodSuffixN as KodSuffixN);
                               setKodSuffixRefKey(vp.kodSuffixRefKey as KodSuffixRefKey);
+                              setPage(1);
                               setShowColPanel(false);
                             }}
                             className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded transition whitespace-nowrap">
@@ -1148,7 +1251,7 @@ export default function MatchTable() {
                   return (
                     <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                       className="px-0.5 py-0.5 border-r border-gray-300"
-                      title="H = tam değer · kutular = rakam pozisyonu. Hücreye tıklayınca seçili rakamlar sabit, diğerleri ? joker.">
+                      title="H = tam kod (Enter → sunucu). Rakam kutuları = sabit haneler; tıklanan hücreden ? joker üretilir (Enter → tüm veritabanında ilike).">
                       {isDigitCol ? (
                         <div className="flex items-center gap-px overflow-x-hidden">
                           <button type="button"
@@ -1289,7 +1392,7 @@ export default function MatchTable() {
       <div className="flex-none flex items-center justify-between px-4 py-2 border-t border-gray-300 bg-gray-300/60 text-xs text-gray-900">
         <span>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
-          {Object.values(colFiltersCommitted).some(Boolean) && ` · filtreli: ${filteredRows.length}`}
+          {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
         </span>
         <div className="flex gap-1.5">
           {[

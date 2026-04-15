@@ -65,6 +65,74 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   sport_turu: { col: "sport_turu", mode: "ilike" },
 };
 
+/** Joker / + VEYA ile tam DB arama (GENERATED text sütunları; sql/add-matches-code-arama-columns-01 … 05). */
+const CODE_ILIKE_ARAMA: Record<string, string> = {
+  id: "id_arama",
+  kod_ms: "kod_ms_arama",
+  kod_iy: "kod_iy_arama",
+  kod_cs: "kod_cs_arama",
+  kod_au: "kod_au_arama",
+};
+
+function splitCfOrParts(v: string): string[] {
+  return v.split("+").map((s) => s.trim()).filter(Boolean);
+}
+
+/** UI ? * → SQL ILIKE _ % (Postgres varsayılan kaçış yok; el ile % _ nadir). */
+function cfPatternToIlikePattern(pattern: string): string {
+  let out = "";
+  for (const c of pattern) {
+    if (c === "*") out += "%";
+    else if (c === "?") out += "_";
+    else out += c;
+  }
+  return out;
+}
+
+type CodeFilterBranch =
+  | { kind: "ilike"; col: string; pat: string }
+  | { kind: "eq"; col: string; num: number };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any {
+  const arama = CODE_ILIKE_ARAMA[colId];
+  const def = DB_COL_MAP[colId];
+  if (!arama || !def) return query;
+  const parts = splitCfOrParts(v);
+  if (!parts.length) return query;
+
+  const branches: CodeFilterBranch[] = [];
+  for (const p of parts) {
+    if (p.includes("*") || p.includes("?")) {
+      branches.push({ kind: "ilike", col: arama, pat: cfPatternToIlikePattern(p) });
+    } else if (/^\d+$/.test(p)) {
+      branches.push({ kind: "eq", col: def.col, num: Number(p) });
+    } else {
+      branches.push({ kind: "ilike", col: arama, pat: cfPatternToIlikePattern(p) });
+    }
+  }
+  if (branches.length === 0) return query;
+  if (branches.length === 1) {
+    const b = branches[0]!;
+    if (b.kind === "ilike") return query.ilike(b.col, b.pat);
+    return query.eq(b.col, b.num);
+  }
+  const orExpr = branches
+    .map((b) => {
+      if (b.kind === "ilike") {
+        const esc = b.pat.replace(/"/g, '""');
+        return `${b.col}.ilike."${esc}"`;
+      }
+      return `${b.col}.eq.${b.num}`;
+    })
+    .join(",");
+  return query.or(orExpr);
+}
+
+/** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
+const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
+const KS_N_OK = new Set([3, 4, 5]);
+
 export async function GET(req: NextRequest) {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
     return NextResponse.json(
@@ -85,9 +153,30 @@ export async function GET(req: NextRequest) {
   /** exact COUNT(*) + ILIKE '%…%' ~400k satırda 7–10s+ → zaman aşımı; planned yaklaşık sayım */
   const countMode = tarihFiltParts.length > 0 ? ("planned" as const) : ("exact" as const);
 
+  const ksRef = sp.get("ks_ref")?.trim() ?? "";
+  const ksN = Number(sp.get("ks_n"));
+  const ksSuffixRaw = sp.get("ks_suffix")?.trim() ?? "";
+  let useKsView = false;
+  let ksSuffixNum: number | null = null;
+  if (
+    ksRef &&
+    KS_REF_OK.has(ksRef) &&
+    KS_N_OK.has(ksN) &&
+    /^\d+$/.test(ksSuffixRaw) &&
+    ksSuffixRaw.length > 0 &&
+    ksSuffixRaw.length <= ksN
+  ) {
+    const n = Number(ksSuffixRaw);
+    if (Number.isFinite(n) && n >= 0) {
+      ksSuffixNum = n;
+      useKsView = true;
+    }
+  }
+
   const supabase = createServiceClient();
+  const fromTable = useKsView ? "matches_with_suffix_cols" : "matches";
   let query = supabase
-    .from("matches")
+    .from(fromTable)
     .select(DB_COLS.join(","), { count: countMode });
 
   // ── Üst filtreler ────────────────────────────────────────────────────────────
@@ -135,6 +224,10 @@ export async function GET(req: NextRequest) {
     const def = DB_COL_MAP[colId];
     if (!def) continue;
     const v = val.trim();
+    if (CODE_ILIKE_ARAMA[colId]) {
+      query = applyCodeColumnPatternFilter(query, colId, v);
+      continue;
+    }
     if (def.mode === "ilike") {
       query = query.ilike(def.col, `%${v}%`);
     } else if (def.mode === "eq") {
@@ -149,6 +242,10 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (useKsView && ksSuffixNum !== null) {
+    query = query.eq(`sfx_${ksRef}_${ksN}`, ksSuffixNum);
+  }
+
   const { data, count, error } = await query
     .order("tarih", { ascending: false })
     .order("saat",  { ascending: false, nullsFirst: false })
@@ -157,6 +254,20 @@ export async function GET(req: NextRequest) {
   if (error) {
     const e = error as { message?: string; details?: string; hint?: string; code?: string };
     const msg = [e.message, e.details, e.hint].filter(Boolean).join(" | ");
+    const statementTimeout =
+      e.code === "57014" ||
+      /statement timeout|canceling statement due to statement timeout/i.test(msg);
+    if (statementTimeout && useKsView) {
+      return NextResponse.json(
+        {
+          error:
+            "Kod sonek sorgusu zaman aşımına uğradı. Önce sql/create-matches-suffix-view.sql (matches_sfx_mod + VIEW), ardından sql/add-matches-suffix-expression-indexes.sql çalıştırın; indeksler görünümle aynı fonksiyonu kullanmalı.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
     const missingTarihArama =
       /tarih_arama/i.test(msg) ||
       (e.code === "42703" && /tarih_arama|matches\./i.test(msg)) ||
@@ -166,6 +277,35 @@ export async function GET(req: NextRequest) {
         {
           error:
             "tarih_arama kolonu yok veya API şemada görünmüyor. sql/add-tarih-arama.sql (+ gerekirse patch) çalıştırın; Supabase’te tabloyu yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingSuffixView =
+      useKsView &&
+      (/matches_with_suffix_cols|relation.*does not exist|Could not find the table|schema cache/i.test(msg) ||
+        (e.code === "42P01" && /matches_with_suffix_cols/i.test(msg)));
+    if (missingSuffixView) {
+      return NextResponse.json(
+        {
+          error:
+            "Kod sonek araması için görünüm eksik. Supabase SQL Editor’de sql/create-matches-suffix-view.sql dosyasını çalıştırın.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingCodeArama =
+      /id_arama|kod_ms_arama|kod_iy_arama|kod_cs_arama|kod_au_arama/i.test(msg) ||
+      (e.code === "42703" && /_arama/i.test(msg));
+    if (missingCodeArama) {
+      return NextResponse.json(
+        {
+          error:
+            "Jokerli maç/oyun kodu filtresi için kolonlar eksik. sql/add-matches-code-arama-columns-01-id.sql … 05 dosyalarını (tek tek; timeout’ta psql) çalıştırın; ardından create-matches-suffix-view.sql ile görünümü yenileyin.",
           detail: msg,
           code: e.code,
         },
