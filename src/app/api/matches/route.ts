@@ -105,6 +105,38 @@ function cfPatternToIlikePattern(pattern: string): string {
   return out;
 }
 
+/**
+ * cf_* tam sayı sütunları: sadece rakam → .eq; * ? joker → GENERATED *_arama üzerinde ilike.
+ * PostgREST yatay filtrede integer::text cast yok (t1i_arama ile aynı desen; sql/add-matches-integer-id-arama-columns.sql).
+ */
+const INTEGER_CF_ILIKE_ARAMA: Record<string, string> = {
+  lig_id: "lig_id_arama",
+  alt_lig_id: "alt_lig_id_arama",
+  sezon_id: "sezon_id_arama",
+  bookmaker_id: "bookmaker_id_arama",
+  t1i: "t1i_arama",
+  t2i: "t2i_arama",
+};
+const INTEGER_EQ_CF_COLS = new Set(Object.keys(INTEGER_CF_ILIKE_ARAMA));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
+  const t = v.trim();
+  if (!t) return query;
+  const arama = INTEGER_CF_ILIKE_ARAMA[col];
+  if (t.includes("*") || t.includes("?")) {
+    if (!arama) return query;
+    const pat = cfPatternToIlikePattern(t);
+    if (!pat) return query;
+    return query.ilike(arama, pat);
+  }
+  if (/^\d+$/.test(t)) {
+    const n = Number(t);
+    if (Number.isFinite(n)) return query.eq(col, n);
+  }
+  return query;
+}
+
 type CodeFilterBranch =
   | { kind: "ilike"; col: string; pat: string }
   | { kind: "eq"; col: string; num: number };
@@ -357,15 +389,30 @@ export async function GET(req: NextRequest) {
   if (sp.get("lig"))        query = query.ilike("lig_adi", `%${sp.get("lig")}%`);
   if (sp.get("alt_lig"))    query = query.ilike("alt_lig_adi", `%${sp.get("alt_lig")}%`);
   if (sp.get("takim")) {
-    const t = `%${sp.get("takim")}%`;
-    query = query.or(`t1.ilike.${t},t2.ilike.${t}`);
+    const raw = `%${sp.get("takim")}%`;
+    const esc = raw.replace(/"/g, '""');
+    query = query.or(`t1.ilike."${esc}",t2.ilike."${esc}"`);
   }
 
   // ── Çift yönlü (⇄) arama ────────────────────────────────────────────────────
-  const bidirTakim = sp.get("bidir_takim")?.trim();
-  if (bidirTakim) {
+  const bidirTakimEv = sp.get("bidir_takim_ev")?.trim() ?? "";
+  const bidirTakimDep = sp.get("bidir_takim_dep")?.trim() ?? "";
+  const bidirTakimLegacy = sp.get("bidir_takim")?.trim();
+
+  const applyBidirTakimIlikes = (col: "t1" | "t2", raw: string) => {
+    const parts = splitCfOrParts(raw);
+    const pats = parts.map((p) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
+    );
+    for (const pat of pats) query = query.ilike(col, pat);
+  };
+
+  if (bidirTakimEv || bidirTakimDep) {
+    if (bidirTakimEv) applyBidirTakimIlikes("t1", bidirTakimEv);
+    if (bidirTakimDep) applyBidirTakimIlikes("t2", bidirTakimDep);
+  } else if (bidirTakimLegacy) {
     const mode = sp.get("bidir_takim_mode") || "ikisi";
-    const parts = splitCfOrParts(bidirTakim);
+    const parts = splitCfOrParts(bidirTakimLegacy);
     const pats = parts.map((p) =>
       p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
     );
@@ -382,10 +429,34 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const bidirTakimid = sp.get("bidir_takimid")?.trim();
-  if (bidirTakimid) {
+  const bidirTakimidEv = sp.get("bidir_takimid_ev")?.trim() ?? "";
+  const bidirTakimidDep = sp.get("bidir_takimid_dep")?.trim() ?? "";
+  const bidirTakimidLegacy = sp.get("bidir_takimid")?.trim();
+
+  const applyBidirTakimidSide = (side: "ev" | "dep", raw: string) => {
+    const col = side === "ev" ? "t1i" : "t2i";
+    const arama = side === "ev" ? "t1i_arama" : "t2i_arama";
+    const parts = splitCfOrParts(raw);
+    for (const p of parts) {
+      if (!p) continue;
+      const hasGlob = p.includes("*") || p.includes("?");
+      if (!hasGlob && /^\d+$/.test(p)) {
+        const n = Number(p);
+        if (!Number.isFinite(n)) continue;
+        query = query.eq(col, n);
+      } else {
+        const pat = hasGlob ? cfPatternToIlikePattern(p) : `%${p}%`;
+        query = query.ilike(arama, pat);
+      }
+    }
+  };
+
+  if (bidirTakimidEv || bidirTakimidDep) {
+    if (bidirTakimidEv) applyBidirTakimidSide("ev", bidirTakimidEv);
+    if (bidirTakimidDep) applyBidirTakimidSide("dep", bidirTakimidDep);
+  } else if (bidirTakimidLegacy) {
     const mode = sp.get("bidir_takimid_mode") || "ikisi";
-    const parts = splitCfOrParts(bidirTakimid);
+    const parts = splitCfOrParts(bidirTakimidLegacy);
     for (const p of parts) {
       if (!p) continue;
       const hasGlob = p.includes("*") || p.includes("?");
@@ -478,10 +549,12 @@ export async function GET(req: NextRequest) {
           query = query.ilike(def.col, `%${v}%`);
         }
       } else if (def.mode === "eq") {
-        // id (bigint) için özel: sayıya çevir; diğer text eq için string
+        // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
         if (def.col === "id") {
           const n = Number(v);
           if (Number.isFinite(n) && n > 0) query = query.eq(def.col, n);
+        } else if (INTEGER_EQ_CF_COLS.has(def.col)) {
+          query = applyCfIntegerEqColumnFilter(query, def.col, v);
         } else {
           const n = Number(v);
           query = query.eq(def.col, Number.isFinite(n) ? n : v);
@@ -573,6 +646,22 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Jokerli maç/oyun kodu filtresi için kolonlar eksik. sql/add-matches-code-arama-columns-01-id.sql … 05 dosyalarını (tek tek; timeout’ta psql) çalıştırın; ardından create-matches-suffix-view.sql ile görünümü yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingIntegerIdArama =
+      /lig_id_arama|alt_lig_id_arama|sezon_id_arama|bookmaker_id_arama/i.test(msg) ||
+      (e.code === "42703" &&
+        /lig_id_arama|alt_lig_id_arama|sezon_id_arama|bookmaker_id_arama/i.test(msg)) ||
+      /schema cache.*lig_id_arama|Could not find.*lig_id_arama/i.test(msg);
+    if (missingIntegerIdArama) {
+      return NextResponse.json(
+        {
+          error:
+            "Lig / alt lig / sezon / bookmaker ID jokerli arama için lig_id_arama, alt_lig_id_arama, sezon_id_arama, bookmaker_id_arama kolonları gerekli. sql/add-matches-integer-id-arama-columns.sql dosyasını çalıştırın; kod sonek görünümü kullanıyorsanız create-matches-suffix-view.sql ile görünümü yenileyin.",
           detail: msg,
           code: e.code,
         },

@@ -521,35 +521,91 @@ const TARIH_PICK_AY = Array.from({ length: 12 }, (_, i) => String(i + 1).padStar
 const TARIH_PICK_YIL = Array.from({ length: 2030 - 2019 + 1 }, (_, i) => String(2019 + i));
 
 // ── Çift Yönlü (⇄) Arama ─────────────────────────────────────────────────────
-type BidirTakimMode   = "ev" | "dep" | "ikisi";
 type BidirPersonelMode = "hakem" | "ant" | "all";
 
+/** Ev / dep ayrı: ikisi doluysa VE (Barcelona ev + Real dep). Yalnız ev veya yalnız dep da mümkün. */
+interface BidirTeamPairState {
+  ev:  { pattern: string; committed: string };
+  dep: { pattern: string; committed: string };
+}
+
 interface BidirFiltersState {
-  takim:    { pattern: string; committed: string; mode: BidirTakimMode };
-  takimid:  { pattern: string; committed: string; mode: BidirTakimMode };
+  takim:    BidirTeamPairState;
+  takimid:  BidirTeamPairState;
   personel: { pattern: string; committed: string; mode: BidirPersonelMode };
 }
 
 const BIDIR_INIT: BidirFiltersState = {
-  takim:    { pattern: "", committed: "", mode: "ikisi" },
-  takimid:  { pattern: "", committed: "", mode: "ikisi" },
-  personel: { pattern: "", committed: "", mode: "all"   },
+  takim:    { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
+  takimid:  { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
+  personel: { pattern: "", committed: "", mode: "all" },
 };
 
-const BIDIR_TAKIM_MODES: { key: BidirTakimMode; label: string; title: string }[] = [
-  { key: "ev",    label: "Ev",  title: "Yalnızca Ev Sahibi (t1)" },
-  { key: "dep",   label: "Dep", title: "Yalnızca Deplasman (t2)" },
-  { key: "ikisi", label: "⇄",   title: "Ev SAHİBİ veya Deplasman" },
-];
+const LS_BIDIR        = "bidir_filters_v1";
+const LS_SHOW_BIDIR   = "show_bidir_row_v1";
+
+type BidirTakimModeV1 = "ev" | "dep" | "ikisi";
+
+function migrateBidirV1ToTeamPair(o: {
+  pattern: string;
+  committed: string;
+  mode: BidirTakimModeV1;
+}): BidirTeamPairState {
+  if (o.mode === "ev") return { ev: { pattern: o.pattern, committed: o.committed }, dep: { pattern: "", committed: "" } };
+  if (o.mode === "dep") return { ev: { pattern: "", committed: "" }, dep: { pattern: o.pattern, committed: o.committed } };
+  return { ev: { pattern: o.pattern, committed: o.committed }, dep: { pattern: "", committed: "" } };
+}
+
+/** Kayıtlı görünüm (eski preset) veya harici JSON: v1 { mode } → ev/dep çifti. */
+function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
+  if (!raw || typeof raw !== "object") return BIDIR_INIT;
+  const p = raw as Record<string, unknown>;
+  const tak = p.takim;
+  if (tak && typeof tak === "object" && "ev" in tak && "dep" in tak) {
+    const b = raw as Partial<BidirFiltersState>;
+    return {
+      takim: b.takim ?? BIDIR_INIT.takim,
+      takimid: b.takimid ?? BIDIR_INIT.takimid,
+      personel: b.personel ?? BIDIR_INIT.personel,
+    };
+  }
+  if (
+    tak &&
+    typeof tak === "object" &&
+    "mode" in tak &&
+    p.takimid &&
+    typeof p.takimid === "object" &&
+    "mode" in (p.takimid as object)
+  ) {
+    const v1 = raw as {
+      takim: { pattern: string; committed: string; mode: BidirTakimModeV1 };
+      takimid: { pattern: string; committed: string; mode: BidirTakimModeV1 };
+      personel?: BidirFiltersState["personel"];
+    };
+    return {
+      takim: migrateBidirV1ToTeamPair(v1.takim),
+      takimid: migrateBidirV1ToTeamPair(v1.takimid),
+      personel: v1.personel ?? BIDIR_INIT.personel,
+    };
+  }
+  return BIDIR_INIT;
+}
+
+function readBidirFiltersFromStorage(): BidirFiltersState {
+  try {
+    const raw = localStorage.getItem(LS_BIDIR);
+    if (!raw) return BIDIR_INIT;
+    return normalizeBidirFromUnknown(JSON.parse(raw) as unknown);
+  } catch {
+    return BIDIR_INIT;
+  }
+}
 
 const BIDIR_PERSONEL_MODES: { key: BidirPersonelMode; label: string; title: string }[] = [
   { key: "hakem", label: "Hk",  title: "Yalnızca Hakem" },
   { key: "ant",   label: "Ant", title: "Ev + Dep Teknik Direktör" },
   { key: "all",   label: "⇄",   title: "Hakem + Her İki Teknik Direktör" },
 ];
-
-const LS_BIDIR        = "bidir_filters_v1";
-const LS_SHOW_BIDIR   = "show_bidir_row_v1";
 
 // ── Referans Maç ─────────────────────────────────────────────────────────────
 /** Referans maçtan hangi alan kullanılacak */
@@ -577,6 +633,14 @@ const REF_MATCH_INIT: RefMatchState = {
   query: "", results: [], selected: null, isOpen: false, loading: false,
   field: "t1i", positions: [],
 };
+
+/** Takım Ev / Dep kutuları: yazdıkça benzersiz takım adı listesi (/api/team-suggest). */
+interface TakimSuggestLaneState {
+  open: boolean;
+  loading: boolean;
+  teamNames: string[];
+}
+const TAKIM_SUGGEST_INIT: TakimSuggestLaneState = { open: false, loading: false, teamNames: [] };
 
 /** Seçilen maçtan + pozisyonlardan wildcard pattern üret */
 function buildRefPattern(match: Match, field: RefMatchField, positions: number[]): string {
@@ -746,9 +810,7 @@ export default function MatchTable() {
   );
 
   // çift yönlü arama
-  const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(
-    () => lsGet<BidirFiltersState>(LS_BIDIR, BIDIR_INIT)
-  );
+  const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(readBidirFiltersFromStorage);
   const [showBidirRow, setShowBidirRow] = useState<boolean>(
     () => lsGet<boolean>(LS_SHOW_BIDIR, false)
   );
@@ -756,6 +818,14 @@ export default function MatchTable() {
   const [refMatch, setRefMatch] = useState<RefMatchState>(REF_MATCH_INIT);
   const refMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refMatchDropdownRef = useRef<HTMLDivElement>(null);
+  const [takimSuggestEv, setTakimSuggestEv] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const [takimSuggestDep, setTakimSuggestDep] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const takimEvTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const takimDepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const takimEvDropdownRef = useRef<HTMLDivElement>(null);
+  const takimDepDropdownRef = useRef<HTMLDivElement>(null);
+  const takimSuggestEvGenRef = useRef(0);
+  const takimSuggestDepGenRef = useRef(0);
 
   useEffect(() => { lsSet(LS_COL_ORDER, colOrder); }, [colOrder]);
   useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
@@ -763,6 +833,19 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
   useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
+
+  /** pattern → committed (Enter basmadan çıkınca da API’ye gitsin; Dep’in “çalışmıyor” görünümü çoğunlukla bundandı). */
+  const commitBidirLaneOnBlur = useCallback((side: "takim" | "takimid", lane: "ev" | "dep") => {
+    setBidirFilters((prev) => {
+      const b = prev[side][lane];
+      const next = b.pattern.trim();
+      if (next === b.committed.trim()) return prev;
+      return {
+        ...prev,
+        [side]: { ...prev[side], [lane]: { ...b, committed: next } },
+      };
+    });
+  }, []);
 
   // Ref maç: pattern oluştur ve doğru filtreye yaz
   const applyRefToBidir = useCallback((
@@ -775,7 +858,10 @@ export default function MatchTable() {
     if (field === "t1i" || field === "t2i") {
       setBidirFilters((prev) => ({
         ...prev,
-        takimid: { pattern: pat, committed: pat, mode: field === "t1i" ? "ev" : "dep" },
+        takimid:
+          field === "t1i"
+            ? { ...prev.takimid, ev: { pattern: pat, committed: pat } }
+            : { ...prev.takimid, dep: { pattern: pat, committed: pat } },
       }));
     } else {
       const colId = REF_FIELD_TO_COL_ID[field];
@@ -814,11 +900,43 @@ export default function MatchTable() {
     }
   }, []);
 
-  // Ref dropdown dışına tıklayınca kapat
+  const searchTakimSuggest = useCallback(async (q: string, lane: "ev" | "dep") => {
+    const genRef = lane === "ev" ? takimSuggestEvGenRef : takimSuggestDepGenRef;
+    const setLane = lane === "ev" ? setTakimSuggestEv : setTakimSuggestDep;
+    if (!q.trim()) {
+      setLane(TAKIM_SUGGEST_INIT);
+      return;
+    }
+    const myGen = ++genRef.current;
+    setLane((prev) => ({ ...prev, loading: true, open: true }));
+    try {
+      const p = new URLSearchParams({ q: q.trim(), lane });
+      const res = await fetch(`/api/team-suggest?${p}`);
+      const json = (await res.json()) as { teams?: string[]; error?: string };
+      if (genRef.current !== myGen) return;
+      if (!res.ok) {
+        setLane({ open: true, loading: false, teamNames: [] });
+        return;
+      }
+      setLane({ open: true, loading: false, teamNames: Array.isArray(json.teams) ? json.teams : [] });
+    } catch {
+      if (genRef.current !== myGen) return;
+      setLane({ open: true, loading: false, teamNames: [] });
+    }
+  }, []);
+
+  // Ref + Takım öneri dropdown’ları: dışına tıklayınca kapat
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (refMatchDropdownRef.current && !refMatchDropdownRef.current.contains(e.target as Node)) {
+      const t = e.target as Node;
+      if (refMatchDropdownRef.current && !refMatchDropdownRef.current.contains(t)) {
         setRefMatch((prev) => ({ ...prev, isOpen: false }));
+      }
+      if (takimEvDropdownRef.current && !takimEvDropdownRef.current.contains(t)) {
+        setTakimSuggestEv((prev) => ({ ...prev, open: false }));
+      }
+      if (takimDepDropdownRef.current && !takimDepDropdownRef.current.contains(t)) {
+        setTakimSuggestDep((prev) => ({ ...prev, open: false }));
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -954,24 +1072,23 @@ export default function MatchTable() {
     setLoading(true);
     setFetchError(null);
     const p = new URLSearchParams({ page: String(page), limit: "100" });
-    Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
-    // dbCol sütun filtrelerini cf_ prefix ile gönder
-    Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
-      if (v.trim()) p.set(`cf_${id}`, v.trim());
-    });
-    // Çift yönlü (⇄) arama parametreleri
-    if (bidirFilters.takim.committed.trim()) {
-      p.set("bidir_takim",      bidirFilters.takim.committed.trim());
-      p.set("bidir_takim_mode", bidirFilters.takim.mode);
-    }
-    if (bidirFilters.takimid.committed.trim()) {
-      p.set("bidir_takimid",      bidirFilters.takimid.committed.trim());
-      p.set("bidir_takimid_mode", bidirFilters.takimid.mode);
-    }
+    // bidir_* önce: çok cf_ ile uzun URL’de proxy kesintisi riskini azaltır
+    const te = bidirFilters.takim.ev.committed.trim();
+    const td = bidirFilters.takim.dep.committed.trim();
+    if (te) p.set("bidir_takim_ev", te);
+    if (td) p.set("bidir_takim_dep", td);
+    const tie = bidirFilters.takimid.ev.committed.trim();
+    const tid = bidirFilters.takimid.dep.committed.trim();
+    if (tie) p.set("bidir_takimid_ev", tie);
+    if (tid) p.set("bidir_takimid_dep", tid);
     if (bidirFilters.personel.committed.trim()) {
       p.set("bidir_personel",      bidirFilters.personel.committed.trim());
       p.set("bidir_personel_mode", bidirFilters.personel.mode);
     }
+    Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
+    Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
+      if (v.trim()) p.set(`cf_${id}`, v.trim());
+    });
     // Üst kod kutusu: MBS üst/sütun filtresi yoksa tüm DB’de son N hane (API + görünüm)
     const fromAppliedS4 = normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN);
     const fromCfS4 = normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN);
@@ -1023,7 +1140,20 @@ export default function MatchTable() {
     } finally {
       if (matchesFetchGenRef.current === myGen) setLoading(false);
     }
-  }, [page, applied, dbColFiltersApplied, bidirFilters, kodSuffixN, kodSuffixRefKey, kodSon4Highlight]);
+  }, [
+    page,
+    applied,
+    dbColFiltersApplied,
+    bidirFilters.takim.ev.committed,
+    bidirFilters.takim.dep.committed,
+    bidirFilters.takimid.ev.committed,
+    bidirFilters.takimid.dep.committed,
+    bidirFilters.personel.committed,
+    bidirFilters.personel.mode,
+    kodSuffixN,
+    kodSuffixRefKey,
+    kodSon4Highlight,
+  ]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
   // panel dışı tıkla kapat
@@ -1280,6 +1410,7 @@ export default function MatchTable() {
                           colClickPos,
                           topFilters: { ...filters },
                           colFilters: { ...colFiltersCommitted },
+                          bidirFilters: { ...bidirFilters },
                           sortCol,
                           sortDir,
                           kodSon4: kodSon4Highlight,
@@ -1321,7 +1452,7 @@ export default function MatchTable() {
                               setApplied({ ...EMPTY_TOP, ...vp.topFilters });
                               setColFilters(vp.colFilters);
                               commitColFilters(vp.colFilters);
-                              if (vp.bidirFilters) setBidirFilters(vp.bidirFilters);
+                              if (vp.bidirFilters) setBidirFilters(normalizeBidirFromUnknown(vp.bidirFilters));
                               setSortCol(vp.sortCol);
                               setSortDir(vp.sortDir);
                               setKodSon4Highlight(vp.kodSon4);
@@ -1525,7 +1656,7 @@ export default function MatchTable() {
                     setRefMatch(REF_MATCH_INIT);
                     setBidirFilters((prev) => ({
                       ...prev,
-                      takimid: { pattern: "", committed: "", mode: prev.takimid.mode },
+                      takimid: BIDIR_INIT.takimid,
                     }));
                     setPage(1);
                   }}
@@ -1533,70 +1664,288 @@ export default function MatchTable() {
               )}
             </div>
 
-            {/* Takım adı */}
-            <div className="flex items-center gap-1">
+            {/* Takım adı — ev / dep ayrı; yazdıkça maç önerisi (Ref ile aynı API) */}
+            <div
+              className="flex items-center gap-1 flex-wrap"
+              title="Yazarken yalnız öneri listesi güncellenir; tablo listesi takım seçince veya Enter ile uygular. T-ID kutuları: alan dışına çıkınca da uygulanır.">
               <span className="text-gray-600 shrink-0">Takım</span>
-              <div className="flex rounded overflow-hidden border border-gray-300">
-                {BIDIR_TAKIM_MODES.map((m) => (
-                  <button key={m.key} type="button" title={m.title}
-                    onClick={() => setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, mode: m.key } }))}
-                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.takim.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
-                    {m.label}
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={takimEvDropdownRef}>
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0">Ev</span>
+                <input
+                  value={bidirFilters.takim.ev.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takim: { ...prev.takim, ev: { ...prev.takim.ev, pattern: q } },
+                    }));
+                    if (takimEvTimerRef.current) clearTimeout(takimEvTimerRef.current);
+                    takimEvTimerRef.current = setTimeout(() => searchTakimSuggest(q, "ev"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setTakimSuggestEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, ev: { ...prev.takim.ev, committed: prev.takim.ev.pattern } },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setTakimSuggestEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, ev: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (takimSuggestEv.teamNames.length) setTakimSuggestEv((prev) => ({ ...prev, open: true }));
+                  }}
+                  placeholder="Ara…"
+                  className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.takim.ev.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.takim.ev.pattern || bidirFilters.takim.ev.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTakimSuggestEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, ev: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Ev temizle">
+                    ×
                   </button>
-                ))}
+                )}
+                {takimSuggestEv.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {takimSuggestEv.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!takimSuggestEv.loading && takimSuggestEv.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!takimSuggestEv.loading &&
+                      takimSuggestEv.teamNames.map((name, i) => (
+                        <button
+                          key={`ev-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setTakimSuggestEv(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              takim: {
+                                ...prev.takim,
+                                ev: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
               </div>
-              <input
-                value={bidirFilters.takim.pattern}
-                onChange={(e) => setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, pattern: e.target.value } }))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, committed: prev.takim.pattern } }));
-                    setPage(1);
-                  } else if (e.key === "Escape") {
-                    setBidirFilters((prev) => ({ ...prev, takim: { pattern: "", committed: "", mode: prev.takim.mode } }));
-                    setPage(1);
-                  }
-                }}
-                placeholder="*ray, gal*… (Enter)"
-                className={`w-28 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.takim.committed ? "border-blue-500" : "border-gray-300"}`}
-              />
-              {(bidirFilters.takim.pattern || bidirFilters.takim.committed) && (
-                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, takim: { pattern: "", committed: "", mode: prev.takim.mode } })); setPage(1); }}
-                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
-              )}
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={takimDepDropdownRef}>
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0">Dep</span>
+                <input
+                  value={bidirFilters.takim.dep.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takim: { ...prev.takim, dep: { ...prev.takim.dep, pattern: q } },
+                    }));
+                    if (takimDepTimerRef.current) clearTimeout(takimDepTimerRef.current);
+                    takimDepTimerRef.current = setTimeout(() => searchTakimSuggest(q, "dep"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, dep: { ...prev.takim.dep, committed: prev.takim.dep.pattern } },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, dep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (takimSuggestDep.teamNames.length) setTakimSuggestDep((prev) => ({ ...prev, open: true }));
+                  }}
+                  placeholder="Ara…"
+                  className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.takim.dep.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.takim.dep.pattern || bidirFilters.takim.dep.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takim: { ...prev.takim, dep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Dep temizle">
+                    ×
+                  </button>
+                )}
+                {takimSuggestDep.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {takimSuggestDep.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!takimSuggestDep.loading && takimSuggestDep.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!takimSuggestDep.loading &&
+                      takimSuggestDep.teamNames.map((name, i) => (
+                        <button
+                          key={`dep-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              takim: {
+                                ...prev.takim,
+                                dep: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Takım ID */}
-            <div className="flex items-center gap-1">
+            {/* Takım ID — ev / dep ayrı (t1i / t2i) */}
+            <div className="flex items-center gap-1 flex-wrap" title="Ev: t1i. Dep: t2i. İkisi: her iki ID şartı (VE).">
               <span className="text-gray-600 shrink-0">T-ID</span>
-              <div className="flex rounded overflow-hidden border border-gray-300">
-                {BIDIR_TAKIM_MODES.map((m) => (
-                  <button key={m.key} type="button" title={m.title}
-                    onClick={() => setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, mode: m.key } }))}
-                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.takimid.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-              <input
-                value={bidirFilters.takimid.pattern}
-                onChange={(e) => setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, pattern: e.target.value } }))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, committed: prev.takimid.pattern } }));
-                    setPage(1);
-                  } else if (e.key === "Escape") {
-                    setBidirFilters((prev) => ({ ...prev, takimid: { pattern: "", committed: "", mode: prev.takimid.mode } }));
-                    setPage(1);
+              <div className="flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5">
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0">Ev</span>
+                <input
+                  value={bidirFilters.takimid.ev.pattern}
+                  onChange={(e) =>
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takimid: { ...prev.takimid, ev: { ...prev.takimid.ev, pattern: e.target.value } },
+                    }))
                   }
-                }}
-                placeholder="2793… (Enter)"
-                className={`w-20 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.takimid.committed ? "border-blue-500" : "border-gray-300"}`}
-              />
-              {(bidirFilters.takimid.pattern || bidirFilters.takimid.committed) && (
-                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, takimid: { pattern: "", committed: "", mode: prev.takimid.mode } })); setPage(1); }}
-                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
-              )}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, ev: { ...prev.takimid.ev, committed: prev.takimid.ev.pattern } },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, ev: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onBlur={() => commitBidirLaneOnBlur("takimid", "ev")}
+                  placeholder="1305…"
+                  className={`w-16 min-w-[3.25rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.takimid.ev.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.takimid.ev.pattern || bidirFilters.takimid.ev.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, ev: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Ev T-ID temizle">
+                    ×
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5">
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0">Dep</span>
+                <input
+                  value={bidirFilters.takimid.dep.pattern}
+                  onChange={(e) =>
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takimid: { ...prev.takimid, dep: { ...prev.takimid.dep, pattern: e.target.value } },
+                    }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, dep: { ...prev.takimid.dep, committed: prev.takimid.dep.pattern } },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, dep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onBlur={() => commitBidirLaneOnBlur("takimid", "dep")}
+                  placeholder="2793…"
+                  className={`w-16 min-w-[3.25rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.takimid.dep.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.takimid.dep.pattern || bidirFilters.takimid.dep.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        takimid: { ...prev.takimid, dep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Dep T-ID temizle">
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Personel (hakem + antrenörler) */}
