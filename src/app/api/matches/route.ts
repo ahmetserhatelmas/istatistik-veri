@@ -321,6 +321,39 @@ export async function GET(req: NextRequest) {
   } else if (tarihTo) {
     query = query.lte("tarih", tarihTo);
   }
+
+  /** DD.MM.YYYY metin `tarih_arama` üzerinde: gün / ay / yıl ayrı VE ile; üçünü birden tam gün → `tarih` aralığı. */
+  const padTarihPart = (raw: string, max: number): string => {
+    const n = Number(raw.trim());
+    if (!Number.isFinite(n) || n < 1 || n > max) return "";
+    return String(n).padStart(2, "0");
+  };
+  const tgRaw = sp.get("tarih_gun")?.trim() ?? "";
+  const taRaw = sp.get("tarih_ay")?.trim() ?? "";
+  const tyRaw = sp.get("tarih_yil")?.trim() ?? "";
+  if (tgRaw || taRaw || tyRaw) {
+    const g = tgRaw ? padTarihPart(tgRaw, 31) : "";
+    const a = taRaw ? padTarihPart(taRaw, 12) : "";
+    const yOk = /^\d{4}$/.test(tyRaw);
+    const yNum = yOk ? Number(tyRaw) : NaN;
+    const y =
+      Number.isFinite(yNum) && yNum >= 1900 && yNum <= 2100 ? tyRaw : "";
+
+    if (g && a && y) {
+      const di = Number(g);
+      const mi = Number(a);
+      const yi = Number(y);
+      const last = new Date(yi, mi, 0).getDate();
+      const day = Math.min(di, last);
+      const iso = `${y}-${String(mi).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      query = query.gte("tarih", iso).lte("tarih", iso);
+    } else {
+      if (g) query = query.ilike("tarih_arama", `${g}.%`);
+      if (a) query = query.ilike("tarih_arama", `%.${a}.%`);
+      if (y) query = query.ilike("tarih_arama", `%${y}`);
+    }
+  }
+
   if (sp.get("lig"))        query = query.ilike("lig_adi", `%${sp.get("lig")}%`);
   if (sp.get("alt_lig"))    query = query.ilike("alt_lig_adi", `%${sp.get("alt_lig")}%`);
   if (sp.get("takim")) {

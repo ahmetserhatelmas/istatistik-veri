@@ -24,3 +24,20 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * Tarih sütunu <select>: kapalı kutu küçük (11px, sık padding); mobilde açılan liste satırları büyük.
+ * Not: iOS tekerleği sistem çizer — option stilleri çoğunlukla yok sayılır; Android/Chromium’da işe yarar.
+ */
+@media (max-width: 639px) {
+  select.tarih-select-mobile {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+  select.tarih-select-mobile option {
+    font-size: 1rem;
+    line-height: 1.35;
+    padding: 0.5rem 0.65rem;
+    min-height: 2.75rem;
+  }
+}
