@@ -519,6 +519,72 @@ const BIDIR_PERSONEL_MODES: { key: BidirPersonelMode; label: string; title: stri
 const LS_BIDIR        = "bidir_filters_v1";
 const LS_SHOW_BIDIR   = "show_bidir_row_v1";
 
+// ── Referans Maç ─────────────────────────────────────────────────────────────
+/** Referans maçtan hangi alan kullanılacak */
+type RefMatchField = "t1i" | "t2i" | "id" | "kod_ms" | "kod_iy";
+
+const REF_MATCH_FIELDS: { key: RefMatchField; label: string; title: string }[] = [
+  { key: "t1i",    label: "T1-ID",  title: "Ev Takım ID" },
+  { key: "t2i",    label: "T2-ID",  title: "Dep Takım ID" },
+  { key: "id",     label: "Maç ID", title: "Maç Kodu" },
+  { key: "kod_ms", label: "MS Kod", title: "MS Oyun Kodu" },
+  { key: "kod_iy", label: "İY Kod", title: "İY Oyun Kodu" },
+];
+
+interface RefMatchState {
+  query: string;
+  results: Match[];
+  selected: Match | null;
+  isOpen: boolean;
+  loading: boolean;
+  field: RefMatchField;
+  positions: number[]; // seçili hane pozisyonları (1-tabanlı); boş = tam değer
+}
+
+const REF_MATCH_INIT: RefMatchState = {
+  query: "", results: [], selected: null, isOpen: false, loading: false,
+  field: "t1i", positions: [],
+};
+
+/** Seçilen maçtan + pozisyonlardan wildcard pattern üret */
+function buildRefPattern(match: Match, field: RefMatchField, positions: number[]): string {
+  const raw = String(match[field] ?? "").replace(/\D/g, "");
+  if (!raw) return "";
+  if (!positions.length) return raw;
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    out += positions.includes(i + 1) ? raw[i] : "?";
+  }
+  // Baştaki ? dizisini * ile kısalt
+  out = out.replace(/^\?+/, "*");
+  return out;
+}
+
+/** Ref maç pattern'ı T-ID bidir filtresine yazar ve commit eder */
+function applyRefToBidir(
+  match: Match,
+  field: RefMatchField,
+  positions: number[],
+  setBidirFilters: React.Dispatch<React.SetStateAction<BidirFiltersState>>,
+  setPage: (p: number) => void
+) {
+  const pat = buildRefPattern(match, field, positions);
+  if (!pat) return;
+  // T1I/T2I → takimid; diğerleri → takim (pattern olarak)
+  if (field === "t1i" || field === "t2i") {
+    setBidirFilters((prev) => ({
+      ...prev,
+      takimid: { pattern: pat, committed: pat, mode: field === "t1i" ? "ev" : "dep" },
+    }));
+  } else {
+    setBidirFilters((prev) => ({
+      ...prev,
+      takim: { pattern: pat, committed: pat, mode: "ikisi" },
+    }));
+  }
+  setPage(1);
+}
+
 export default function MatchTable() {
   const [matches, setMatches]     = useState<Match[]>([]);
   const [loading, setLoading]     = useState(false);
@@ -630,6 +696,10 @@ export default function MatchTable() {
   const [showBidirRow, setShowBidirRow] = useState<boolean>(
     () => lsGet<boolean>(LS_SHOW_BIDIR, false)
   );
+  // referans maç
+  const [refMatch, setRefMatch] = useState<RefMatchState>(REF_MATCH_INIT);
+  const refMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refMatchDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { lsSet(LS_COL_ORDER, colOrder); }, [colOrder]);
   useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
@@ -637,6 +707,40 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
   useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
+
+  // Ref maç arama (debounced)
+  const searchRefMatches = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setRefMatch((prev) => ({ ...prev, results: [], isOpen: false, loading: false }));
+      return;
+    }
+    setRefMatch((prev) => ({ ...prev, loading: true, isOpen: true }));
+    try {
+      const p = new URLSearchParams({ limit: "20" });
+      const num = Number(q.trim());
+      if (!isNaN(num) && q.trim().length > 3) {
+        p.set("cf_id", q.trim());
+      } else {
+        p.set("takim", q.trim());
+      }
+      const res = await fetch(`/api/matches?${p}`);
+      const json: ApiResponse = await res.json();
+      setRefMatch((prev) => ({ ...prev, results: json.data ?? [], loading: false, isOpen: true }));
+    } catch {
+      setRefMatch((prev) => ({ ...prev, results: [], loading: false }));
+    }
+  }, []);
+
+  // Ref dropdown dışına tıklayınca kapat
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (refMatchDropdownRef.current && !refMatchDropdownRef.current.contains(e.target as Node)) {
+        setRefMatch((prev) => ({ ...prev, isOpen: false }));
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
 
   // görünüm presetleri
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>(
@@ -1231,6 +1335,119 @@ export default function MatchTable() {
         {showBidirRow && (
           <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-blue-50 border-t border-blue-200 text-xs">
             <span className="font-semibold text-blue-700 shrink-0">⇄</span>
+
+            {/* ── Referans Maç ── */}
+            <div className="flex items-center gap-1 border-r border-blue-200 pr-2 mr-1" ref={refMatchDropdownRef}>
+              <span className="text-blue-700 font-semibold shrink-0">Ref</span>
+
+              {/* Alan seçici */}
+              <div className="flex rounded overflow-hidden border border-gray-300">
+                {REF_MATCH_FIELDS.map((f) => (
+                  <button key={f.key} type="button" title={f.title}
+                    onClick={() => setRefMatch((prev) => ({ ...prev, field: f.key }))}
+                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${refMatch.field === f.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Arama kutusu */}
+              <div className="relative">
+                <input
+                  value={refMatch.query}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setRefMatch((prev) => ({ ...prev, query: q, selected: q ? prev.selected : null }));
+                    if (refMatchTimerRef.current) clearTimeout(refMatchTimerRef.current);
+                    refMatchTimerRef.current = setTimeout(() => searchRefMatches(q), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setRefMatch((prev) => ({ ...prev, query: "", selected: null, results: [], isOpen: false }));
+                    }
+                  }}
+                  onFocus={() => { if (refMatch.results.length) setRefMatch((prev) => ({ ...prev, isOpen: true })); }}
+                  placeholder={refMatch.selected ? "" : "Takım adı / maç ID…"}
+                  className={`w-36 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${refMatch.selected ? "border-blue-500" : "border-gray-300"}`}
+                />
+                {/* Seçili maç etiketi */}
+                {refMatch.selected && !refMatch.query && (
+                  <span className="absolute inset-0 flex items-center px-1.5 text-[10px] text-blue-700 font-medium pointer-events-none truncate">
+                    {refMatch.selected["id"]} · {String(refMatch.selected["t1"] ?? "").slice(0, 12)}
+                  </span>
+                )}
+                {/* Dropdown */}
+                {refMatch.isOpen && (
+                  <div className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg">
+                    {refMatch.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!refMatch.loading && refMatch.results.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {refMatch.results.map((m, i) => (
+                      <button key={i} type="button"
+                        className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                        onClick={() => {
+                          setRefMatch((prev) => ({ ...prev, selected: m, query: "", isOpen: false, results: [] }));
+                          applyRefToBidir(m, refMatch.field, refMatch.positions, setBidirFilters, setPage);
+                        }}>
+                        <span className="font-mono text-gray-500 mr-1">{String(m["id"])}</span>
+                        <span className="text-gray-800">{String(m["t1"] ?? "")} – {String(m["t2"] ?? "")}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Pozisyon seçici — seçili maç varsa göster */}
+              {refMatch.selected && (() => {
+                const rawVal = String(refMatch.selected[refMatch.field] ?? "").replace(/\D/g, "");
+                if (!rawVal) return null;
+                return (
+                  <div className="flex items-center gap-0.5">
+                    <span className="text-gray-500 text-[10px]">Hane:</span>
+                    {rawVal.split("").map((ch, i) => {
+                      const pos = i + 1;
+                      const isSel = refMatch.positions.includes(pos);
+                      return (
+                        <button key={pos} type="button"
+                          title={`${DIGIT_POS_LABEL[pos] ?? pos}. hane = ${ch}`}
+                          onClick={() => {
+                            setRefMatch((prev) => {
+                              const next = isSel
+                                ? prev.positions.filter((p) => p !== pos)
+                                : [...prev.positions, pos].sort((a, b) => a - b);
+                              // pattern güncelle ve bidir'a uygula
+                              applyRefToBidir(prev.selected!, prev.field, next, setBidirFilters, setPage);
+                              return { ...prev, positions: next };
+                            });
+                          }}
+                          className={`w-[18px] h-[18px] text-[9px] flex items-center justify-center rounded border font-bold transition ${isSel ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}>
+                          {DIGIT_POS_LABEL[pos] ?? pos}
+                        </button>
+                      );
+                    })}
+                    <span className="text-[10px] font-mono text-blue-700 ml-1">
+                      = {buildRefPattern(refMatch.selected, refMatch.field, refMatch.positions)}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {refMatch.selected && (
+                <button type="button" title="Referans maçı temizle"
+                  onClick={() => {
+                    setRefMatch(REF_MATCH_INIT);
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takimid: { pattern: "", committed: "", mode: prev.takimid.mode },
+                    }));
+                    setPage(1);
+                  }}
+                  className="text-gray-500 hover:text-red-600 px-0.5">×</button>
+              )}
+            </div>
 
             {/* Takım adı */}
             <div className="flex items-center gap-1">
