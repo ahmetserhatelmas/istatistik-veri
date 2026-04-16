@@ -7,6 +7,50 @@
  */
 import { OKBT_BASAMAK_GROUP, OKBT_BASAMAK_LABELS } from "./okbt-basamak-toplamlari";
 
+/** Çok kaynaklı OKBT: her kod sütunu için bağımsız OKBT set. */
+export interface OkbtMultiSource {
+  /** col id öneki (ör. "kodms") ve PostgREST computed fn öneki */
+  id: string;
+  /** DB tablo kolonu (ör. "kod_ms") */
+  dbCol: string;
+  /** API satırında veriyi okumak için anahtar (genelde dbCol ile aynı) */
+  rowKey: string;
+  /** Sütun paneli grup etiketi */
+  group: string;
+  /** OKBT formül indeksleri (0-14); skor kodu gibi özel durumlar için [14] */
+  indices: readonly number[];
+}
+
+const ALL_15_IDX = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14] as const;
+
+export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
+  { id: "macid",  dbCol: "id",     rowKey: "id",     group: "Maç ID · OKBT",  indices: ALL_15_IDX },
+  { id: "t1i",    dbCol: "t1i",    rowKey: "t1i",    group: "T1 ID · OKBT",   indices: ALL_15_IDX },
+  { id: "t2i",    dbCol: "t2i",    rowKey: "t2i",    group: "T2 ID · OKBT",   indices: ALL_15_IDX },
+  { id: "kodms",  dbCol: "kod_ms", rowKey: "kod_ms", group: "MS Kod · OKBT",  indices: ALL_15_IDX },
+  { id: "kodcs",  dbCol: "kod_cs", rowKey: "kod_cs", group: "ÇŞ Kod · OKBT",  indices: ALL_15_IDX },
+  { id: "kodau",  dbCol: "kod_au", rowKey: "kod_au", group: "A/Ü Kod · OKBT", indices: ALL_15_IDX },
+];
+
+export const OKBT_MULTI_SOURCE_MAP: Record<string, OkbtMultiSource> =
+  Object.fromEntries(OKBT_MULTI_SOURCES.map((s) => [s.id, s]));
+
+function buildOkbtMultiCols(): ColDef[] {
+  const cols: ColDef[] = [];
+  for (const src of OKBT_MULTI_SOURCES) {
+    for (const idx of src.indices) {
+      cols.push({
+        id: `${src.id}_obktb_${idx}`,
+        label: OKBT_BASAMAK_LABELS[idx]!,
+        key: `__okbtm_${src.id}_${idx}`,  // __ prefix → staticCfRawJson tarafından atlanır
+        group: src.group,
+        width: 54,
+      });
+    }
+  }
+  return cols;
+}
+
 export interface ColDef {
   id: string;
   label: string;
@@ -16,12 +60,13 @@ export interface ColDef {
   width?: number; // px — varsayılan 60
 }
 
-/** IY Kodu (`kod_iy`) basamaklarından 15 toplam — OKBT / oran merkezi mantığı. */
+/** IY Kodu (`kod_iy`) basamaklarından 15 toplam — DB’de obktb_* GENERATED; cf_* tam tablo. */
 function buildOkbtBasamakCols(): ColDef[] {
   return OKBT_BASAMAK_LABELS.map((label, i) => ({
     id: `obktb_${i}`,
     label,
-    key: `__obkt_basamak_${i}`,
+    key: `obktb_${i}`,
+    dbCol: true,
     group: OKBT_BASAMAK_GROUP,
     width: 54,
   }));
@@ -67,9 +112,9 @@ export const ALL_COLS: ColDef[] = [
   { id: "ms2", label: "2",   key: "MS2", group: "Maç Sonucu", width: 60 },
 
   // ── OKBT (IY Sonucu) ───────────────────────────────────────────────────────
-  { id: "iy1", label: "IY1", key: "IY1", group: "OKBT", width: 60 },
-  { id: "iyx", label: "IYX", key: "IYX", group: "OKBT", width: 60 },
-  { id: "iy2", label: "IY2", key: "IY2", group: "OKBT", width: 60 },
+  { id: "iy1", label: "IY1", key: "IY1", group: "İlk Yarı", width: 60 },
+  { id: "iyx", label: "IYX", key: "IYX", group: "İlk Yarı", width: 60 },
+  { id: "iy2", label: "IY2", key: "IY2", group: "İlk Yarı", width: 60 },
 
   ...buildOkbtBasamakCols(),
 
@@ -198,6 +243,9 @@ export const ALL_COLS: ColDef[] = [
   { id: "kod_cs",  label: "ÇŞ Kod",  key: "kod_cs",  dbCol: true, group: "Diğer", width: 72 },
   { id: "kod_iy",  label: "IY Kod",  key: "kod_iy",  dbCol: true, group: "Diğer", width: 72 },
   { id: "kod_au",  label: "A/Ü Kod", key: "kod_au",  dbCol: true, group: "Diğer", width: 72 },
+
+  // ── Çok kaynaklı OKBT ─────────────────────────────────────────────────────
+  ...buildOkbtMultiCols(),
 ];
 
 /** API / DB alan adlarını karşılaştırmak (T1ANTRENOR ↔ t1_antrenor) */
@@ -372,6 +420,35 @@ export function mergeAllCols(rawKeysFromDb: string[]): ColDef[] {
   return [...ALL_COLS, ...extraRawColDefs(rawKeysFromDb)];
 }
 
+/** Sunucu cf_*: ALL_COLS’ta dbCol olmayan, raw_data JSON anahtarı olan sütunlar (id → key). */
+export function staticCfRawJsonKeyByColId(): Record<string, string> {
+  const m: Record<string, string> = {};
+  for (const c of ALL_COLS) {
+    if (c.dbCol) continue;
+    if (!c.key || c.key.startsWith("__")) continue;
+    m[c.id] = c.key;
+  }
+  return m;
+}
+
+/** Ham veri raw_* sütunları: raw-keys örnekleminden (id → JSON anahtarı). */
+export function dynamicRawColIdToJsonKey(rawKeys: string[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  for (const d of extraRawColDefs(rawKeys)) {
+    m[d.id] = d.key;
+  }
+  return m;
+}
+
+/**
+ * cf_* yalnızca tarayıcıda süzülecek sütunlar.
+ * "__" prefix'li key'e sahip ama server-side filtrelenen (PostgREST computed fn) sütunlar hariç:
+ * - `__okbtm_*` → OKBT multi-kod: server'da `{srcId}_obktb_{idx}(matches)` fn ile filtreler
+ */
+export const CF_CLIENT_ONLY_COL_IDS: Set<string> = new Set(
+  ALL_COLS.filter((c) => c.key.startsWith("__") && !c.key.startsWith("__okbtm_")).map((c) => c.id)
+);
+
 /** Grup ismine göre renk */
 export const GROUP_COLORS: Record<string, string> = {
   "Tarih":                  "bg-slate-300",
@@ -381,8 +458,14 @@ export const GROUP_COLORS: Record<string, string> = {
   "Takımlar":               "bg-orange-200",
   "Skor":                   "bg-green-200",
   "Maç Sonucu":             "bg-blue-200",
-  "OKBT":                   "bg-indigo-200",
+  "İlk Yarı":               "bg-indigo-200",
   [OKBT_BASAMAK_GROUP]:     "bg-indigo-100",
+  "Maç ID · OKBT":          "bg-purple-100",
+  "T1 ID · OKBT":           "bg-orange-100",
+  "T2 ID · OKBT":           "bg-amber-100",
+  "MS Kod · OKBT":          "bg-blue-100",
+  "ÇŞ Kod · OKBT":          "bg-teal-100",
+  "A/Ü Kod · OKBT":         "bg-green-100",
   "Durumlar":               "bg-violet-200",
   "KG":                     "bg-pink-200",
   "Tek/Çift":               "bg-rose-200",

@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import {
+  dynamicRawColIdToJsonKey,
+  isRawKeyExcludedFromColumns,
+  OKBT_MULTI_SOURCE_MAP,
+  staticCfRawJsonKeyByColId,
+} from "@/lib/columns";
+import { OKBT_BASAMAK_LABELS } from "@/lib/okbt-basamak-toplamlari";
+import {
   normalizeTarihFilterInput,
   splitTarihOrPatterns,
   tarihPartToIlike,
@@ -31,7 +38,16 @@ const DB_COLS = [
   "mac_suffix4","mac_suffix3","mac_suffix2",
   "sport_turu","bookmaker_id",
   "raw_data",
+  ...OKBT_BASAMAK_LABELS.map((_, i) => `obktb_${i}`),
 ];
+
+function parseObktbFilterIndex(colId: string): number | null {
+  const m = /^obktb_(\d+)$/.exec(colId);
+  if (!m) return null;
+  const i = Number(m[1]);
+  if (!Number.isInteger(i) || i < 0 || i >= OKBT_BASAMAK_LABELS.length) return null;
+  return i;
+}
 
 // dbCol sütunların id → DB kolon adı + arama tipi
 const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
@@ -129,6 +145,9 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   return query.or(orExpr);
 }
 
+/** Ham veri alan adı: PostgREST ifadesi için güvenli anahtar. */
+const SAFE_RAW_JSON_KEY = /^[A-Za-z0-9_]+$/;
+
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
 const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms1: "ms1",
@@ -136,8 +155,77 @@ const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms2: "ms2",
 };
 
+const RAW_KEY_SAMPLE = 2500;
+const RAW_KEY_CACHE_MS = 10 * 60 * 1000;
+let rawKeyUnionCache: { keys: string[]; fetchedAt: number } | null = null;
+
+async function fetchRawDataKeyUnion(
+  supabase: ReturnType<typeof createServiceClient>
+): Promise<string[]> {
+  const now = Date.now();
+  if (rawKeyUnionCache && now - rawKeyUnionCache.fetchedAt < RAW_KEY_CACHE_MS) {
+    return rawKeyUnionCache.keys;
+  }
+  const { data, error } = await supabase
+    .from("matches")
+    .select("raw_data")
+    .order("tarih", { ascending: false })
+    .limit(RAW_KEY_SAMPLE);
+
+  if (error) {
+    return rawKeyUnionCache?.keys ?? [];
+  }
+  const keys = new Set<string>();
+  for (const row of data ?? []) {
+    const rd = row.raw_data as Record<string, unknown> | null;
+    if (rd && typeof rd === "object" && !Array.isArray(rd)) {
+      for (const k of Object.keys(rd)) {
+        if (!isRawKeyExcludedFromColumns(k)) keys.add(k);
+      }
+    }
+  }
+  const arr = Array.from(keys);
+  rawKeyUnionCache = { keys: arr, fetchedAt: now };
+  return arr;
+}
+
+function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, string> {
+  const base = { ...staticCfRawJsonKeyByColId() };
+  for (const id of Object.keys(MS_ODDS_DB_COL)) delete base[id];
+  const dyn = dynamicRawColIdToJsonKey(rawKeyUnion);
+  return { ...base, ...dyn };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
-function applyMsOddsColumnFilter(query: any, col: "ms1" | "msx" | "ms2", v: string): any {
+function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
+  if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
+  const field = `raw_data->>${jsonKey}`;
+  const parts = splitCfOrParts(v);
+  if (!parts.length) return query;
+
+  type Br = { pat: string };
+  const branches: Br[] = [];
+  for (const p of parts) {
+    if (p.includes("*") || p.includes("?")) {
+      branches.push({ pat: cfPatternToIlikePattern(p) });
+    } else {
+      branches.push({ pat: `%${p}%` });
+    }
+  }
+  if (branches.length === 1) {
+    return query.ilike(field, branches[0]!.pat);
+  }
+  const orExpr = branches
+    .map(({ pat }) => {
+      const esc = pat.replace(/"/g, '""');
+      return `${field}.ilike."${esc}"`;
+    })
+    .join(",");
+  return query.or(orExpr);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   const parts = splitCfOrParts(v);
   if (!parts.length) return query;
 
@@ -183,9 +271,13 @@ export async function GET(req: NextRequest) {
   const tarihFiltParts = cfTarihRaw
     ? splitTarihOrPatterns(normalizeTarihFilterInput(cfTarihRaw))
     : [];
-  const hasCfMsOdds = Boolean(
-    sp.get("cf_ms1")?.trim() || sp.get("cf_msx")?.trim() || sp.get("cf_ms2")?.trim()
-  );
+  let hasAnyCfParam = false;
+  for (const [k, v] of sp.entries()) {
+    if (k.startsWith("cf_") && v.trim()) {
+      hasAnyCfParam = true;
+      break;
+    }
+  }
 
   const ksRef = sp.get("ks_ref")?.trim() ?? "";
   const ksN = Number(sp.get("ks_n"));
@@ -209,9 +301,10 @@ export async function GET(req: NextRequest) {
 
   /** Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım */
   const countMode =
-    tarihFiltParts.length > 0 || useKsView || hasCfMsOdds ? ("planned" as const) : ("exact" as const);
+    tarihFiltParts.length > 0 || useKsView || hasAnyCfParam ? ("planned" as const) : ("exact" as const);
 
   const supabase = createServiceClient();
+  const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
   const fromTable = useKsView ? "matches_with_suffix_cols" : "matches";
   let query = supabase
     .from(fromTable)
@@ -233,6 +326,72 @@ export async function GET(req: NextRequest) {
   if (sp.get("takim")) {
     const t = `%${sp.get("takim")}%`;
     query = query.or(`t1.ilike.${t},t2.ilike.${t}`);
+  }
+
+  // ── Çift yönlü (⇄) arama ────────────────────────────────────────────────────
+  const bidirTakim = sp.get("bidir_takim")?.trim();
+  if (bidirTakim) {
+    const mode = sp.get("bidir_takim_mode") || "ikisi";
+    const parts = splitCfOrParts(bidirTakim);
+    const pats = parts.map((p) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
+    );
+    if (mode === "ev") {
+      for (const pat of pats) query = query.ilike("t1", pat);
+    } else if (mode === "dep") {
+      for (const pat of pats) query = query.ilike("t2", pat);
+    } else {
+      const orParts = pats.flatMap((pat) => {
+        const esc = pat.replace(/"/g, '""');
+        return [`t1.ilike."${esc}"`, `t2.ilike."${esc}"`];
+      });
+      query = query.or(orParts.join(","));
+    }
+  }
+
+  const bidirTakimid = sp.get("bidir_takimid")?.trim();
+  if (bidirTakimid) {
+    const mode = sp.get("bidir_takimid_mode") || "ikisi";
+    const parts = splitCfOrParts(bidirTakimid);
+    const pats = parts.map((p) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
+    );
+    if (mode === "ev") {
+      for (const pat of pats) query = query.ilike("t1i", pat);
+    } else if (mode === "dep") {
+      for (const pat of pats) query = query.ilike("t2i", pat);
+    } else {
+      const orParts = pats.flatMap((pat) => {
+        const esc = pat.replace(/"/g, '""');
+        return [`t1i.ilike."${esc}"`, `t2i.ilike."${esc}"`];
+      });
+      query = query.or(orParts.join(","));
+    }
+  }
+
+  const bidirPersonel = sp.get("bidir_personel")?.trim();
+  if (bidirPersonel) {
+    const mode = sp.get("bidir_personel_mode") || "all";
+    const parts = splitCfOrParts(bidirPersonel);
+    const pats = parts.map((p) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
+    );
+    type PersonelCols = ("hakem" | "t1_antrenor" | "t2_antrenor")[];
+    const cols: PersonelCols =
+      mode === "hakem" ? ["hakem"]
+      : mode === "ant"  ? ["t1_antrenor", "t2_antrenor"]
+      :                   ["hakem", "t1_antrenor", "t2_antrenor"];
+    if (cols.length === 1) {
+      for (const pat of pats) query = query.ilike(cols[0]!, pat);
+    } else {
+      const orParts = pats.flatMap((pat) =>
+        cols.map((col) => {
+          const esc = pat.replace(/"/g, '""');
+          return `${col}.ilike."${esc}"`;
+        })
+      );
+      query = query.or(orParts.join(","));
+    }
   }
   if (sp.get("sonuc_iy"))  query = query.ilike("sonuc_iy", `%${sp.get("sonuc_iy")}%`);
   if (sp.get("sonuc_ms"))  query = query.ilike("sonuc_ms", `%${sp.get("sonuc_ms")}%`);
@@ -259,29 +418,54 @@ export async function GET(req: NextRequest) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
     if (colId === "tarih") continue;
+    const v = val.trim();
     const msCol = MS_ODDS_DB_COL[colId];
     if (msCol) {
-      query = applyMsOddsColumnFilter(query, msCol, val.trim());
+      query = applyCfTextColumnIlikeFilter(query, msCol, v);
+      continue;
+    }
+    const obktbIdx = parseObktbFilterIndex(colId);
+    if (obktbIdx !== null) {
+      query = applyCfTextColumnIlikeFilter(query, `obktb_${obktbIdx}`, v);
       continue;
     }
     const def = DB_COL_MAP[colId];
-    if (!def) continue;
-    const v = val.trim();
-    if (CODE_ILIKE_ARAMA[colId]) {
-      query = applyCodeColumnPatternFilter(query, colId, v);
+    if (def) {
+      if (CODE_ILIKE_ARAMA[colId]) {
+        query = applyCodeColumnPatternFilter(query, colId, v);
+        continue;
+      }
+      if (def.mode === "ilike") {
+        query = query.ilike(def.col, `%${v}%`);
+      } else if (def.mode === "eq") {
+        // id (bigint) için özel: sayıya çevir; diğer text eq için string
+        if (def.col === "id") {
+          const n = Number(v);
+          if (Number.isFinite(n) && n > 0) query = query.eq(def.col, n);
+        } else {
+          const n = Number(v);
+          query = query.eq(def.col, Number.isFinite(n) ? n : v);
+        }
+      }
       continue;
     }
-    if (def.mode === "ilike") {
-      query = query.ilike(def.col, `%${v}%`);
-    } else if (def.mode === "eq") {
-      // id (bigint) için özel: sayıya çevir; diğer text eq için string
-      if (def.col === "id") {
+    // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → PostgreSQL computed column fn
+    const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(colId);
+    if (multiOkbtM) {
+      const srcId = multiOkbtM[1]!;
+      const idx = Number(multiOkbtM[2]);
+      if (OKBT_MULTI_SOURCE_MAP[srcId] !== undefined && Number.isInteger(idx) && idx >= 0 && idx < 15) {
         const n = Number(v);
-        if (Number.isFinite(n) && n > 0) query = query.eq(def.col, n);
-      } else {
-        const n = Number(v);
-        query = query.eq(def.col, Number.isFinite(n) ? n : v);
+        if (Number.isFinite(n) && n >= 0) {
+          query = query.eq(`${srcId}_obktb_${idx}`, Math.round(n));
+        }
       }
+      continue;
+    }
+
+    const jsonKey = mergedRawCf[colId];
+    if (jsonKey) {
+      query = applyRawJsonPathIlikeFilter(query, jsonKey, v);
     }
   }
 
@@ -304,7 +488,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql (Supabase Editor). CONCURRENTLY → add-matches-ms-odds-trgm-indexes-concurrent.sql (psql, satır satır).",
+            "Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql. Ham veri (raw_data) cf_* filtreleri büyük tabloda yavaş olabilir; ilgili JSON alanları için pg_trgm / expression index veya statement_timeout artırın. CONCURRENTLY → *-concurrent.sql (psql, satır satır).",
           detail: msg,
           code: e.code,
         },
@@ -349,6 +533,34 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Jokerli maç/oyun kodu filtresi için kolonlar eksik. sql/add-matches-code-arama-columns-01-id.sql … 05 dosyalarını (tek tek; timeout’ta psql) çalıştırın; ardından create-matches-suffix-view.sql ile görünümü yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingOkbtBasamak =
+      /obktb_\d+/i.test(msg) &&
+      (e.code === "42703" || /column .* does not exist|Could not find.*obktb/i.test(msg));
+    if (missingOkbtBasamak) {
+      return NextResponse.json(
+        {
+          error:
+            "OKBT basamak (obktb_*) sütunları yok. sql/add-matches-okbt-basamak-generated-cols.sql çalıştırın; kod sonek görünümü kullanıyorsanız create-matches-suffix-view.sql ile yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingMultiOkbt =
+      /_(obktb|obkt)_\d+/i.test(msg) &&
+      (e.code === "42883" || /function.*does not exist|Could not find.*function/i.test(msg));
+    if (missingMultiOkbt) {
+      return NextResponse.json(
+        {
+          error:
+            "Çok kaynaklı OKBT fonksiyonları (kodms_obktb_0 vb.) henüz oluşturulmamış. sql/add-matches-okbt-multi-computed-col-functions.sql dosyasını Supabase SQL Editor'de çalıştırın.",
           detail: msg,
           code: e.code,
         },

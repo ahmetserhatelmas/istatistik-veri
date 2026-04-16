@@ -1,7 +1,7 @@
 -- Üst bar "Kod / son N / rakam" kutusu: tüm tabloda son N haneye göre arama (PostgREST .eq ile).
 -- Çalıştır: Supabase SQL Editor veya psql
 -- İndeksler: sql/add-matches-suffix-expression-indexes.sql
--- matches’a yeni sütun eklendiyse (örn. sql/add-matches-code-arama-columns.sql): bu dosyayı yeniden çalıştırın ki m.* güncellensin.
+-- matches’a yeni sütun eklendiyse (örn. sql/add-matches-code-arama-columns.sql, sql/add-matches-okbt-basamak-generated-cols.sql): bu dosyayı yeniden çalıştırın ki m.* güncellensin.
 
 CREATE OR REPLACE FUNCTION public.matches_sfx_mod(v bigint, modulus bigint)
 RETURNS bigint
@@ -16,7 +16,11 @@ $$;
 COMMENT ON FUNCTION public.matches_sfx_mod(bigint, bigint) IS
   'Son ondalık N hane: mod(abs(v), 10^N). sfx_* görünümü + ifade indeksleri aynı fonksiyonu kullanır.';
 
-CREATE OR REPLACE VIEW public.matches_with_suffix_cols AS
+-- matches’a yeni kolon eklenince m.* sırası değişir; CREATE OR REPLACE VIEW tek başına 42P16 verebilir
+-- ("cannot change name of view column …"). Güvenli yenileme: düşür + oluştur.
+DROP VIEW IF EXISTS public.matches_with_suffix_cols CASCADE;
+
+CREATE VIEW public.matches_with_suffix_cols AS
 SELECT
   m.*,
   public.matches_sfx_mod(m.id, 1000) AS sfx_id_3,

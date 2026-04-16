@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ALL_COLS, DEFAULT_VISIBLE, GROUP_COLORS, mergeAllCols, type ColDef } from "@/lib/columns";
+import {
+  ALL_COLS,
+  CF_CLIENT_ONLY_COL_IDS,
+  OKBT_MULTI_SOURCE_MAP,
+  DEFAULT_VISIBLE,
+  GROUP_COLORS,
+  mergeAllCols,
+  type ColDef,
+} from "@/lib/columns";
 import { okbtBasamakHucreDegeri } from "@/lib/okbt-basamak-toplamlari";
 
 type Match = Record<string, unknown>;
@@ -86,7 +94,21 @@ function cellVal(row: Match, col: ColDef): string {
   if (col.id.startsWith("obktb_")) {
     const i = Number(col.id.slice(6));
     if (!Number.isInteger(i) || i < 0 || i > 14) return "";
+    const dbv = row[`obktb_${i}`];
+    if (dbv != null && String(dbv) !== "") return String(dbv);
     return okbtBasamakHucreDegeri(row["kod_iy"], i);
+  }
+
+  // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → client-side hesap (rowKey'den)
+  const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(col.id);
+  if (multiOkbtM) {
+    const srcId = multiOkbtM[1]!;
+    const idx = Number(multiOkbtM[2]);
+    const src = OKBT_MULTI_SOURCE_MAP[srcId];
+    if (src && Number.isInteger(idx) && idx >= 0 && idx <= 14) {
+      return okbtBasamakHucreDegeri(row[src.rowKey], idx);
+    }
+    return "";
   }
 
   const raw = row[col.key] ?? null;
@@ -111,15 +133,17 @@ function cellVal(row: Match, col: ColDef): string {
 }
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
-const ODDS_GROUPS = new Set(["Maç Sonucu","OKBT","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","IY Skoru"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","IY Skoru"]);
+
+/** Hane pozisyonu → A-Z harfi (tüm sütunlarda tutarlı etiket). */
+const DIGIT_POS_LABEL: Record<number, string> = {
+  1:"A", 2:"B", 3:"C", 4:"D", 5:"E", 6:"F", 7:"G", 8:"H", 9:"I", 10:"J",
+};
 const RAW_API_GROUP = "Ham veri (API)";
 
 // ── Hane seçici (digit-position click) ───────────────────────────────────────
 /** Kod/oran sütunları: hücreye tıklayınca hangi rakam haneleri filtrelensin? */
 const DIGIT_CLICK_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
-
-/** Maç Sonucu 1/X/2 — API’de raw_data->>MS* ile tam DB (dbCol değil, cf_* ile gönderilir). */
-const MS_ODDS_FILTER_IDS = new Set(["ms1", "msx", "ms2"]);
 
 function isDigitClickCol(col: ColDef): boolean {
   return DIGIT_CLICK_COL_IDS.has(col.id) || ODDS_GROUPS.has(col.group) || col.group === RAW_API_GROUP;
@@ -460,6 +484,7 @@ interface ViewPreset {
   // filtreler
   topFilters: Record<string, string>;
   colFilters: Record<string, string>;
+  bidirFilters?: BidirFiltersState;
   // sıralama
   sortCol: string | null;
   sortDir: "asc" | "desc";
@@ -470,6 +495,37 @@ interface ViewPreset {
 }
 
 const EMPTY_TOP = { tarih_from:"", tarih_to:"", lig:"", takim:"", sonuc_iy:"", sonuc_ms:"", hakem:"", suffix4:"", suffix3:"" };
+
+// ── Çift Yönlü (⇄) Arama ─────────────────────────────────────────────────────
+type BidirTakimMode   = "ev" | "dep" | "ikisi";
+type BidirPersonelMode = "hakem" | "ant" | "all";
+
+interface BidirFiltersState {
+  takim:    { pattern: string; committed: string; mode: BidirTakimMode };
+  takimid:  { pattern: string; committed: string; mode: BidirTakimMode };
+  personel: { pattern: string; committed: string; mode: BidirPersonelMode };
+}
+
+const BIDIR_INIT: BidirFiltersState = {
+  takim:    { pattern: "", committed: "", mode: "ikisi" },
+  takimid:  { pattern: "", committed: "", mode: "ikisi" },
+  personel: { pattern: "", committed: "", mode: "all"   },
+};
+
+const BIDIR_TAKIM_MODES: { key: BidirTakimMode; label: string; title: string }[] = [
+  { key: "ev",    label: "Ev",  title: "Yalnızca Ev Sahibi (t1)" },
+  { key: "dep",   label: "Dep", title: "Yalnızca Deplasman (t2)" },
+  { key: "ikisi", label: "⇄",   title: "Ev SAHİBİ veya Deplasman" },
+];
+
+const BIDIR_PERSONEL_MODES: { key: BidirPersonelMode; label: string; title: string }[] = [
+  { key: "hakem", label: "Hk",  title: "Yalnızca Hakem" },
+  { key: "ant",   label: "Ant", title: "Ev + Dep Teknik Direktör" },
+  { key: "all",   label: "⇄",   title: "Hakem + Her İki Teknik Direktör" },
+];
+
+const LS_BIDIR        = "bidir_filters_v1";
+const LS_SHOW_BIDIR   = "show_bidir_row_v1";
 
 export default function MatchTable() {
   const [matches, setMatches]     = useState<Match[]>([]);
@@ -575,10 +631,20 @@ export default function MatchTable() {
     () => lsGet<boolean>(LS_SHOW_DIGIT_ROW, false)
   );
 
+  // çift yönlü arama
+  const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(
+    () => lsGet<BidirFiltersState>(LS_BIDIR, BIDIR_INIT)
+  );
+  const [showBidirRow, setShowBidirRow] = useState<boolean>(
+    () => lsGet<boolean>(LS_SHOW_BIDIR, false)
+  );
+
   useEffect(() => { lsSet(LS_COL_ORDER, colOrder); }, [colOrder]);
   useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
   useEffect(() => { lsSet(LS_COL_CLICK_POS, colClickPos); }, [colClickPos]);
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
+  useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
+  useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
 
   // görünüm presetleri
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>(
@@ -622,13 +688,9 @@ export default function MatchTable() {
   const groupSpans   = buildGroupSpans(visibleCols);
   const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
 
-  // DB sütunları + MS 1/X/2 → server; diğer raw_data alanları → client
-  const DB_COL_IDS = new Set(ALL_COLS.filter((c) => c.dbCol).map((c) => c.id));
+  // Sunucu: tüm cf_* (OKBT obktb_* dahil). İstemci: yalnızca CF_CLIENT_ONLY_COL_IDS (genelde boş).
   const rawColFilters = Object.fromEntries(
-    Object.entries(colFiltersCommitted).filter(([id]) => {
-      if (MS_ODDS_FILTER_IDS.has(id)) return false;
-      return !DB_COL_IDS.has(id);
-    })
+    Object.entries(colFiltersCommitted).filter(([id]) => CF_CLIENT_ONLY_COL_IDS.has(id))
   );
   const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
 
@@ -653,11 +715,9 @@ export default function MatchTable() {
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
-      Object.entries(colFiltersCommitted).filter(([id, v]) => {
-        if (!v.trim()) return false;
-        if (MS_ODDS_FILTER_IDS.has(id)) return true;
-        return DB_COL_IDS.has(id);
-      })
+      Object.entries(colFiltersCommitted).filter(
+        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id)
+      )
     );
     setDbColFiltersApplied(dbPart);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -720,6 +780,19 @@ export default function MatchTable() {
     Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
       if (v.trim()) p.set(`cf_${id}`, v.trim());
     });
+    // Çift yönlü (⇄) arama parametreleri
+    if (bidirFilters.takim.committed.trim()) {
+      p.set("bidir_takim",      bidirFilters.takim.committed.trim());
+      p.set("bidir_takim_mode", bidirFilters.takim.mode);
+    }
+    if (bidirFilters.takimid.committed.trim()) {
+      p.set("bidir_takimid",      bidirFilters.takimid.committed.trim());
+      p.set("bidir_takimid_mode", bidirFilters.takimid.mode);
+    }
+    if (bidirFilters.personel.committed.trim()) {
+      p.set("bidir_personel",      bidirFilters.personel.committed.trim());
+      p.set("bidir_personel_mode", bidirFilters.personel.mode);
+    }
     // Üst kod kutusu: MBS üst/sütun filtresi yoksa tüm DB’de son N hane (API + görünüm)
     const fromAppliedS4 = normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN);
     const fromCfS4 = normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN);
@@ -947,6 +1020,18 @@ export default function MatchTable() {
             >
               {showDigitRow ? "⊞ Hane ✓" : "⊞ Hane"}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowBidirRow((v) => !v)}
+              title="Çift yönlü (⇄) arama satırını göster / gizle"
+              className={`border text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap ${
+                showBidirRow
+                  ? "bg-blue-700 border-blue-800 text-white hover:bg-blue-600"
+                  : "bg-white border-gray-300 text-gray-900 hover:bg-gray-100"
+              }`}
+            >
+              {showBidirRow ? "⇄ Çift Yönlü ✓" : "⇄ Çift Yönlü"}
+            </button>
             <button onClick={() => setShowColPanel((v) => !v)}
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               ☰ Sütunlar ({visibleIds.size})
@@ -984,6 +1069,7 @@ export default function MatchTable() {
                             colClickPos,
                             topFilters: { ...filters },
                             colFilters: { ...colFiltersCommitted },
+                            bidirFilters: { ...bidirFilters },
                             sortCol,
                             sortDir,
                             kodSon4: kodSon4Highlight,
@@ -1056,6 +1142,7 @@ export default function MatchTable() {
                               setApplied({ ...EMPTY_TOP, ...vp.topFilters });
                               setColFilters(vp.colFilters);
                               commitColFilters(vp.colFilters);
+                              if (vp.bidirFilters) setBidirFilters(vp.bidirFilters);
                               setSortCol(vp.sortCol);
                               setSortDir(vp.sortDir);
                               setKodSon4Highlight(vp.kodSon4);
@@ -1147,6 +1234,112 @@ export default function MatchTable() {
             )}
           </div>
         </div>
+
+        {/* ── Çift Yönlü (⇄) Arama Satırı ── */}
+        {showBidirRow && (
+          <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-blue-50 border-t border-blue-200 text-xs">
+            <span className="font-semibold text-blue-700 shrink-0">⇄</span>
+
+            {/* Takım adı */}
+            <div className="flex items-center gap-1">
+              <span className="text-gray-600 shrink-0">Takım</span>
+              <div className="flex rounded overflow-hidden border border-gray-300">
+                {BIDIR_TAKIM_MODES.map((m) => (
+                  <button key={m.key} type="button" title={m.title}
+                    onClick={() => setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, mode: m.key } }))}
+                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.takim.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={bidirFilters.takim.pattern}
+                onChange={(e) => setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, pattern: e.target.value } }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setBidirFilters((prev) => ({ ...prev, takim: { ...prev.takim, committed: prev.takim.pattern } }));
+                    setPage(1);
+                  } else if (e.key === "Escape") {
+                    setBidirFilters((prev) => ({ ...prev, takim: { pattern: "", committed: "", mode: prev.takim.mode } }));
+                    setPage(1);
+                  }
+                }}
+                placeholder="*ray, gal*… (Enter)"
+                className={`w-28 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.takim.committed ? "border-blue-500" : "border-gray-300"}`}
+              />
+              {(bidirFilters.takim.pattern || bidirFilters.takim.committed) && (
+                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, takim: { pattern: "", committed: "", mode: prev.takim.mode } })); setPage(1); }}
+                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
+              )}
+            </div>
+
+            {/* Takım ID */}
+            <div className="flex items-center gap-1">
+              <span className="text-gray-600 shrink-0">T-ID</span>
+              <div className="flex rounded overflow-hidden border border-gray-300">
+                {BIDIR_TAKIM_MODES.map((m) => (
+                  <button key={m.key} type="button" title={m.title}
+                    onClick={() => setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, mode: m.key } }))}
+                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.takimid.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={bidirFilters.takimid.pattern}
+                onChange={(e) => setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, pattern: e.target.value } }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setBidirFilters((prev) => ({ ...prev, takimid: { ...prev.takimid, committed: prev.takimid.pattern } }));
+                    setPage(1);
+                  } else if (e.key === "Escape") {
+                    setBidirFilters((prev) => ({ ...prev, takimid: { pattern: "", committed: "", mode: prev.takimid.mode } }));
+                    setPage(1);
+                  }
+                }}
+                placeholder="2793… (Enter)"
+                className={`w-20 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.takimid.committed ? "border-blue-500" : "border-gray-300"}`}
+              />
+              {(bidirFilters.takimid.pattern || bidirFilters.takimid.committed) && (
+                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, takimid: { pattern: "", committed: "", mode: prev.takimid.mode } })); setPage(1); }}
+                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
+              )}
+            </div>
+
+            {/* Personel (hakem + antrenörler) */}
+            <div className="flex items-center gap-1">
+              <span className="text-gray-600 shrink-0">Personel</span>
+              <div className="flex rounded overflow-hidden border border-gray-300">
+                {BIDIR_PERSONEL_MODES.map((m) => (
+                  <button key={m.key} type="button" title={m.title}
+                    onClick={() => setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, mode: m.key } }))}
+                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.personel.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={bidirFilters.personel.pattern}
+                onChange={(e) => setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, pattern: e.target.value } }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, committed: prev.personel.pattern } }));
+                    setPage(1);
+                  } else if (e.key === "Escape") {
+                    setBidirFilters((prev) => ({ ...prev, personel: { pattern: "", committed: "", mode: prev.personel.mode } }));
+                    setPage(1);
+                  }
+                }}
+                placeholder="*smith… (Enter)"
+                className={`w-28 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.personel.committed ? "border-blue-500" : "border-gray-300"}`}
+              />
+              {(bidirFilters.personel.pattern || bidirFilters.personel.committed) && (
+                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, personel: { pattern: "", committed: "", mode: prev.personel.mode } })); setPage(1); }}
+                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Grup renk çubuğu */}
         <div className="flex overflow-x-auto">
@@ -1278,7 +1471,7 @@ export default function MatchTable() {
                                   const isSel = cur.includes(pos);
                                   return { ...prev, [c.id]: isSel ? cur.filter((x) => x !== pos) : [...cur, pos].sort((a, b) => a - b) };
                                 })}
-                                title={`${item.digitPos}. rakam`}>{item.digitPos}</button>
+                                title={`${DIGIT_POS_LABEL[item.digitPos] ?? item.digitPos} (${item.digitPos}. hane)`}>{DIGIT_POS_LABEL[item.digitPos] ?? item.digitPos}</button>
                             ) : (
                               <span key={ti} className="text-[8px] text-gray-400 shrink-0 select-none px-px">{item.ch}</span>
                             )
@@ -1296,37 +1489,63 @@ export default function MatchTable() {
                 const tmpl = digitClickTemplate(c);
                 const selPos: number[] = colClickPos[c.id] ?? [];
                 const isHMode = selPos.length === 0;
+                const hasColFilterDraft = Boolean((colFilters[c.id] ?? "").trim());
+                const hasDigitSel = (colClickPos[c.id]?.length ?? 0) > 0;
+                const showClearCol = hasColFilterDraft || hasDigitSel || Boolean(colFiltersCommitted[c.id]?.trim());
                 return (
                   <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                     className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
-                    <input
-                      id={`cf-input-${c.id}`}
-                      value={colFilters[c.id] ?? ""}
-                      onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          const next = { ...colFilters, [c.id]: (e.target as HTMLInputElement).value };
-                          commitColFilters(next);
-                        } else if (e.key === "Escape") {
-                          const next = { ...colFilters, [c.id]: "" };
-                          setColFilters(next);
-                          commitColFilters(next);
-                        }
-                      }}
-                      placeholder={(() => {
-                        if (!isDigitCol || isHMode || !showDigitRow) return "ara… (Enter)";
-                        let dI = 0; let ph = "";
-                        for (const ch of tmpl) {
-                          if (/\d/.test(ch)) { dI++; ph += selPos.includes(dI) ? "#" : "?"; }
-                          else { ph += ch; }
-                        }
-                        return ph + "…";
-                      })()}
-                      title="Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
-                      className={`w-full bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
-                        colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
-                      }`}
-                    />
+                    <div className="flex items-center gap-0.5 min-w-0">
+                      <input
+                        id={`cf-input-${c.id}`}
+                        value={colFilters[c.id] ?? ""}
+                        onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            const next = { ...colFilters, [c.id]: (e.target as HTMLInputElement).value };
+                            commitColFilters(next);
+                          } else if (e.key === "Escape") {
+                            const next = { ...colFilters, [c.id]: "" };
+                            setColFilters(next);
+                            commitColFilters(next);
+                          }
+                        }}
+                        placeholder={(() => {
+                          if (!isDigitCol || isHMode || !showDigitRow) return "ara… (Enter)";
+                          let dI = 0; let ph = "";
+                          for (const ch of tmpl) {
+                            if (/\d/.test(ch)) {
+                              dI++;
+                              ph += selPos.includes(dI) ? (DIGIT_POS_LABEL[dI] ?? "#") : "?";
+                            } else { ph += ch; }
+                          }
+                          // Baştaki ? dizisini * ile kısalt (ör. "????E" → "*E")
+                          ph = ph.replace(/^\?+/, "*");
+                          return ph + "…";
+                        })()}
+                        title="Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
+                        className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
+                          colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
+                        }`}
+                      />
+                      {showClearCol && (
+                        <button
+                          type="button"
+                          aria-label="Sütun filtresini temizle"
+                          title="Bu sütundaki filtreyi ve hane seçimini temizle"
+                          className="shrink-0 text-sky-600 hover:text-sky-800 text-[11px] leading-none px-0.5 py-0.5 rounded border border-transparent hover:border-sky-300 hover:bg-sky-50 font-semibold"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next = { ...colFilters, [c.id]: "" };
+                            setColFilters(next);
+                            commitColFilters(next);
+                            setColClickPos((prev) => ({ ...prev, [c.id]: [] }));
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                   </th>
                 );
               })}
