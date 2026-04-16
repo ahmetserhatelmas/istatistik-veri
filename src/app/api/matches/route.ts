@@ -431,7 +431,12 @@ export async function GET(req: NextRequest) {
         continue;
       }
       if (def.mode === "ilike") {
-        query = query.ilike(def.col, `%${v}%`);
+        // Wildcard içeriyorsa (* ?) pattern'ı koru; yoksa "içerir" araması yap
+        if (v.includes("*") || v.includes("?")) {
+          query = applyCfTextColumnIlikeFilter(query, def.col, v);
+        } else {
+          query = query.ilike(def.col, `%${v}%`);
+        }
       } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; diğer text eq için string
         if (def.col === "id") {
