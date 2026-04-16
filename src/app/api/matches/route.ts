@@ -480,10 +480,39 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const bidirPersonel = sp.get("bidir_personel")?.trim();
-  if (bidirPersonel) {
+  const bidirHakem = sp.get("bidir_hakem")?.trim() ?? "";
+  const bidirAntEv = sp.get("bidir_ant_ev")?.trim() ?? "";
+  const bidirAntDep = sp.get("bidir_ant_dep")?.trim() ?? "";
+  const bidirAntLegacy = sp.get("bidir_ant")?.trim();
+  const bidirPersonelLegacy = sp.get("bidir_personel")?.trim();
+
+  const applyBidirPersonelPats = (cols: ("hakem" | "t1_antrenor" | "t2_antrenor")[], raw: string) => {
+    const parts = splitCfOrParts(raw);
+    const pats = parts.map((p) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
+    );
+    if (cols.length === 1) {
+      for (const pat of pats) query = query.ilike(cols[0]!, pat);
+    } else {
+      const orParts = pats.flatMap((pat) =>
+        cols.map((col) => {
+          const esc = pat.replace(/"/g, '""');
+          return `${col}.ilike."${esc}"`;
+        })
+      );
+      query = query.or(orParts.join(","));
+    }
+  };
+
+  if (bidirHakem || bidirAntEv || bidirAntDep || bidirAntLegacy) {
+    if (bidirHakem) applyBidirPersonelPats(["hakem"], bidirHakem);
+    if (bidirAntEv) applyBidirPersonelPats(["t1_antrenor"], bidirAntEv);
+    if (bidirAntDep) applyBidirPersonelPats(["t2_antrenor"], bidirAntDep);
+    // Ev veya dep TD’de eşleşme (OR); ev/dep ayrı kutularla birlikte VE ile birleşir.
+    if (bidirAntLegacy) applyBidirPersonelPats(["t1_antrenor", "t2_antrenor"], bidirAntLegacy);
+  } else if (bidirPersonelLegacy) {
     const mode = sp.get("bidir_personel_mode") || "all";
-    const parts = splitCfOrParts(bidirPersonel);
+    const parts = splitCfOrParts(bidirPersonelLegacy);
     const pats = parts.map((p) =>
       p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
     );

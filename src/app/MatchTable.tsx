@@ -125,7 +125,7 @@ function cellVal(row: Match, col: ColDef): string {
 }
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
-const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
 
 /** Hane pozisyonu → A-Z harfi (tüm sütunlarda tutarlı etiket). */
 const DIGIT_POS_LABEL: Record<number, string> = {
@@ -250,7 +250,7 @@ function computeMatchHit(col: ColDef, row: Match): "green" | "orange" | null {
     case "iyx": return iy === "X" ? "orange" : null;
     case "iy2": return iy === "2" ? "orange" : null;
 
-    // ── Durumlar (IY/MS kombinasyonu) ──────────────────────────────────────────
+    // ── İYMS (İY / MS kombinasyonu) ───────────────────────────────────────────
     case "iyms11": return iy === "1" && ms === "1" ? "green" : null;
     case "iyms1x": return iy === "1" && ms === "X" ? "green" : null;
     case "iyms12": return iy === "1" && ms === "2" ? "green" : null;
@@ -521,6 +521,7 @@ const TARIH_PICK_AY = Array.from({ length: 12 }, (_, i) => String(i + 1).padStar
 const TARIH_PICK_YIL = Array.from({ length: 2030 - 2019 + 1 }, (_, i) => String(2019 + i));
 
 // ── Çift Yönlü (⇄) Arama ─────────────────────────────────────────────────────
+/** Eski localStorage / preset: tek kutu + mode */
 type BidirPersonelMode = "hakem" | "ant" | "all";
 
 /** Ev / dep ayrı: ikisi doluysa VE (Barcelona ev + Real dep). Yalnız ev veya yalnız dep da mümkün. */
@@ -529,16 +530,30 @@ interface BidirTeamPairState {
   dep: { pattern: string; committed: string };
 }
 
+/** Hakem; ev TD; dep TD; ev+dep TD (OR, bidir_ant) — dolu olanlar VE ile birleşir. */
+interface BidirPersonelLanesState {
+  hakem: { pattern: string; committed: string };
+  antEv: { pattern: string; committed: string };
+  antDep: { pattern: string; committed: string };
+  /** Ev veya dep TD’de eşleşme (t1_antrenor | t2_antrenor OR). */
+  antHer: { pattern: string; committed: string };
+}
+
 interface BidirFiltersState {
   takim:    BidirTeamPairState;
   takimid:  BidirTeamPairState;
-  personel: { pattern: string; committed: string; mode: BidirPersonelMode };
+  personel: BidirPersonelLanesState;
 }
 
 const BIDIR_INIT: BidirFiltersState = {
   takim:    { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
   takimid:  { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
-  personel: { pattern: "", committed: "", mode: "all" },
+  personel: {
+    hakem: { pattern: "", committed: "" },
+    antEv: { pattern: "", committed: "" },
+    antDep: { pattern: "", committed: "" },
+    antHer: { pattern: "", committed: "" },
+  },
 };
 
 const LS_BIDIR        = "bidir_filters_v1";
@@ -556,6 +571,57 @@ function migrateBidirV1ToTeamPair(o: {
   return { ev: { pattern: o.pattern, committed: o.committed }, dep: { pattern: "", committed: "" } };
 }
 
+function migratePersonelV1(o: {
+  pattern: string;
+  committed: string;
+  mode: BidirPersonelMode;
+}): BidirPersonelLanesState {
+  const z = { pattern: "", committed: "" };
+  if (o.mode === "hakem") {
+    return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z } };
+  }
+  if (o.mode === "ant") {
+    return { hakem: { ...z }, antEv: { ...z }, antDep: { ...z }, antHer: { pattern: o.pattern, committed: o.committed } };
+  }
+  // Eski "tüm personel" (tek OR): yalnızca hakem kutusuna taşınır; gerekirse kullanıcı yeniden ayırır.
+  return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z } };
+}
+
+function isPersonelLane(x: unknown): x is { pattern: string; committed: string } {
+  return (
+    !!x &&
+    typeof x === "object" &&
+    "pattern" in (x as object) &&
+    "committed" in (x as object)
+  );
+}
+
+function normalizePersonelLanes(raw: unknown): BidirPersonelLanesState {
+  if (!raw || typeof raw !== "object") return BIDIR_INIT.personel;
+  const o = raw as Record<string, unknown>;
+  const hk = o.hakem;
+  const antEv = o.antEv;
+  const antDep = o.antDep;
+  const antHerRaw = o.antHer;
+  const legacyAnt = o.ant;
+  if (isPersonelLane(hk) && isPersonelLane(antEv) && isPersonelLane(antDep)) {
+    const antHer = isPersonelLane(antHerRaw) ? antHerRaw : { pattern: "", committed: "" };
+    return { hakem: hk, antEv, antDep, antHer };
+  }
+  if (isPersonelLane(hk) && isPersonelLane(legacyAnt)) {
+    return {
+      hakem: hk,
+      antEv: { pattern: "", committed: "" },
+      antDep: { pattern: "", committed: "" },
+      antHer: legacyAnt,
+    };
+  }
+  if ("mode" in o && typeof o.mode === "string") {
+    return migratePersonelV1(o as { pattern: string; committed: string; mode: BidirPersonelMode });
+  }
+  return BIDIR_INIT.personel;
+}
+
 /** Kayıtlı görünüm (eski preset) veya harici JSON: v1 { mode } → ev/dep çifti. */
 function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
   if (!raw || typeof raw !== "object") return BIDIR_INIT;
@@ -566,7 +632,7 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
     return {
       takim: b.takim ?? BIDIR_INIT.takim,
       takimid: b.takimid ?? BIDIR_INIT.takimid,
-      personel: b.personel ?? BIDIR_INIT.personel,
+      personel: normalizePersonelLanes(b.personel),
     };
   }
   if (
@@ -580,12 +646,12 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
     const v1 = raw as {
       takim: { pattern: string; committed: string; mode: BidirTakimModeV1 };
       takimid: { pattern: string; committed: string; mode: BidirTakimModeV1 };
-      personel?: BidirFiltersState["personel"];
+      personel?: unknown;
     };
     return {
       takim: migrateBidirV1ToTeamPair(v1.takim),
       takimid: migrateBidirV1ToTeamPair(v1.takimid),
-      personel: v1.personel ?? BIDIR_INIT.personel,
+      personel: normalizePersonelLanes(v1.personel),
     };
   }
   return BIDIR_INIT;
@@ -600,12 +666,6 @@ function readBidirFiltersFromStorage(): BidirFiltersState {
     return BIDIR_INIT;
   }
 }
-
-const BIDIR_PERSONEL_MODES: { key: BidirPersonelMode; label: string; title: string }[] = [
-  { key: "hakem", label: "Hk",  title: "Yalnızca Hakem" },
-  { key: "ant",   label: "Ant", title: "Ev + Dep Teknik Direktör" },
-  { key: "all",   label: "⇄",   title: "Hakem + Her İki Teknik Direktör" },
-];
 
 // ── Referans Maç ─────────────────────────────────────────────────────────────
 /** Referans maçtan hangi alan kullanılacak */
@@ -826,6 +886,22 @@ export default function MatchTable() {
   const takimDepDropdownRef = useRef<HTMLDivElement>(null);
   const takimSuggestEvGenRef = useRef(0);
   const takimSuggestDepGenRef = useRef(0);
+  const [personelSuggestHakem, setPersonelSuggestHakem] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const [personelSuggestAntEv, setPersonelSuggestAntEv] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const [personelSuggestAntDep, setPersonelSuggestAntDep] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const [personelSuggestAntHer, setPersonelSuggestAntHer] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const personelHakemTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const personelAntEvTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const personelAntDepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const personelAntHerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const personelHakemDropdownRef = useRef<HTMLDivElement>(null);
+  const personelAntEvDropdownRef = useRef<HTMLDivElement>(null);
+  const personelAntDepDropdownRef = useRef<HTMLDivElement>(null);
+  const personelAntHerDropdownRef = useRef<HTMLDivElement>(null);
+  const personelHakemGenRef = useRef(0);
+  const personelAntEvGenRef = useRef(0);
+  const personelAntDepGenRef = useRef(0);
+  const personelAntHerGenRef = useRef(0);
 
   useEffect(() => { lsSet(LS_COL_ORDER, colOrder); }, [colOrder]);
   useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
@@ -925,7 +1001,45 @@ export default function MatchTable() {
     }
   }, []);
 
-  // Ref + Takım öneri dropdown’ları: dışına tıklayınca kapat
+  const searchPersonelSuggest = useCallback(
+    async (q: string, role: "hakem" | "t1_antrenor" | "t2_antrenor" | "ant_ev_veya_dep") => {
+      const cfg =
+        role === "hakem"
+          ? { genRef: personelHakemGenRef, setLane: setPersonelSuggestHakem }
+          : role === "t1_antrenor"
+            ? { genRef: personelAntEvGenRef, setLane: setPersonelSuggestAntEv }
+            : role === "t2_antrenor"
+              ? { genRef: personelAntDepGenRef, setLane: setPersonelSuggestAntDep }
+              : { genRef: personelAntHerGenRef, setLane: setPersonelSuggestAntHer };
+      if (!q.trim()) {
+        cfg.setLane(TAKIM_SUGGEST_INIT);
+        return;
+      }
+      const myGen = ++cfg.genRef.current;
+      cfg.setLane((prev) => ({ ...prev, loading: true, open: true }));
+      try {
+        const p = new URLSearchParams({ q: q.trim(), role });
+        const res = await fetch(`/api/personel-suggest?${p}`);
+        const json = (await res.json()) as { names?: string[]; error?: string };
+        if (cfg.genRef.current !== myGen) return;
+        if (!res.ok) {
+          cfg.setLane({ open: true, loading: false, teamNames: [] });
+          return;
+        }
+        cfg.setLane({
+          open: true,
+          loading: false,
+          teamNames: Array.isArray(json.names) ? json.names : [],
+        });
+      } catch {
+        if (cfg.genRef.current !== myGen) return;
+        cfg.setLane({ open: true, loading: false, teamNames: [] });
+      }
+    },
+    []
+  );
+
+  // Ref + Takım + Personel öneri dropdown’ları: dışına tıklayınca kapat
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       const t = e.target as Node;
@@ -937,6 +1051,18 @@ export default function MatchTable() {
       }
       if (takimDepDropdownRef.current && !takimDepDropdownRef.current.contains(t)) {
         setTakimSuggestDep((prev) => ({ ...prev, open: false }));
+      }
+      if (personelHakemDropdownRef.current && !personelHakemDropdownRef.current.contains(t)) {
+        setPersonelSuggestHakem((prev) => ({ ...prev, open: false }));
+      }
+      if (personelAntEvDropdownRef.current && !personelAntEvDropdownRef.current.contains(t)) {
+        setPersonelSuggestAntEv((prev) => ({ ...prev, open: false }));
+      }
+      if (personelAntDepDropdownRef.current && !personelAntDepDropdownRef.current.contains(t)) {
+        setPersonelSuggestAntDep((prev) => ({ ...prev, open: false }));
+      }
+      if (personelAntHerDropdownRef.current && !personelAntHerDropdownRef.current.contains(t)) {
+        setPersonelSuggestAntHer((prev) => ({ ...prev, open: false }));
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -1081,10 +1207,14 @@ export default function MatchTable() {
     const tid = bidirFilters.takimid.dep.committed.trim();
     if (tie) p.set("bidir_takimid_ev", tie);
     if (tid) p.set("bidir_takimid_dep", tid);
-    if (bidirFilters.personel.committed.trim()) {
-      p.set("bidir_personel",      bidirFilters.personel.committed.trim());
-      p.set("bidir_personel_mode", bidirFilters.personel.mode);
-    }
+    const ph = bidirFilters.personel.hakem.committed.trim();
+    const pEv = bidirFilters.personel.antEv.committed.trim();
+    const pDep = bidirFilters.personel.antDep.committed.trim();
+    const pHer = bidirFilters.personel.antHer.committed.trim();
+    if (ph) p.set("bidir_hakem", ph);
+    if (pEv) p.set("bidir_ant_ev", pEv);
+    if (pDep) p.set("bidir_ant_dep", pDep);
+    if (pHer) p.set("bidir_ant", pHer);
     Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
     Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
       if (v.trim()) p.set(`cf_${id}`, v.trim());
@@ -1148,8 +1278,10 @@ export default function MatchTable() {
     bidirFilters.takim.dep.committed,
     bidirFilters.takimid.ev.committed,
     bidirFilters.takimid.dep.committed,
-    bidirFilters.personel.committed,
-    bidirFilters.personel.mode,
+    bidirFilters.personel.hakem.committed,
+    bidirFilters.personel.antEv.committed,
+    bidirFilters.personel.antDep.committed,
+    bidirFilters.personel.antHer.committed,
     kodSuffixN,
     kodSuffixRefKey,
     kodSon4Highlight,
@@ -1192,11 +1324,39 @@ export default function MatchTable() {
     lsSet(LS_PRESETS, updated);
   }
 
-  /** Tüm sütun filtre inputlarını temizle (görünür/gizli fark etmez) */
+  /** Sütun filtreleri + ⇄ satırı (Ref, Takım, T-ID, Personel) ve öneri açılır listeleri sıfırlar */
   function clearColumnFiltersOnly() {
     setColFilters({});
     setColFiltersCommitted({});
     lsSet(LS_COL_FILT, {});
+    takimSuggestEvGenRef.current += 1;
+    takimSuggestDepGenRef.current += 1;
+    personelHakemGenRef.current += 1;
+    personelAntEvGenRef.current += 1;
+    personelAntDepGenRef.current += 1;
+    personelAntHerGenRef.current += 1;
+    if (refMatchTimerRef.current) clearTimeout(refMatchTimerRef.current);
+    refMatchTimerRef.current = null;
+    if (takimEvTimerRef.current) clearTimeout(takimEvTimerRef.current);
+    takimEvTimerRef.current = null;
+    if (takimDepTimerRef.current) clearTimeout(takimDepTimerRef.current);
+    takimDepTimerRef.current = null;
+    if (personelHakemTimerRef.current) clearTimeout(personelHakemTimerRef.current);
+    personelHakemTimerRef.current = null;
+    if (personelAntEvTimerRef.current) clearTimeout(personelAntEvTimerRef.current);
+    personelAntEvTimerRef.current = null;
+    if (personelAntDepTimerRef.current) clearTimeout(personelAntDepTimerRef.current);
+    personelAntDepTimerRef.current = null;
+    if (personelAntHerTimerRef.current) clearTimeout(personelAntHerTimerRef.current);
+    personelAntHerTimerRef.current = null;
+    setBidirFilters(BIDIR_INIT);
+    setRefMatch(REF_MATCH_INIT);
+    setTakimSuggestEv(TAKIM_SUGGEST_INIT);
+    setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+    setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
+    setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
+    setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
+    setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
     setPage(1);
   }
 
@@ -1313,7 +1473,7 @@ export default function MatchTable() {
             <button
               type="button"
               onClick={clearColumnFiltersOnly}
-              title="Tüm sütun filtrelerini sıfırlar (ara kutuları)"
+              title="Sütun ara kutuları ile ⇄ satırı (Ref, Takım, T-ID, Personel) ve öneri listelerini sıfırlar"
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               Sütunları temizle
             </button>
@@ -1948,37 +2108,397 @@ export default function MatchTable() {
               </div>
             </div>
 
-            {/* Personel (hakem + antrenörler) */}
-            <div className="flex items-center gap-1">
+            {/* Personel — hakem; ev / dep TD ayrı; Ev+Dep OR kutusu; yazarken öneri, tablo seçim veya Enter ile */}
+            <div
+              className="flex items-center gap-1 flex-wrap"
+              title="Hk: hakem. Ev TD / Dep TD: ilgili sütun. Ev+Dep: ev veya dep TD’de eşleşme (OR; diğer dolu kutularla VE). Yazarken yalnız öneri; listeden seçince veya Enter ile uygular.">
               <span className="text-gray-600 shrink-0">Personel</span>
-              <div className="flex rounded overflow-hidden border border-gray-300">
-                {BIDIR_PERSONEL_MODES.map((m) => (
-                  <button key={m.key} type="button" title={m.title}
-                    onClick={() => setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, mode: m.key } }))}
-                    className={`px-1.5 py-0.5 text-[10px] font-medium transition ${bidirFilters.personel.mode === m.key ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-blue-50"}`}>
-                    {m.label}
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={personelHakemDropdownRef}>
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0" title="Hakem">
+                  Hk
+                </span>
+                <input
+                  value={bidirFilters.personel.hakem.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      personel: { ...prev.personel, hakem: { ...prev.personel.hakem, pattern: q } },
+                    }));
+                    if (personelHakemTimerRef.current) clearTimeout(personelHakemTimerRef.current);
+                    personelHakemTimerRef.current = setTimeout(() => searchPersonelSuggest(q, "hakem"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: {
+                          ...prev.personel,
+                          hakem: { ...prev.personel.hakem, committed: prev.personel.hakem.pattern },
+                        },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, hakem: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (personelSuggestHakem.teamNames.length) {
+                      setPersonelSuggestHakem((prev) => ({ ...prev, open: true }));
+                    }
+                  }}
+                  placeholder="Hakem…"
+                  className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.personel.hakem.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.personel.hakem.pattern || bidirFilters.personel.hakem.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, hakem: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Hakem temizle">
+                    ×
                   </button>
-                ))}
+                )}
+                {personelSuggestHakem.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {personelSuggestHakem.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!personelSuggestHakem.loading && personelSuggestHakem.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!personelSuggestHakem.loading &&
+                      personelSuggestHakem.teamNames.map((name, i) => (
+                        <button
+                          key={`hk-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              personel: {
+                                ...prev.personel,
+                                hakem: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
               </div>
-              <input
-                value={bidirFilters.personel.pattern}
-                onChange={(e) => setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, pattern: e.target.value } }))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, committed: prev.personel.pattern } }));
-                    setPage(1);
-                  } else if (e.key === "Escape") {
-                    setBidirFilters((prev) => ({ ...prev, personel: { pattern: "", committed: "", mode: prev.personel.mode } }));
-                    setPage(1);
-                  }
-                }}
-                placeholder="*smith… (Enter)"
-                className={`w-28 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${bidirFilters.personel.committed ? "border-blue-500" : "border-gray-300"}`}
-              />
-              {(bidirFilters.personel.pattern || bidirFilters.personel.committed) && (
-                <button type="button" onClick={() => { setBidirFilters((prev) => ({ ...prev, personel: { pattern: "", committed: "", mode: prev.personel.mode } })); setPage(1); }}
-                  className="text-gray-500 hover:text-gray-900 px-0.5" title="Temizle">×</button>
-              )}
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={personelAntEvDropdownRef}>
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0" title="Ev teknik direktör (t1_antrenor)">
+                  Ev TD
+                </span>
+                <input
+                  value={bidirFilters.personel.antEv.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      personel: { ...prev.personel, antEv: { ...prev.personel.antEv, pattern: q } },
+                    }));
+                    if (personelAntEvTimerRef.current) clearTimeout(personelAntEvTimerRef.current);
+                    personelAntEvTimerRef.current = setTimeout(() => searchPersonelSuggest(q, "t1_antrenor"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: {
+                          ...prev.personel,
+                          antEv: { ...prev.personel.antEv, committed: prev.personel.antEv.pattern },
+                        },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antEv: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (personelSuggestAntEv.teamNames.length) {
+                      setPersonelSuggestAntEv((prev) => ({ ...prev, open: true }));
+                    }
+                  }}
+                  placeholder="Ev TD…"
+                  className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.personel.antEv.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.personel.antEv.pattern || bidirFilters.personel.antEv.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antEv: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Ev TD temizle">
+                    ×
+                  </button>
+                )}
+                {personelSuggestAntEv.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {personelSuggestAntEv.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!personelSuggestAntEv.loading && personelSuggestAntEv.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!personelSuggestAntEv.loading &&
+                      personelSuggestAntEv.teamNames.map((name, i) => (
+                        <button
+                          key={`ant1-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              personel: {
+                                ...prev.personel,
+                                antEv: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={personelAntDepDropdownRef}>
+                <span className="text-[9px] text-gray-500 pl-0.5 shrink-0" title="Deplasman teknik direktör (t2_antrenor)">
+                  Dep TD
+                </span>
+                <input
+                  value={bidirFilters.personel.antDep.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      personel: { ...prev.personel, antDep: { ...prev.personel.antDep, pattern: q } },
+                    }));
+                    if (personelAntDepTimerRef.current) clearTimeout(personelAntDepTimerRef.current);
+                    personelAntDepTimerRef.current = setTimeout(() => searchPersonelSuggest(q, "t2_antrenor"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: {
+                          ...prev.personel,
+                          antDep: { ...prev.personel.antDep, committed: prev.personel.antDep.pattern },
+                        },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antDep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (personelSuggestAntDep.teamNames.length) {
+                      setPersonelSuggestAntDep((prev) => ({ ...prev, open: true }));
+                    }
+                  }}
+                  placeholder="Dep TD…"
+                  className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.personel.antDep.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.personel.antDep.pattern || bidirFilters.personel.antDep.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antDep: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Dep TD temizle">
+                    ×
+                  </button>
+                )}
+                {personelSuggestAntDep.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {personelSuggestAntDep.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!personelSuggestAntDep.loading && personelSuggestAntDep.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!personelSuggestAntDep.loading &&
+                      personelSuggestAntDep.teamNames.map((name, i) => (
+                        <button
+                          key={`ant2-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              personel: {
+                                ...prev.personel,
+                                antDep: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+              <div
+                className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
+                ref={personelAntHerDropdownRef}>
+                <span
+                  className="text-[9px] text-gray-500 pl-0.5 shrink-0"
+                  title="Ev veya dep teknik direktör (t1_antrenor | t2_antrenor, OR)">
+                  Ev+Dep
+                </span>
+                <input
+                  value={bidirFilters.personel.antHer.pattern}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      personel: { ...prev.personel, antHer: { ...prev.personel.antHer, pattern: q } },
+                    }));
+                    if (personelAntHerTimerRef.current) clearTimeout(personelAntHerTimerRef.current);
+                    personelAntHerTimerRef.current = setTimeout(() => searchPersonelSuggest(q, "ant_ev_veya_dep"), 350);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: {
+                          ...prev.personel,
+                          antHer: { ...prev.personel.antHer, committed: prev.personel.antHer.pattern },
+                        },
+                      }));
+                      setPage(1);
+                    } else if (e.key === "Escape") {
+                      setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antHer: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }
+                  }}
+                  onFocus={() => {
+                    if (personelSuggestAntHer.teamNames.length) {
+                      setPersonelSuggestAntHer((prev) => ({ ...prev, open: true }));
+                    }
+                  }}
+                  placeholder="Ev veya dep TD…"
+                  className={`w-[6.25rem] min-w-[4.75rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 ${
+                    bidirFilters.personel.antHer.committed ? "text-blue-800 font-medium" : "text-gray-900"
+                  }`}
+                />
+                {(bidirFilters.personel.antHer.pattern || bidirFilters.personel.antHer.committed) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
+                      setBidirFilters((prev) => ({
+                        ...prev,
+                        personel: { ...prev.personel, antHer: { pattern: "", committed: "" } },
+                      }));
+                      setPage(1);
+                    }}
+                    className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                    title="Ev+Dep TD temizle">
+                    ×
+                  </button>
+                )}
+                {personelSuggestAntHer.open && (
+                  <div
+                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    onMouseDown={(e) => e.preventDefault()}>
+                    {personelSuggestAntHer.loading && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                    )}
+                    {!personelSuggestAntHer.loading && personelSuggestAntHer.teamNames.length === 0 && (
+                      <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                    )}
+                    {!personelSuggestAntHer.loading &&
+                      personelSuggestAntHer.teamNames.map((name, i) => (
+                        <button
+                          key={`anth-${i}-${name}`}
+                          type="button"
+                          className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
+                          onClick={() => {
+                            setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
+                            setBidirFilters((prev) => ({
+                              ...prev,
+                              personel: {
+                                ...prev.personel,
+                                antHer: { pattern: name, committed: name },
+                              },
+                            }));
+                            setPage(1);
+                          }}>
+                          <span className="text-gray-800">{name}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

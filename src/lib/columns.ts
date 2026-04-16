@@ -105,16 +105,16 @@ export const ALL_COLS: ColDef[] = [
   { id: "iyx", label: "IYX", key: "IYX", group: "İlk Yarı", width: 60 },
   { id: "iy2", label: "IY2", key: "IY2", group: "İlk Yarı", width: 60 },
 
-  // ── Durumlar (IY/MS kombinasyonu) ──────────────────────────────────────────
-  { id: "iyms11", label: "1/1", key: "IYMS11", group: "Durumlar", width: 56 },
-  { id: "iyms1x", label: "1/X", key: "IYMS1X", group: "Durumlar", width: 56 },
-  { id: "iyms12", label: "1/2", key: "IYMS12", group: "Durumlar", width: 56 },
-  { id: "iymsx1", label: "X/1", key: "IYMSX1", group: "Durumlar", width: 56 },
-  { id: "iymsxx", label: "X/X", key: "IYMSXX", group: "Durumlar", width: 56 },
-  { id: "iymsx2", label: "X/2", key: "IYMSX2", group: "Durumlar", width: 56 },
-  { id: "iyms21", label: "2/1", key: "IYMS21", group: "Durumlar", width: 56 },
-  { id: "iyms2x", label: "2/X", key: "IYMS2X", group: "Durumlar", width: 56 },
-  { id: "iyms22", label: "2/2", key: "IYMS22", group: "Durumlar", width: 56 },
+  // ── İYMS (İY / MS kombinasyonu) ─────────────────────────────────────────────
+  { id: "iyms11", label: "1/1", key: "IYMS11", group: "İYMS", width: 56 },
+  { id: "iyms1x", label: "1/X", key: "IYMS1X", group: "İYMS", width: 56 },
+  { id: "iyms12", label: "1/2", key: "IYMS12", group: "İYMS", width: 56 },
+  { id: "iymsx1", label: "X/1", key: "IYMSX1", group: "İYMS", width: 56 },
+  { id: "iymsxx", label: "X/X", key: "IYMSXX", group: "İYMS", width: 56 },
+  { id: "iymsx2", label: "X/2", key: "IYMSX2", group: "İYMS", width: 56 },
+  { id: "iyms21", label: "2/1", key: "IYMS21", group: "İYMS", width: 56 },
+  { id: "iyms2x", label: "2/X", key: "IYMS2X", group: "İYMS", width: 56 },
+  { id: "iyms22", label: "2/2", key: "IYMS22", group: "İYMS", width: 56 },
 
   // ── Karşılıklı Gol ─────────────────────────────────────────────────────────
   { id: "kg_var", label: "KG V", key: "KGVAR", group: "KG", width: 60 },
@@ -453,7 +453,7 @@ export const GROUP_COLORS: Record<string, string> = {
   "İY Kod · OKBT":          "bg-indigo-100",
   "ÇŞ Kod · OKBT":          "bg-teal-100",
   "A/Ü Kod · OKBT":         "bg-green-100",
-  "Durumlar":               "bg-violet-200",
+  "İYMS":                   "bg-violet-200",
   "KG":                     "bg-pink-200",
   "Tek/Çift":               "bg-rose-200",
   "Top.Gol":                "bg-orange-200",
