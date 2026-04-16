@@ -555,35 +555,16 @@ function buildRefPattern(match: Match, field: RefMatchField, positions: number[]
   for (let i = 0; i < raw.length; i++) {
     out += positions.includes(i + 1) ? raw[i] : "?";
   }
-  // Baştaki ? dizisini * ile kısalt
   out = out.replace(/^\?+/, "*");
   return out;
 }
 
-/** Ref maç pattern'ı T-ID bidir filtresine yazar ve commit eder */
-function applyRefToBidir(
-  match: Match,
-  field: RefMatchField,
-  positions: number[],
-  setBidirFilters: React.Dispatch<React.SetStateAction<BidirFiltersState>>,
-  setPage: (p: number) => void
-) {
-  const pat = buildRefPattern(match, field, positions);
-  if (!pat) return;
-  // T1I/T2I → takimid; diğerleri → takim (pattern olarak)
-  if (field === "t1i" || field === "t2i") {
-    setBidirFilters((prev) => ({
-      ...prev,
-      takimid: { pattern: pat, committed: pat, mode: field === "t1i" ? "ev" : "dep" },
-    }));
-  } else {
-    setBidirFilters((prev) => ({
-      ...prev,
-      takim: { pattern: pat, committed: pat, mode: "ikisi" },
-    }));
-  }
-  setPage(1);
-}
+/** Ref maç alanından → doğru filtreye yönlendir */
+const REF_FIELD_TO_COL_ID: Partial<Record<RefMatchField, string>> = {
+  id:     "id",
+  kod_ms: "kod_ms",
+  kod_iy: "kod_iy",
+};
 
 export default function MatchTable() {
   const [matches, setMatches]     = useState<Match[]>([]);
@@ -707,6 +688,33 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
   useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
+
+  // Ref maç: pattern oluştur ve doğru filtreye yaz
+  const applyRefToBidir = useCallback((
+    match: Match,
+    field: RefMatchField,
+    positions: number[],
+  ) => {
+    const pat = buildRefPattern(match, field, positions);
+    if (!pat) return;
+    if (field === "t1i" || field === "t2i") {
+      setBidirFilters((prev) => ({
+        ...prev,
+        takimid: { pattern: pat, committed: pat, mode: field === "t1i" ? "ev" : "dep" },
+      }));
+    } else {
+      const colId = REF_FIELD_TO_COL_ID[field];
+      if (colId) {
+        setColFilters((prev) => {
+          const next = { ...prev, [colId]: pat };
+          commitColFilters(next);
+          return next;
+        });
+      }
+    }
+    setPage(1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setBidirFilters, setColFilters]);
 
   // Ref maç arama (debounced)
   const searchRefMatches = useCallback(async (q: string) => {
@@ -1390,7 +1398,7 @@ export default function MatchTable() {
                         className="w-full text-left px-2 py-1 text-[11px] hover:bg-blue-50 transition truncate border-b border-gray-100"
                         onClick={() => {
                           setRefMatch((prev) => ({ ...prev, selected: m, query: "", isOpen: false, results: [] }));
-                          applyRefToBidir(m, refMatch.field, refMatch.positions, setBidirFilters, setPage);
+                          applyRefToBidir(m, refMatch.field, refMatch.positions);
                         }}>
                         <span className="font-mono text-gray-500 mr-1">{String(m["id"])}</span>
                         <span className="text-gray-800">{String(m["t1"] ?? "")} – {String(m["t2"] ?? "")}</span>
@@ -1418,8 +1426,7 @@ export default function MatchTable() {
                               const next = isSel
                                 ? prev.positions.filter((p) => p !== pos)
                                 : [...prev.positions, pos].sort((a, b) => a - b);
-                              // pattern güncelle ve bidir'a uygula
-                              applyRefToBidir(prev.selected!, prev.field, next, setBidirFilters, setPage);
+                              applyRefToBidir(prev.selected!, prev.field, next);
                               return { ...prev, positions: next };
                             });
                           }}
