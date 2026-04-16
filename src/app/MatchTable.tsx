@@ -1023,7 +1023,7 @@ export default function MatchTable() {
     } finally {
       if (matchesFetchGenRef.current === myGen) setLoading(false);
     }
-  }, [page, applied, dbColFiltersApplied, kodSuffixN, kodSuffixRefKey, kodSon4Highlight]);
+  }, [page, applied, dbColFiltersApplied, bidirFilters, kodSuffixN, kodSuffixRefKey, kodSon4Highlight]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
   // panel dışı tıkla kapat
