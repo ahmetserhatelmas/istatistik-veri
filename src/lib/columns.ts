@@ -207,10 +207,10 @@ export const ALL_COLS: ColDef[] = [
   { id: "igo", label: "İlk G.Y", key: "IGO", group: "İlk Gol", width: 64 },
   { id: "ig2", label: "İlk G.2", key: "IG2", group: "İlk Gol", width: 64 },
 
-  // ── Daha Çok Gol Yarısı ───────────────────────────────────────────────────
-  { id: "ikiys1", label: "DGY-1", key: "IKIYS1", group: "Daha Çok Gol Y.", width: 60 },
-  { id: "ikiysx", label: "DGY-E", key: "IKIYSX", group: "Daha Çok Gol Y.", width: 60 },
-  { id: "ikiys2", label: "DGY-2", key: "IKIYS2", group: "Daha Çok Gol Y.", width: 60 },
+  // ── 2. yarı maç sonucu (oranlar: raw_data IKIYS1 / IKIYSX / IKIYS2) ──────────
+  { id: "ikiys1", label: "2Y1", key: "IKIYS1", group: "2. Yarı MS", width: 60 },
+  { id: "ikiysx", label: "2YX", key: "IKIYSX", group: "2. Yarı MS", width: 60 },
+  { id: "ikiys2", label: "2Y2", key: "IKIYS2", group: "2. Yarı MS", width: 60 },
 
   // ── IY Skoru ──────────────────────────────────────────────────────────────
   { id: "h1ys_00", label: "IY 0-0", key: "H1YS_1_1",  group: "IY Skoru", width: 60 },
@@ -464,7 +464,7 @@ export const GROUP_COLORS: Record<string, string> = {
   "MS A/Ü":                 "bg-lime-200",
   "Çift Şans":              "bg-emerald-200",
   "İlk Gol":                "bg-amber-200",
-  "Daha Çok Gol Y.":        "bg-red-200",
+  "2. Yarı MS":             "bg-indigo-100",
   "IY Skoru":               "bg-purple-200",
   "Diğer":                  "bg-slate-200",
   [RAW_GROUP]:              "bg-zinc-200",

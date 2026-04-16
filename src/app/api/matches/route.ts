@@ -353,19 +353,26 @@ export async function GET(req: NextRequest) {
   if (bidirTakimid) {
     const mode = sp.get("bidir_takimid_mode") || "ikisi";
     const parts = splitCfOrParts(bidirTakimid);
-    const pats = parts.map((p) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
-    );
-    if (mode === "ev") {
-      for (const pat of pats) query = query.ilike("t1i", pat);
-    } else if (mode === "dep") {
-      for (const pat of pats) query = query.ilike("t2i", pat);
-    } else {
-      const orParts = pats.flatMap((pat) => {
+    for (const p of parts) {
+      if (!p) continue;
+      const hasGlob = p.includes("*") || p.includes("?");
+      if (!hasGlob && /^\d+$/.test(p)) {
+        const n = Number(p);
+        if (!Number.isFinite(n)) continue;
+        if (mode === "ev") query = query.eq("t1i", n);
+        else if (mode === "dep") query = query.eq("t2i", n);
+        else query = query.or(`t1i.eq.${n},t2i.eq.${n}`);
+      } else {
+        const pat = hasGlob ? cfPatternToIlikePattern(p) : `%${p}%`;
         const esc = pat.replace(/"/g, '""');
-        return [`t1i.ilike."${esc}"`, `t2i.ilike."${esc}"`];
-      });
-      query = query.or(orParts.join(","));
+        if (mode === "ev") {
+          query = query.ilike("t1i_arama", pat);
+        } else if (mode === "dep") {
+          query = query.ilike("t2i_arama", pat);
+        } else {
+          query = query.or(`t1i_arama.ilike."${esc}",t2i_arama.ilike."${esc}"`);
+        }
+      }
     }
   }
 
@@ -533,6 +540,21 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Jokerli maç/oyun kodu filtresi için kolonlar eksik. sql/add-matches-code-arama-columns-01-id.sql … 05 dosyalarını (tek tek; timeout’ta psql) çalıştırın; ardından create-matches-suffix-view.sql ile görünümü yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingTakimidArama =
+      /t1i_arama|t2i_arama/i.test(msg) ||
+      (e.code === "42703" && /t1i_arama|t2i_arama/i.test(msg)) ||
+      /schema cache.*t1i_arama|Could not find.*t1i_arama/i.test(msg);
+    if (missingTakimidArama) {
+      return NextResponse.json(
+        {
+          error:
+            "T-ID jokerli arama için t1i_arama / t2i_arama kolonları gerekli. sql/add-matches-t1i-t2i-arama-columns.sql dosyasını çalıştırın; kod sonek görünümü kullanıyorsanız create-matches-suffix-view.sql ile görünümü yenileyin. (Sadece rakam T-ID: bu SQL olmadan da .eq ile çalışır.)",
           detail: msg,
           code: e.code,
         },

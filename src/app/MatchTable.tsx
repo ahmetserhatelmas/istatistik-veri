@@ -125,7 +125,7 @@ function cellVal(row: Match, col: ColDef): string {
 }
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
-const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","Daha Çok Gol Y.","IY Skoru"]);
+const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","Durumlar","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
 
 /** Hane pozisyonu → A-Z harfi (tüm sütunlarda tutarlı etiket). */
 const DIGIT_POS_LABEL: Record<number, string> = {
@@ -231,7 +231,6 @@ function computeMatchHit(col: ColDef, row: Match): "green" | "orange" | null {
   const hasHt = !!sonucIy && !isNaN(ht1) && !isNaN(ht2);
   const tg = hasFt ? ft1 + ft2 : NaN;   // toplam gol
   const iyg = hasHt ? ht1 + ht2 : NaN;  // IY toplam gol
-  const h2g = hasFt && hasHt ? (ft1 - ht1) + (ft2 - ht2) : NaN; // 2. yarı gol
 
   // ft1/ft2'den MS sonucunu türet ("1"/"X"/"2")
   const ms = hasFt ? (ft1 > ft2 ? "1" : ft1 === ft2 ? "X" : "2") : "";
@@ -348,10 +347,25 @@ function computeMatchHit(col: ColDef, row: Match): "green" | "orange" | null {
     case "msau45_2a": return hasFt && ms === "2" && tg < 4.5 ? "green" : null;
     case "msau45_2u": return hasFt && ms === "2" && tg >= 4.5 ? "green" : null;
 
-    // ── Daha Çok Gol Yarısı ───────────────────────────────────────────────────
-    case "ikiys1": return hasFt && hasHt && iyg > h2g ? "orange" : null;
-    case "ikiysx": return hasFt && hasHt && iyg === h2g ? "green" : null;
-    case "ikiys2": return hasFt && hasHt && h2g > iyg ? "green" : null;
+    // ── 2. yarı MS (1X2) — IKIYS1 / IKIYSX / IKIYS2 ───────────────────────────
+    case "ikiys1": {
+      if (!hasFt || !hasHt) return null;
+      const sh1 = ft1 - ht1;
+      const sh2 = ft2 - ht2;
+      return sh1 > sh2 ? "orange" : null;
+    }
+    case "ikiysx": {
+      if (!hasFt || !hasHt) return null;
+      const sh1 = ft1 - ht1;
+      const sh2 = ft2 - ht2;
+      return sh1 === sh2 ? "orange" : null;
+    }
+    case "ikiys2": {
+      if (!hasFt || !hasHt) return null;
+      const sh1 = ft1 - ht1;
+      const sh2 = ft2 - ht2;
+      return sh2 > sh1 ? "orange" : null;
+    }
 
     // ── IY Skoru ──────────────────────────────────────────────────────────────
     case "h1ys_00": return hasHt && ht1 === 0 && ht2 === 0 ? "orange" : null;
@@ -1376,12 +1390,14 @@ export default function MatchTable() {
                   }}
                   onFocus={() => { if (refMatch.results.length) setRefMatch((prev) => ({ ...prev, isOpen: true })); }}
                   placeholder={refMatch.selected ? "" : "Takım adı / maç ID…"}
-                  className={`w-36 bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${refMatch.selected ? "border-blue-500" : "border-gray-300"}`}
+                  className={`w-44 min-w-[11rem] bg-white border rounded px-1.5 py-0.5 text-[11px] focus:outline-none focus:border-blue-500 ${refMatch.selected ? "border-blue-500" : "border-gray-300"}`}
                 />
-                {/* Seçili maç etiketi */}
+                {/* Seçili maç özeti (kutu dar → truncate; tam metin title) */}
                 {refMatch.selected && !refMatch.query && (
-                  <span className="absolute inset-0 flex items-center px-1.5 text-[10px] text-blue-700 font-medium pointer-events-none truncate">
-                    {refMatch.selected["id"]} · {String(refMatch.selected["t1"] ?? "").slice(0, 12)}
+                  <span
+                    className="absolute inset-0 flex items-center px-1.5 text-[10px] text-blue-700 font-medium pointer-events-none truncate"
+                    title={`${String(refMatch.selected["id"])} · ${String(refMatch.selected["t1"] ?? "")} – ${String(refMatch.selected["t2"] ?? "")}`}>
+                    {refMatch.selected["id"]} · {String(refMatch.selected["t1"] ?? "")} – {String(refMatch.selected["t2"] ?? "")}
                   </span>
                 )}
                 {/* Dropdown */}
