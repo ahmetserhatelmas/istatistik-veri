@@ -515,10 +515,9 @@ const EMPTY_TOP = {
   suffix3: "",
 };
 
-/** Tarih sütunu altı: gün / ay / yıl ayrı ayrı — API `tarih_gun` / `tarih_ay` / `tarih_yil` (tarih_arama veya tam gün). */
+/** Tarih sütunu altı: gün / ay — API `tarih_gun` / `tarih_ay` (tarih_arama; yıl seçici yok). */
 const TARIH_PICK_GUN = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, "0"));
 const TARIH_PICK_AY = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"));
-const TARIH_PICK_YIL = Array.from({ length: 2030 - 2019 + 1 }, (_, i) => String(2019 + i));
 
 // ── Çift Yönlü (⇄) Arama ─────────────────────────────────────────────────────
 /** Eski localStorage / preset: tek kutu + mode */
@@ -816,7 +815,6 @@ export default function MatchTable() {
     return {
       d: top.tarih_gun?.trim() ?? "",
       m: top.tarih_ay?.trim() ?? "",
-      y: top.tarih_yil?.trim() ?? "",
     };
   });
 
@@ -824,18 +822,17 @@ export default function MatchTable() {
     setTarihPick({
       d: applied.tarih_gun?.trim() ?? "",
       m: applied.tarih_ay?.trim() ?? "",
-      y: applied.tarih_yil?.trim() ?? "",
     });
-  }, [applied.tarih_gun, applied.tarih_ay, applied.tarih_yil]);
+  }, [applied.tarih_gun, applied.tarih_ay]);
 
-  function handleTarihPickChange(part: "d" | "m" | "y", value: string) {
+  function handleTarihPickChange(part: "d" | "m", value: string) {
     const next = { ...tarihPick, [part]: value };
     setTarihPick(next);
     setFilters((f) => ({
       ...f,
       tarih_gun: next.d,
       tarih_ay: next.m,
-      tarih_yil: next.y,
+      tarih_yil: "",
       tarih_from: "",
       tarih_to: "",
     }));
@@ -843,7 +840,7 @@ export default function MatchTable() {
       ...a,
       tarih_gun: next.d,
       tarih_ay: next.m,
-      tarih_yil: next.y,
+      tarih_yil: "",
       tarih_from: "",
       tarih_to: "",
     }));
@@ -852,6 +849,33 @@ export default function MatchTable() {
       commitColFilters(n);
       return n;
     });
+  }
+
+  function renderTarihGunAyPick() {
+    return (
+      <div
+        className="flex items-center gap-0.5 flex-wrap justify-center w-full"
+        title="Gün ve ay (VE) ile tarih_arama süzümü. Metin cf_tarih ile aynı anda kullanmayın. Yalnız ⊞ Hane açıkken burada görünür.">
+        <select
+          value={tarihPick.d}
+          onChange={(e) => handleTarihPickChange("d", e.target.value)}
+          className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
+          <option value="">Gün</option>
+          {TARIH_PICK_GUN.map((g) => (
+            <option key={g} value={g}>{g}</option>
+          ))}
+        </select>
+        <select
+          value={tarihPick.m}
+          onChange={(e) => handleTarihPickChange("m", e.target.value)}
+          className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
+          <option value="">Ay</option>
+          {TARIH_PICK_AY.map((ay) => (
+            <option key={ay} value={ay}>{ay}</option>
+          ))}
+        </select>
+      </div>
+    );
   }
 
   // sütun sırası ve genişlikleri (Excel benzeri)
@@ -2616,8 +2640,14 @@ export default function MatchTable() {
                   return (
                     <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                       className="px-0.5 py-0.5 border-r border-gray-300"
-                      title="H = tam kod (Enter → sunucu). Rakam kutuları = sabit haneler; tıklanan hücreden ? joker üretilir (Enter → tüm veritabanında ilike).">
-                      {isDigitCol ? (
+                      title={
+                        c.id === "tarih"
+                          ? "Tarih: gün/ay süzümü (tarih_arama). Diğer sütunlar: H = tam kod; rakam kutuları = hane jokeri."
+                          : "H = tam kod (Enter → sunucu). Rakam kutuları = sabit haneler; tıklanan hücreden ? joker üretilir (Enter → tüm veritabanında ilike)."
+                      }>
+                      {c.id === "tarih" ? (
+                        renderTarihGunAyPick()
+                      ) : isDigitCol ? (
                         <div className="flex items-center gap-px overflow-x-hidden">
                           <button type="button"
                             className={`text-[8px] leading-none px-0.5 py-px rounded border font-bold shrink-0 transition-colors ${isHMode ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}
@@ -2655,7 +2685,7 @@ export default function MatchTable() {
                 const hasDigitSel = (colClickPos[c.id]?.length ?? 0) > 0;
                 const tarihPickActive =
                   c.id === "tarih" &&
-                  (Boolean(tarihPick.d || tarihPick.m || tarihPick.y) ||
+                  (Boolean(tarihPick.d || tarihPick.m) ||
                     Boolean(
                       applied.tarih_gun?.trim() ||
                         applied.tarih_ay?.trim() ||
@@ -2669,7 +2699,7 @@ export default function MatchTable() {
                 return (
                   <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                     className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
-                    <div className={`flex min-w-0 ${c.id === "tarih" ? "flex-col gap-0.5" : "items-center gap-0.5"}`}>
+                    <div className="flex min-w-0 items-center gap-0.5">
                       <div className="flex items-center gap-0.5 min-w-0 w-full">
                       <input
                         id={`cf-input-${c.id}`}
@@ -2680,7 +2710,7 @@ export default function MatchTable() {
                             const raw = (e.target as HTMLInputElement).value;
                             const next = { ...colFilters, [c.id]: raw };
                             if (c.id === "tarih" && raw.trim()) {
-                              setTarihPick({ d: "", m: "", y: "" });
+                              setTarihPick({ d: "", m: "" });
                               setFilters((f) => ({
                                 ...f,
                                 tarih_from: "",
@@ -2704,7 +2734,7 @@ export default function MatchTable() {
                             setColFilters(next);
                             commitColFilters(next);
                             if (c.id === "tarih") {
-                              setTarihPick({ d: "", m: "", y: "" });
+                              setTarihPick({ d: "", m: "" });
                               setFilters((f) => ({
                                 ...f,
                                 tarih_from: "",
@@ -2739,7 +2769,7 @@ export default function MatchTable() {
                         })()}
                         title={
                           c.id === "tarih"
-                            ? "Metin: cf_tarih. Gün/Ay/Yıl ayrı: tarih_gun / tarih_ay / tarih_yil (birlikte VE). Üçü doluysa tam gün."
+                            ? "Metin: cf_tarih. Gün/ay: ⊞ Hane satırından (tarih_gun / tarih_ay, tarih_arama)."
                             : "Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
                         }
                         className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
@@ -2759,7 +2789,7 @@ export default function MatchTable() {
                             commitColFilters(next);
                             setColClickPos((prev) => ({ ...prev, [c.id]: [] }));
                             if (c.id === "tarih") {
-                              setTarihPick({ d: "", m: "", y: "" });
+                              setTarihPick({ d: "", m: "" });
                               setFilters((f) => ({
                                 ...f,
                                 tarih_from: "",
@@ -2783,39 +2813,6 @@ export default function MatchTable() {
                         </button>
                       )}
                       </div>
-                      {c.id === "tarih" && (
-                        <div
-                          className="flex items-center gap-0.5 flex-wrap justify-center w-full"
-                          title="Gün / ay / yıl bağımsız veya birlikte (VE). Üçü doluysa tam gün. Metin cf_tarih ile çakıştırmayın.">
-                          <select
-                            value={tarihPick.d}
-                            onChange={(e) => handleTarihPickChange("d", e.target.value)}
-                            className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
-                            <option value="">Gün</option>
-                            {TARIH_PICK_GUN.map((g) => (
-                              <option key={g} value={g}>{g}</option>
-                            ))}
-                          </select>
-                          <select
-                            value={tarihPick.m}
-                            onChange={(e) => handleTarihPickChange("m", e.target.value)}
-                            className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
-                            <option value="">Ay</option>
-                            {TARIH_PICK_AY.map((ay) => (
-                              <option key={ay} value={ay}>{ay}</option>
-                            ))}
-                          </select>
-                          <select
-                            value={tarihPick.y}
-                            onChange={(e) => handleTarihPickChange("y", e.target.value)}
-                            className="tarih-select-mobile max-w-[3.25rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
-                            <option value="">Yıl</option>
-                            {TARIH_PICK_YIL.map((y) => (
-                              <option key={y} value={y}>{y}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
                     </div>
                   </th>
                 );
