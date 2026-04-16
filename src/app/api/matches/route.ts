@@ -424,11 +424,6 @@ export async function GET(req: NextRequest) {
       query = applyCfTextColumnIlikeFilter(query, msCol, v);
       continue;
     }
-    const obktbIdx = parseObktbFilterIndex(colId);
-    if (obktbIdx !== null) {
-      query = applyCfTextColumnIlikeFilter(query, `obktb_${obktbIdx}`, v);
-      continue;
-    }
     const def = DB_COL_MAP[colId];
     if (def) {
       if (CODE_ILIKE_ARAMA[colId]) {

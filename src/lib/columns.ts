@@ -5,7 +5,7 @@
  * dbCol: true → raw_data yerine doğrudan matches sütununda
  * group: grup başlığı (renk/gruplama için)
  */
-import { OKBT_BASAMAK_GROUP, OKBT_BASAMAK_LABELS } from "./okbt-basamak-toplamlari";
+import { OKBT_BASAMAK_LABELS } from "./okbt-basamak-toplamlari";
 
 /** Çok kaynaklı OKBT: her kod sütunu için bağımsız OKBT set. */
 export interface OkbtMultiSource {
@@ -28,6 +28,7 @@ export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
   { id: "t1i",    dbCol: "t1i",    rowKey: "t1i",    group: "T1 ID · OKBT",   indices: ALL_15_IDX },
   { id: "t2i",    dbCol: "t2i",    rowKey: "t2i",    group: "T2 ID · OKBT",   indices: ALL_15_IDX },
   { id: "kodms",  dbCol: "kod_ms", rowKey: "kod_ms", group: "MS Kod · OKBT",  indices: ALL_15_IDX },
+  { id: "kodiy",  dbCol: "kod_iy", rowKey: "kod_iy", group: "İY Kod · OKBT",  indices: ALL_15_IDX },
   { id: "kodcs",  dbCol: "kod_cs", rowKey: "kod_cs", group: "ÇŞ Kod · OKBT",  indices: ALL_15_IDX },
   { id: "kodau",  dbCol: "kod_au", rowKey: "kod_au", group: "A/Ü Kod · OKBT", indices: ALL_15_IDX },
 ];
@@ -58,18 +59,6 @@ export interface ColDef {
   dbCol?: boolean;
   group: string;
   width?: number; // px — varsayılan 60
-}
-
-/** IY Kodu (`kod_iy`) basamaklarından 15 toplam — DB’de obktb_* GENERATED; cf_* tam tablo. */
-function buildOkbtBasamakCols(): ColDef[] {
-  return OKBT_BASAMAK_LABELS.map((label, i) => ({
-    id: `obktb_${i}`,
-    label,
-    key: `obktb_${i}`,
-    dbCol: true,
-    group: OKBT_BASAMAK_GROUP,
-    width: 54,
-  }));
 }
 
 export const ALL_COLS: ColDef[] = [
@@ -115,8 +104,6 @@ export const ALL_COLS: ColDef[] = [
   { id: "iy1", label: "IY1", key: "IY1", group: "İlk Yarı", width: 60 },
   { id: "iyx", label: "IYX", key: "IYX", group: "İlk Yarı", width: 60 },
   { id: "iy2", label: "IY2", key: "IY2", group: "İlk Yarı", width: 60 },
-
-  ...buildOkbtBasamakCols(),
 
   // ── Durumlar (IY/MS kombinasyonu) ──────────────────────────────────────────
   { id: "iyms11", label: "1/1", key: "IYMS11", group: "Durumlar", width: 56 },
@@ -459,11 +446,11 @@ export const GROUP_COLORS: Record<string, string> = {
   "Skor":                   "bg-green-200",
   "Maç Sonucu":             "bg-blue-200",
   "İlk Yarı":               "bg-indigo-200",
-  [OKBT_BASAMAK_GROUP]:     "bg-indigo-100",
   "Maç ID · OKBT":          "bg-purple-100",
   "T1 ID · OKBT":           "bg-orange-100",
   "T2 ID · OKBT":           "bg-amber-100",
   "MS Kod · OKBT":          "bg-blue-100",
+  "İY Kod · OKBT":          "bg-indigo-100",
   "ÇŞ Kod · OKBT":          "bg-teal-100",
   "A/Ü Kod · OKBT":         "bg-green-100",
   "Durumlar":               "bg-violet-200",

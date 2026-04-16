@@ -732,3 +732,111 @@ COMMENT ON FUNCTION public.kodau_obktb_13(public.matches) IS
 COMMENT ON FUNCTION public.kodau_obktb_14(public.matches) IS
   'kod_au kolonu için OKBT formül idx=14 (A+B+C+D+E) — PostgREST computed column.';
 
+
+-- ── kodiy (kod_iy) — İY Kod · OKBT ────────────────────────────────────────────
+-- Önceki sürümde obktb_* GENERATED kolonları ile yapılıyordu.
+-- Şimdi diğer kaynaklarla aynı pattern: PostgREST computed column fonksiyonu.
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_0(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 0)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_0(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=0 (A+B+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_1(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 1)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_1(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=1 (A+C+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_2(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 2)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_2(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=2 (A+D+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_3(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 3)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_3(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=3 (A+B+D) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_4(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 4)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_4(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=4 (A+C+D) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_5(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 5)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_5(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=5 (A+B+C) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_6(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 6)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_6(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=6 (B+D+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_7(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 7)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_7(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=7 (B+C+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_8(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 8)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_8(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=8 (B+C+D) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_9(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 9)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_9(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=9 (C+D+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_10(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 10)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_10(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=10 (A+B+C+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_11(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 11)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_11(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=11 (A+B+D+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_12(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 12)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_12(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=12 (A+B+C+D) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_13(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 13)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_13(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=13 (B+C+D+E) — PostgREST computed column.';
+
+CREATE OR REPLACE FUNCTION public.kodiy_obktb_14(r public.matches)
+RETURNS integer LANGUAGE sql IMMUTABLE AS $$
+  SELECT public.okbt_basamak_toplam(r.kod_iy::text, 14)
+$$;
+COMMENT ON FUNCTION public.kodiy_obktb_14(public.matches) IS
+  'kod_iy kolonu için OKBT formül idx=14 (A+B+C+D+E) — PostgREST computed column.';

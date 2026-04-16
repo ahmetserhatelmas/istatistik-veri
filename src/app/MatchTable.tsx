@@ -91,14 +91,6 @@ function cellVal(row: Match, col: ColDef): string {
   if (col.id === "mbs")     return digitSum(row["id"]);       // MKT = maç kodu basamak toplamı
   if (col.id === "suffix3") return digitSum(row["kod_ms"]);   // MsMKT = MS kodu basamak toplamı
   if (col.id === "suffix4") return digitSum(row["id"]);       // MBS standalone = aynı değer
-  if (col.id.startsWith("obktb_")) {
-    const i = Number(col.id.slice(6));
-    if (!Number.isInteger(i) || i < 0 || i > 14) return "";
-    const dbv = row[`obktb_${i}`];
-    if (dbv != null && String(dbv) !== "") return String(dbv);
-    return okbtBasamakHucreDegeri(row["kod_iy"], i);
-  }
-
   // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → client-side hesap (rowKey'den)
   const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(col.id);
   if (multiOkbtM) {
