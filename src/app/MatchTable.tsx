@@ -206,7 +206,14 @@ function digitClickTemplate(col: ColDef): string {
  * Örn. "24895" + pos=[2,3] → "?48??"
  * Örn. "2.35"  + pos=[2,3] → "?.35"
  */
-function buildDigitPosPattern(val: string, positions: number[]): string {
+type DigitPosMode = "contains" | "positional";
+
+/**
+ * Seçili hane konumlarına göre wildcard pattern üretir.
+ * mode="contains"   → baş ve son ? blokları * olur: *09* (herhangi yerde bul, ilike %09%)
+ * mode="positional" → ? karakterleri olduğu gibi kalır: ?09???? (tam pozisyon eşleşmesi)
+ */
+function buildDigitPosPattern(val: string, positions: number[], mode: DigitPosMode = "contains"): string {
   if (!positions.length) return val;
   const posSet = new Set(positions);
   let digitIdx = 0;
@@ -219,9 +226,9 @@ function buildDigitPosPattern(val: string, positions: number[]): string {
       result += ch;
     }
   }
-  // Baştaki ve sondaki ? bloklarını * ile değiştir → "herhangi bir yerde bul" (ilike %...%)
-  // Böylece sıfırla başlayan gruplar (*09*) ve tekrarlayan rakamlar (*22*) doğru çalışır.
-  result = result.replace(/^\?+/, "*").replace(/\?+$/, "*");
+  if (mode === "contains") {
+    result = result.replace(/^\?+/, "*").replace(/\?+$/, "*");
+  }
   return result;
 }
 
@@ -498,7 +505,8 @@ const LS_KOD_SON_REF = "om_kod_son_ref";
 const LS_COL_CLICK_POS = "om_col_click_pos";
 const LS_COL_ORDER = "om_col_order";
 const LS_COL_WIDTHS = "om_col_widths";
-const LS_SHOW_DIGIT_ROW = "om_show_digit_row";
+const LS_SHOW_DIGIT_ROW  = "om_show_digit_row";
+const LS_DIGIT_POS_MODE  = "om_digit_pos_mode";
 const LS_VIEW_PRESETS = "om_view_presets";
 
 const KOD_SUFFIX_LENS = [3, 4, 5] as const;
@@ -748,7 +756,7 @@ interface TakimSuggestLaneState {
 const TAKIM_SUGGEST_INIT: TakimSuggestLaneState = { open: false, loading: false, teamNames: [] };
 
 /** Seçilen maçtan + pozisyonlardan wildcard pattern üret */
-function buildRefPattern(match: Match, field: RefMatchField, positions: number[]): string {
+function buildRefPattern(match: Match, field: RefMatchField, positions: number[], mode: DigitPosMode = "contains"): string {
   const raw = String(match[field] ?? "").replace(/\D/g, "");
   if (!raw) return "";
   if (!positions.length) return raw;
@@ -756,8 +764,11 @@ function buildRefPattern(match: Match, field: RefMatchField, positions: number[]
   for (let i = 0; i < raw.length; i++) {
     out += positions.includes(i + 1) ? raw[i] : "?";
   }
-  // Hem baştaki hem sondaki ? bloklarını * ile değiştir → "herhangi bir yerde bul"
-  out = out.replace(/^\?+/, "*").replace(/\?+$/, "*");
+  if (mode === "contains") {
+    out = out.replace(/^\?+/, "*").replace(/\?+$/, "*");
+  } else {
+    out = out.replace(/^\?+/, "*"); // sadece baştaki ? → * (prefix her zaman)
+  }
   return out;
 }
 
@@ -952,6 +963,10 @@ export default function MatchTable() {
   const [showDigitRow, setShowDigitRow] = useState<boolean>(
     () => lsGet<boolean>(LS_SHOW_DIGIT_ROW, false)
   );
+  // hane seçici modu: "contains" = *09* (herhangi yerde), "positional" = ?09???? (tam pozisyon)
+  const [digitPosMode, setDigitPosMode] = useState<DigitPosMode>(
+    () => lsGet<DigitPosMode>(LS_DIGIT_POS_MODE, "contains")
+  );
 
   // çift yönlü arama
   const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(readBidirFiltersFromStorage);
@@ -991,6 +1006,7 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_COL_WIDTHS, colWidths); }, [colWidths]);
   useEffect(() => { lsSet(LS_COL_CLICK_POS, colClickPos); }, [colClickPos]);
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
+  useEffect(() => { lsSet(LS_DIGIT_POS_MODE, digitPosMode); }, [digitPosMode]);
   useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
 
@@ -1013,7 +1029,7 @@ export default function MatchTable() {
     field: RefMatchField,
     positions: number[],
   ) => {
-    const pat = buildRefPattern(match, field, positions);
+    const pat = buildRefPattern(match, field, positions, digitPosMode);
     if (!pat) return;
     if (field === "t1i" || field === "t2i") {
       setBidirFilters((prev) => ({
@@ -1035,7 +1051,7 @@ export default function MatchTable() {
     }
     setPage(1);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setBidirFilters, setColFilters]);
+  }, [setBidirFilters, setColFilters, digitPosMode]);
 
   // Ref maç arama (debounced)
   const searchRefMatches = useCallback(async (q: string) => {
@@ -1602,6 +1618,24 @@ export default function MatchTable() {
             >
               {showDigitRow ? "⊞ Hane ✓" : "⊞ Hane"}
             </button>
+            {showDigitRow && (
+              <button
+                type="button"
+                onClick={() => setDigitPosMode((m) => m === "contains" ? "positional" : "contains")}
+                title={
+                  digitPosMode === "contains"
+                    ? "Şu an: ≈ Herhangi yerde — seçili haneler kodun herhangi bir pozisyonunda aranır (*09*). Tıkla: tam pozisyon moduna geç."
+                    : "Şu an: = Tam pozisyon — seçili hanelerin KOD'da tam o pozisyonda olması aranır (?09???). Tıkla: herhangi yerde moduna geç."
+                }
+                className={`border text-xs px-2.5 py-1.5 rounded transition font-mono font-bold whitespace-nowrap ${
+                  digitPosMode === "contains"
+                    ? "bg-amber-100 border-amber-400 text-amber-800 hover:bg-amber-200"
+                    : "bg-purple-100 border-purple-400 text-purple-800 hover:bg-purple-200"
+                }`}
+              >
+                {digitPosMode === "contains" ? "≈ Herhangi" : "= Pozisyon"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setShowBidirRow((v) => !v)}
@@ -2712,8 +2746,20 @@ export default function MatchTable() {
             {/* ── Hane seçici satırı (gizlenebilir) ── */}
             {showDigitRow && (
               <tr className="bg-gray-50 border-b border-gray-300">
-                {/* boş hücre — ◉ buton sütunu */}
-                <th className="w-4 min-w-4 max-w-4 border-r border-gray-300" />
+                {/* ◉ sütun başlığı — mod göstergesi */}
+                <th
+                  className="w-4 min-w-4 max-w-4 border-r border-gray-300 text-center align-middle cursor-pointer select-none"
+                  title={
+                    digitPosMode === "contains"
+                      ? "≈ Herhangi yerde modu: hücre tıklanınca *09* gibi pattern üretilir. Tıkla: tam pozisyon moduna geç."
+                      : "= Tam pozisyon modu: hücre tıklanınca ?09???? gibi pattern üretilir. Tıkla: herhangi yerde moduna geç."
+                  }
+                  onClick={() => setDigitPosMode((m) => m === "contains" ? "positional" : "contains")}
+                >
+                  <span className={`text-[8px] font-bold leading-none ${digitPosMode === "contains" ? "text-amber-600" : "text-purple-600"}`}>
+                    {digitPosMode === "contains" ? "≈" : "="}
+                  </span>
+                </th>
                 {visibleCols.map((c) => {
                   const isDigitCol = isDigitClickCol(c);
                   const tmpl = digitClickTemplate(c);
@@ -2731,7 +2777,9 @@ export default function MatchTable() {
                       title={
                         c.id === "tarih"
                           ? "Tarih: gün/ay süzümü (tarih_arama). Diğer sütunlar: H = tam kod; rakam kutuları = hane jokeri."
-                          : "H = tam kod (Enter → sunucu). Rakam kutuları = sabit haneler; tıklanan hücreden ? joker üretilir (Enter → tüm veritabanında ilike)."
+                          : digitPosMode === "contains"
+                            ? "≈ Herhangi yerde: hücreye tıklayınca seçili hane rakamları kodun herhangi bir yerinde aranır (*09*)"
+                            : "= Tam pozisyon: hücreye tıklayınca seçili hane rakamları tam o konumda aranır (?09????)"
                       }>
                       {c.id === "tarih" ? (
                         renderTarihGunAyPick()
@@ -2988,7 +3036,7 @@ export default function MatchTable() {
                             const positions = colClickPos[c.id] ?? [];
                             const filterVal =
                               positions.length > 0 && isDigitClickCol(c)
-                                ? buildDigitPosPattern(val, positions)
+                                ? buildDigitPosPattern(val, positions, digitPosMode)
                                 : val;
                             const next = { ...colFilters, [c.id]: filterVal };
                             setColFilters(next);
