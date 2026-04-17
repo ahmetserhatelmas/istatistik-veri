@@ -228,26 +228,6 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
   return { ...base, ...dyn };
 }
 
-/**
- * raw_data JSONB GIN index üzerinde çalışacak şekilde @> (containment) kullanır.
- * Joker yoksa: raw_data @> '{"KEY":"val"}' VEYA raw_data @> '{"KEY":numVal}' (OR ile her iki tip)
- * → tek GIN index (sql/add-matches-raw-data-gin-index.sql) bitmap AND ile combine eder.
- * Joker varsa: yavaş ILIKE fallback.
- */
-function buildRawJsonContainsExpr(jsonKey: string, val: string): string {
-  const strJson = JSON.stringify({ [jsonKey]: val });
-  const num = Number(val.replace(",", "."));
-  if (Number.isFinite(num) && String(num) !== val.replace(",", ".").replace(/^0+(\d)/, "$1")) {
-    // "35628" → sayı da dene
-  }
-  const parts: string[] = [`raw_data.cs.${strJson}`];
-  if (/^-?\d+(\.\d+)?$/.test(val)) {
-    const numJson = JSON.stringify({ [jsonKey]: Number(val) });
-    if (numJson !== strJson) parts.push(`raw_data.cs.${numJson}`);
-  }
-  return parts.join(",");
-}
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
@@ -255,32 +235,35 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
   const parts = splitCfOrParts(v);
   if (!parts.length) return query;
 
-  type Br =
-    | { kind: "contains"; orExpr: string }
-    | { kind: "ilike"; pat: string };
+  /**
+   * Strateji (btree text_pattern_ops index kullanabilmek için):
+   *  • Joker var, leading % yok (örn: "3%", "30%") → LIKE  → index kullanır
+   *  • Joker var, leading % var (örn: "%3%")         → ILIKE → full scan
+   *  • Joker yok (örn: "30", "35628")                → LIKE 'val%' (başlıyor ile)
+   *    → btree index kullanır; "30" → "30%", yani "30 ile başlayan"
+   */
+  type Br = { kind: "like" | "ilike"; pat: string };
   const branches: Br[] = [];
   for (const p of parts) {
     if (p.includes("*") || p.includes("?")) {
-      branches.push({ kind: "ilike", pat: cfPatternToIlikePattern(p) });
+      const pat = cfPatternToIlikePattern(p);
+      branches.push({ kind: pat.startsWith("%") ? "ilike" : "like", pat });
     } else {
-      // Joker yok → GIN containment (@>) — tek index tüm anahtarları kapsar
-      branches.push({ kind: "contains", orExpr: buildRawJsonContainsExpr(jsonKey, p) });
+      // Joker yok → "p ile başlayanlar" → btree index kullanılabilir
+      branches.push({ kind: "like", pat: `${p}%` });
     }
   }
   if (branches.length === 1) {
     const b = branches[0]!;
-    if (b.kind === "contains") return query.or(b.orExpr);
-    return query.ilike(field, b.pat);
+    return b.kind === "like" ? query.like(field, b.pat) : query.ilike(field, b.pat);
   }
-  // Birden fazla: ilike ve contains karışık olabilir; AND yerine ayrı zincir
-  for (const b of branches) {
-    if (b.kind === "contains") {
-      query = query.or(b.orExpr);
-    } else {
-      query = query.ilike(field, b.pat);
-    }
-  }
-  return query;
+  const orExpr = branches
+    .map(({ kind, pat }) => {
+      const esc = pat.replace(/"/g, '""');
+      return `${field}.${kind}."${esc}"`;
+    })
+    .join(",");
+  return query.or(orExpr);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
