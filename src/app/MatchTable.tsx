@@ -820,6 +820,13 @@ export default function MatchTable() {
     setPage(1);
   }
 
+  // Yazarken otomatik ara — 400ms debounce (Enter beklenmez)
+  useEffect(() => {
+    const t = setTimeout(() => commitColFilters(colFilters), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colFilters]);
+
   const [tarihPick, setTarihPick] = useState(() => {
     const top = lsGet<typeof EMPTY_TOP>(LS_TOP_FILT, EMPTY_TOP);
     return {
@@ -2717,6 +2724,7 @@ export default function MatchTable() {
                         onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
+                            // Enter: debounce'u atlayıp anında uygula
                             const raw = (e.target as HTMLInputElement).value;
                             const next = { ...colFilters, [c.id]: raw };
                             if (c.id === "tarih" && raw.trim()) {
@@ -2765,7 +2773,7 @@ export default function MatchTable() {
                           }
                         }}
                         placeholder={(() => {
-                          if (!isDigitCol || isHMode || !showDigitRow) return "ara… (Enter)";
+                          if (!isDigitCol || isHMode || !showDigitRow) return "ara…";
                           let dI = 0; let ph = "";
                           for (const ch of tmpl) {
                             if (/\d/.test(ch)) {
@@ -2780,7 +2788,7 @@ export default function MatchTable() {
                         title={
                           c.id === "tarih"
                             ? "Metin: cf_tarih. Gün/ay: ⊞ Hane satırından (tarih_gun / tarih_ay, tarih_arama)."
-                            : "Enter → ara | Esc → temizle | *5?6*: wildcard | 4.9+3.2: VEYA"
+                            : "Esc → temizle | *5?6*: wildcard | 4.9,3.2: VEYA | 4.9+3.2: VE"
                         }
                         className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
                           colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
