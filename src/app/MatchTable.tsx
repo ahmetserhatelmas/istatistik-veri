@@ -46,13 +46,19 @@ function formatLastSyncTr(iso: string | null): string {
 }
 
 // ── wildcard / contains filtre ────────────────────────────────────────────────
+// "," → OR, "+" → AND (sunucu tarafı ile tutarlı)
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.toLowerCase();
-  return pattern.split("+").map((s) => s.trim()).filter(Boolean).some((part) => {
+  const orParts = pattern.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!orParts.length) return true;
+  const testPart = (part: string): boolean => {
     if (!part.includes("*") && !part.includes("?")) return val.includes(part.toLowerCase());
-    const re = part.replace(/[-[\]{}()|^$\\]/g,"\\$&").replace(/\./g,"\\.").replace(/\*/g,".*").replace(/\?/g,".");
+    const re = part.replace(/[-[\]{}()|^$\\]/g, "\\$&").replace(/\./g, "\\.").replace(/\*/g, ".*").replace(/\?/g, ".");
     try { return new RegExp(`^${re}$`, "i").test(val); } catch { return val.includes(part.toLowerCase()); }
-  });
+  };
+  return orParts.some((orPart) =>
+    orPart.split("+").map((s) => s.trim()).filter(Boolean).every(testPart)
+  );
 }
 
 
@@ -213,6 +219,9 @@ function buildDigitPosPattern(val: string, positions: number[]): string {
       result += ch;
     }
   }
+  // Baştaki ve sondaki ? bloklarını * ile değiştir → "herhangi bir yerde bul" (ilike %...%)
+  // Böylece sıfırla başlayan gruplar (*09*) ve tekrarlayan rakamlar (*22*) doğru çalışır.
+  result = result.replace(/^\?+/, "*").replace(/\?+$/, "*");
   return result;
 }
 
@@ -747,7 +756,8 @@ function buildRefPattern(match: Match, field: RefMatchField, positions: number[]
   for (let i = 0; i < raw.length; i++) {
     out += positions.includes(i + 1) ? raw[i] : "?";
   }
-  out = out.replace(/^\?+/, "*");
+  // Hem baştaki hem sondaki ? bloklarını * ile değiştir → "herhangi bir yerde bul"
+  out = out.replace(/^\?+/, "*").replace(/\?+$/, "*");
   return out;
 }
 
