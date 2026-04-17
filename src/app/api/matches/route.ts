@@ -708,17 +708,11 @@ export async function GET(req: NextRequest) {
         continue;
       }
       if (def.mode === "ilike") {
-        // Wildcard içeriyorsa (* ?) pattern'ı koru; yoksa "içerir" araması yap
-        if (v.includes("*") || v.includes("?")) {
-          query = applyCfTextColumnIlikeFilter(query, def.col, v);
-        } else {
-          query = query.ilike(def.col, `%${v}%`);
-        }
+        query = applyCfTextColumnIlikeFilter(query, def.col, v);
       } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
         if (def.col === "id") {
-          const n = Number(v);
-          if (Number.isFinite(n) && n > 0) query = query.eq(def.col, n);
+          query = applyGenericFilter(query, def.col, v, "prefix");
         } else if (INTEGER_EQ_CF_COLS.has(def.col)) {
           query = applyCfIntegerEqColumnFilter(query, def.col, v);
         } else {
