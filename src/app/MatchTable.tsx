@@ -2667,6 +2667,14 @@ export default function MatchTable() {
           className="text-sm border-collapse table-fixed max-w-none"
           style={{ width: tableScrollWidth, minWidth: tableScrollWidth }}
         >
+          {/* colgroup: table-fixed'in her sütun için doğru genişliği kullanmasını sağlar.
+              colSpan'lı grup başlık satırı olmadan tarayıcı genişlikleri yanlış hesaplar. */}
+          <colgroup>
+            <col style={{ width: 16, minWidth: 16, maxWidth: 16 }} />
+            {visibleCols.map((c) => (
+              <col key={c.id} style={{ width: colW(c), minWidth: colW(c) }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
               <th className="w-4 min-w-4 max-w-4 border-r border-gray-400 bg-gray-200 align-middle py-1" />
