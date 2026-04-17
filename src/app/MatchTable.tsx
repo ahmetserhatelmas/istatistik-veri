@@ -795,8 +795,10 @@ export default function MatchTable() {
   const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
   const [colFiltersCommitted, setColFiltersCommitted] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
 
-  // Son hane filtresi paneli (sağ-tık)
+  // Son hane filtresi paneli (çift-tık)
   const [codePick, setCodePick] = useState<CodePickPanel>(null);
+  // Çift-tık ile seçilen son-hane vurgusu (filtrelemez, sadece sarı)
+  const [rowClickHighlight, setRowClickHighlight] = useState<{ digits: string; n: number } | null>(null);
 
   /** Satır süzmeden oyun kodu hücrelerinde sonek vurgusu; N ve kaynak kod seçilebilir. */
   const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
@@ -2854,8 +2856,7 @@ export default function MatchTable() {
                 let hitIdx = 0;
                 return (
                   <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors"
-                    onContextMenu={(e) => {
-                      e.preventDefault();
+                    onDoubleClick={(e) => {
                       const rd = m.raw_data as Record<string, unknown> | null;
                       if (!rd) return;
                       const entries: CodePickEntry[] = [];
@@ -2869,7 +2870,9 @@ export default function MatchTable() {
                       }
                       entries.sort((a, b) => a.key.localeCompare(b.key));
                       if (entries.length === 0) return;
-                      setCodePick({ entries, x: e.clientX, y: e.clientY });
+                      // Tıklanan hücrenin konumunu kullan
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      setCodePick({ entries, x: rect.left + 60, y: rect.top });
                     }}
                   >
                     {visibleCols.map((c) => {
@@ -2883,8 +2886,13 @@ export default function MatchTable() {
                         !!suffixForRow &&
                         shouldScanColForKodSuffix(c) &&
                         cellDigitsEndWith(val, suffixForRow);
+                      // Çift-tık son hane vurgusu: filtrelemez, tüm satırlarda sarı gösterir
+                      const rowClickHit =
+                        !!rowClickHighlight &&
+                        shouldScanColForKodSuffix(c) &&
+                        cellDigitsEndWith(val, rowClickHighlight.digits);
                       let cls: string;
-                      if (kodSonHit) {
+                      if (kodSonHit || rowClickHit) {
                         cls = "bg-yellow-300/90 text-gray-900 font-semibold";
                       } else if (SCORE_COLS.has(c.id) && val) {
                         cls = "text-green-700 font-semibold";
@@ -2932,7 +2940,7 @@ export default function MatchTable() {
       {codePick && (
         <>
           {/* Backdrop — tıklayınca kapat */}
-          <div className="fixed inset-0 z-40" onClick={() => setCodePick(null)} onContextMenu={(e) => { e.preventDefault(); setCodePick(null); }} />
+          <div className="fixed inset-0 z-40" onClick={() => setCodePick(null)} />
           <div
             className="fixed z-50 bg-white border border-gray-300 rounded-lg shadow-xl flex flex-col text-xs"
             style={{
@@ -2944,9 +2952,17 @@ export default function MatchTable() {
           >
             {/* Başlık */}
             <div className="flex items-center justify-between px-2 py-1.5 bg-gray-100 border-b rounded-t-lg">
-              <span className="font-semibold text-gray-700">Son hane filtresi</span>
+              <span className="font-semibold text-gray-700">Son hane vurgusu</span>
               <button className="text-gray-400 hover:text-gray-700 text-sm leading-none" onClick={() => setCodePick(null)}>✕</button>
             </div>
+            {/* Aktif vurgu göstergesi */}
+            {rowClickHighlight && (
+              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-50 border-b text-[10px] text-yellow-800">
+                <span className="font-semibold">Aktif:</span>
+                <span className="font-mono bg-yellow-200 px-1 rounded">son {rowClickHighlight.n} = {rowClickHighlight.digits}</span>
+                <button className="ml-auto text-yellow-600 hover:text-red-600 font-semibold" onClick={() => { setRowClickHighlight(null); setCodePick(null); }}>Temizle</button>
+              </div>
+            )}
             {/* Başlık satırı */}
             <div className="flex items-center gap-1 px-2 py-0.5 bg-gray-50 border-b text-[10px] text-gray-400 font-medium">
               <span className="w-32">Kod</span>
@@ -2959,12 +2975,12 @@ export default function MatchTable() {
             </div>
             {/* Kod listesi */}
             <div className="overflow-y-auto flex-1">
-              {codePick.entries.map(({ key, colId, value }) => {
+              {codePick.entries.map(({ key, value }) => {
                 const s3 = value % 1000;
                 const s4 = value % 10000;
                 const s5 = value % 100000;
                 return (
-                  <div key={key} className="flex items-center gap-1 px-2 py-0.5 border-b border-gray-100 hover:bg-blue-50">
+                  <div key={key} className="flex items-center gap-1 px-2 py-0.5 border-b border-gray-100 hover:bg-yellow-50">
                     <span className="font-mono font-semibold w-32 truncate text-gray-800" title={key}>{key}</span>
                     <span className="font-mono text-gray-500 w-16 text-right shrink-0">{value}</span>
                     <div className="flex gap-0.5 ml-auto shrink-0">
@@ -2972,16 +2988,18 @@ export default function MatchTable() {
                         const suffix = n === 3 ? s3 : n === 4 ? s4 : s5;
                         const tooShort = value < Math.pow(10, n - 1);
                         if (tooShort) return <span key={n} className="w-12" />;
+                        const isActive = rowClickHighlight?.digits === String(suffix) && rowClickHighlight?.n === n;
                         return (
                           <button
                             key={n}
-                            title={`${key} son ${n} hane = ${suffix} → cf_${colId}=*${suffix}`}
-                            className="w-12 px-0.5 py-0.5 bg-blue-100 hover:bg-blue-500 hover:text-white text-blue-800 rounded font-mono text-[10px] transition-colors"
+                            title={`Tüm maçlarda son ${n} hane = ${suffix} olan kodları sarı ile göster`}
+                            className={`w-12 px-0.5 py-0.5 rounded font-mono text-[10px] transition-colors ${
+                              isActive
+                                ? "bg-yellow-400 text-yellow-900 font-bold"
+                                : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
+                            }`}
                             onClick={() => {
-                              const pattern = `*${suffix}`;
-                              const next = { ...colFilters, [colId]: pattern };
-                              setColFilters(next);
-                              commitColFilters(next);
+                              setRowClickHighlight(isActive ? null : { digits: String(suffix), n });
                               setCodePick(null);
                             }}
                           >
@@ -3003,6 +3021,12 @@ export default function MatchTable() {
         <span>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
           {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
+          {rowClickHighlight && (
+            <span className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
+              ● son {rowClickHighlight.n} = {rowClickHighlight.digits}
+              <button className="hover:text-red-600 ml-0.5" title="Vurguyu temizle" onClick={() => setRowClickHighlight(null)}>✕</button>
+            </span>
+          )}
         </span>
         <div className="flex gap-1.5">
           {[
