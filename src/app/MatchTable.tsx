@@ -13,6 +13,10 @@ import {
 import { okbtBasamakHucreDegeri } from "@/lib/okbt-basamak-toplamlari";
 
 type Match = Record<string, unknown>;
+
+/** Sağ-tık → son hane filtresi paneli */
+type CodePickEntry = { key: string; colId: string; value: number };
+type CodePickPanel = { entries: CodePickEntry[]; x: number; y: number } | null;
 interface ApiResponse {
   data?: Match[];
   page?: number;
@@ -790,6 +794,9 @@ export default function MatchTable() {
   // sütun bazlı filtreler — display (her tuşta) vs committed (Enter ile)
   const [colFilters, setColFilters] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
   const [colFiltersCommitted, setColFiltersCommitted] = useState<Record<string,string>>(() => lsGet<Record<string,string>>(LS_COL_FILT, {}));
+
+  // Son hane filtresi paneli (sağ-tık)
+  const [codePick, setCodePick] = useState<CodePickPanel>(null);
 
   /** Satır süzmeden oyun kodu hücrelerinde sonek vurgusu; N ve kaynak kod seçilebilir. */
   const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
@@ -2846,7 +2853,25 @@ export default function MatchTable() {
               sortedRows.map((m, ri) => {
                 let hitIdx = 0;
                 return (
-                  <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors">
+                  <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      const rd = m.raw_data as Record<string, unknown> | null;
+                      if (!rd) return;
+                      const entries: CodePickEntry[] = [];
+                      for (const [k, v] of Object.entries(rd)) {
+                        if (!k.startsWith("KOD")) continue;
+                        const num = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+                        if (!Number.isFinite(num) || num === null) continue;
+                        const intVal = Math.abs(Math.round(num));
+                        if (intVal === 0) continue;
+                        entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
+                      }
+                      entries.sort((a, b) => a.key.localeCompare(b.key));
+                      if (entries.length === 0) return;
+                      setCodePick({ entries, x: e.clientX, y: e.clientY });
+                    }}
+                  >
                     {visibleCols.map((c) => {
                       const val = cellVal(m, c);
                       const suffixForRow =
@@ -2902,6 +2927,76 @@ export default function MatchTable() {
           </tbody>
         </table>
       </div>
+
+      {/* ── SON HANE FİLTRE PANELİ (sağ-tık) ── */}
+      {codePick && (
+        <>
+          {/* Backdrop — tıklayınca kapat */}
+          <div className="fixed inset-0 z-40" onClick={() => setCodePick(null)} onContextMenu={(e) => { e.preventDefault(); setCodePick(null); }} />
+          <div
+            className="fixed z-50 bg-white border border-gray-300 rounded-lg shadow-xl flex flex-col text-xs"
+            style={{
+              left: Math.min(codePick.x + 4, (typeof window !== "undefined" ? window.innerWidth : 1200) - 310),
+              top:  Math.min(codePick.y + 4, (typeof window !== "undefined" ? window.innerHeight : 800) - 420),
+              width: 300,
+              maxHeight: 420,
+            }}
+          >
+            {/* Başlık */}
+            <div className="flex items-center justify-between px-2 py-1.5 bg-gray-100 border-b rounded-t-lg">
+              <span className="font-semibold text-gray-700">Son hane filtresi</span>
+              <button className="text-gray-400 hover:text-gray-700 text-sm leading-none" onClick={() => setCodePick(null)}>✕</button>
+            </div>
+            {/* Başlık satırı */}
+            <div className="flex items-center gap-1 px-2 py-0.5 bg-gray-50 border-b text-[10px] text-gray-400 font-medium">
+              <span className="w-32">Kod</span>
+              <span className="w-16 text-right">Değer</span>
+              <span className="flex gap-1 ml-auto">
+                <span className="w-12 text-center">son 3</span>
+                <span className="w-12 text-center">son 4</span>
+                <span className="w-14 text-center">son 5</span>
+              </span>
+            </div>
+            {/* Kod listesi */}
+            <div className="overflow-y-auto flex-1">
+              {codePick.entries.map(({ key, colId, value }) => {
+                const s3 = value % 1000;
+                const s4 = value % 10000;
+                const s5 = value % 100000;
+                return (
+                  <div key={key} className="flex items-center gap-1 px-2 py-0.5 border-b border-gray-100 hover:bg-blue-50">
+                    <span className="font-mono font-semibold w-32 truncate text-gray-800" title={key}>{key}</span>
+                    <span className="font-mono text-gray-500 w-16 text-right shrink-0">{value}</span>
+                    <div className="flex gap-0.5 ml-auto shrink-0">
+                      {([3, 4, 5] as const).map((n) => {
+                        const suffix = n === 3 ? s3 : n === 4 ? s4 : s5;
+                        const tooShort = value < Math.pow(10, n - 1);
+                        if (tooShort) return <span key={n} className="w-12" />;
+                        return (
+                          <button
+                            key={n}
+                            title={`${key} son ${n} hane = ${suffix} → cf_${colId}=*${suffix}`}
+                            className="w-12 px-0.5 py-0.5 bg-blue-100 hover:bg-blue-500 hover:text-white text-blue-800 rounded font-mono text-[10px] transition-colors"
+                            onClick={() => {
+                              const pattern = `*${suffix}`;
+                              const next = { ...colFilters, [colId]: pattern };
+                              setColFilters(next);
+                              commitColFilters(next);
+                              setCodePick(null);
+                            }}
+                          >
+                            {suffix}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── SAYFALAMA ── */}
       <div className="flex-none flex items-center justify-between px-4 py-2 border-t border-gray-300 bg-gray-300/60 text-xs text-gray-900">
