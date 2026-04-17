@@ -86,6 +86,15 @@ function digitSum(val: unknown): string {
   return String(s.split("").reduce((acc, d) => acc + Number(d), 0));
 }
 
+/** Oran hücreleri: her zaman iki ondalık (1.2 → 1.20, 1 → 1.00). Sayı değilse olduğu gibi. */
+function formatOddsDecimal2(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  const n = Number(s.replace(",", "."));
+  if (!Number.isFinite(n)) return s;
+  return n.toFixed(2);
+}
+
 function cellVal(row: Match, col: ColDef): string {
   // Hesaplanan (computed) sütunlar
   if (col.id === "mbs")     return digitSum(row["id"]);       // MKT = maç kodu basamak toplamı
@@ -121,6 +130,7 @@ function cellVal(row: Match, col: ColDef): string {
       return isNaN(d.getTime()) ? "" : GUN_FMT.format(d);
     } catch { return ""; }
   }
+  if (ODDS_GROUPS.has(col.group)) return formatOddsDecimal2(raw);
   return String(raw);
 }
 

@@ -228,6 +228,26 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
   return { ...base, ...dyn };
 }
 
+/**
+ * raw_data JSONB GIN index üzerinde çalışacak şekilde @> (containment) kullanır.
+ * Joker yoksa: raw_data @> '{"KEY":"val"}' VEYA raw_data @> '{"KEY":numVal}' (OR ile her iki tip)
+ * → tek GIN index (sql/add-matches-raw-data-gin-index.sql) bitmap AND ile combine eder.
+ * Joker varsa: yavaş ILIKE fallback.
+ */
+function buildRawJsonContainsExpr(jsonKey: string, val: string): string {
+  const strJson = JSON.stringify({ [jsonKey]: val });
+  const num = Number(val.replace(",", "."));
+  if (Number.isFinite(num) && String(num) !== val.replace(",", ".").replace(/^0+(\d)/, "$1")) {
+    // "35628" → sayı da dene
+  }
+  const parts: string[] = [`raw_data.cs.${strJson}`];
+  if (/^-?\d+(\.\d+)?$/.test(val)) {
+    const numJson = JSON.stringify({ [jsonKey]: Number(val) });
+    if (numJson !== strJson) parts.push(`raw_data.cs.${numJson}`);
+  }
+  return parts.join(",");
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
@@ -235,25 +255,32 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
   const parts = splitCfOrParts(v);
   if (!parts.length) return query;
 
-  type Br = { pat: string };
+  type Br =
+    | { kind: "contains"; orExpr: string }
+    | { kind: "ilike"; pat: string };
   const branches: Br[] = [];
   for (const p of parts) {
     if (p.includes("*") || p.includes("?")) {
-      branches.push({ pat: cfPatternToIlikePattern(p) });
+      branches.push({ kind: "ilike", pat: cfPatternToIlikePattern(p) });
     } else {
-      branches.push({ pat: `%${p}%` });
+      // Joker yok → GIN containment (@>) — tek index tüm anahtarları kapsar
+      branches.push({ kind: "contains", orExpr: buildRawJsonContainsExpr(jsonKey, p) });
     }
   }
   if (branches.length === 1) {
-    return query.ilike(field, branches[0]!.pat);
+    const b = branches[0]!;
+    if (b.kind === "contains") return query.or(b.orExpr);
+    return query.ilike(field, b.pat);
   }
-  const orExpr = branches
-    .map(({ pat }) => {
-      const esc = pat.replace(/"/g, '""');
-      return `${field}.ilike."${esc}"`;
-    })
-    .join(",");
-  return query.or(orExpr);
+  // Birden fazla: ilike ve contains karışık olabilir; AND yerine ayrı zincir
+  for (const b of branches) {
+    if (b.kind === "contains") {
+      query = query.or(b.orExpr);
+    } else {
+      query = query.ilike(field, b.pat);
+    }
+  }
+  return query;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
