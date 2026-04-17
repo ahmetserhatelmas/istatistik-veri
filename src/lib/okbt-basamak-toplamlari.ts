@@ -71,3 +71,52 @@ export function okbtBasamakHucreDegeri(kodRaw: unknown, index: number): string {
   if (!sums || index < 0 || index >= sums.length) return "";
   return String(sums[index]);
 }
+
+// ── 7 basamaklı (Maç ID ABCDEFG) ───────────────────────────────────────────
+
+/** Sütun başlıkları: 7 haneli ID için A–G kombinasyonları (20 adet). */
+export const OKBT_7_BASAMAK_LABELS = [
+  // 3-toplam: A/B + X + G
+  "A+B+G", "A+C+G", "A+D+G", "A+E+G", "A+F+G",
+  // 3-toplam: ardışık orta/son
+  "B+C+D", "B+D+E", "C+D+E", "D+E+F", "E+F+G",
+  // 4-toplam: ardışık pencereler
+  "A+B+C+D", "B+C+D+E", "C+D+E+F", "D+E+F+G",
+  // 5-toplam
+  "A+B+C+D+E", "B+C+D+E+F", "C+D+E+F+G",
+  // 6-toplam
+  "A+B+C+D+E+F", "B+C+D+E+F+G",
+  // 7-toplam
+  "A+B+C+D+E+F+G",
+] as const;
+
+export const OKBT_7_IDX_COUNT = OKBT_7_BASAMAK_LABELS.length; // 20
+
+function parseKod7Basamak(kodRaw: unknown): [number,number,number,number,number,number,number] | null {
+  const digits = String(kodRaw ?? "").replace(/\D/g, "");
+  if (digits.length < 1) return null;
+  const d = digits.length >= 7 ? digits.slice(-7) : digits.padStart(7, "0");
+  const ns = d.split("").map(Number);
+  if (ns.some((n) => !Number.isFinite(n))) return null;
+  return ns as unknown as [number,number,number,number,number,number,number];
+}
+
+export function okbt7BasamakToplamlari(kodRaw: unknown): number[] | null {
+  const p = parseKod7Basamak(kodRaw);
+  if (!p) return null;
+  const [A,B,C,D,E,F,G] = p;
+  return [
+    A+B+G, A+C+G, A+D+G, A+E+G, A+F+G,
+    B+C+D, B+D+E, C+D+E, D+E+F, E+F+G,
+    A+B+C+D, B+C+D+E, C+D+E+F, D+E+F+G,
+    A+B+C+D+E, B+C+D+E+F, C+D+E+F+G,
+    A+B+C+D+E+F, B+C+D+E+F+G,
+    A+B+C+D+E+F+G,
+  ];
+}
+
+export function okbt7BasamakHucreDegeri(kodRaw: unknown, index: number): string {
+  const sums = okbt7BasamakToplamlari(kodRaw);
+  if (!sums || index < 0 || index >= sums.length) return "";
+  return String(sums[index]);
+}

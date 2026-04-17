@@ -5,7 +5,7 @@
  * dbCol: true → raw_data yerine doğrudan matches sütununda
  * group: grup başlığı (renk/gruplama için)
  */
-import { OKBT_BASAMAK_LABELS } from "./okbt-basamak-toplamlari";
+import { OKBT_BASAMAK_LABELS, OKBT_7_BASAMAK_LABELS, OKBT_7_IDX_COUNT } from "./okbt-basamak-toplamlari";
 
 /** Çok kaynaklı OKBT: her kod sütunu için bağımsız OKBT set. */
 export interface OkbtMultiSource {
@@ -22,9 +22,10 @@ export interface OkbtMultiSource {
 }
 
 const ALL_15_IDX = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14] as const;
+const ALL_20_IDX = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19] as const;
 
 export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
-  { id: "macid",  dbCol: "id",     rowKey: "id",     group: "Maç ID · OKBT",  indices: ALL_15_IDX },
+  { id: "macid",  dbCol: "id",     rowKey: "id",     group: "Maç ID · OKBT",  indices: ALL_20_IDX },
   { id: "t1i",    dbCol: "t1i",    rowKey: "t1i",    group: "T1 ID · OKBT",   indices: ALL_15_IDX },
   { id: "t2i",    dbCol: "t2i",    rowKey: "t2i",    group: "T2 ID · OKBT",   indices: ALL_15_IDX },
   { id: "kodms",  dbCol: "kod_ms", rowKey: "kod_ms", group: "MS Kod · OKBT",  indices: ALL_15_IDX },
@@ -36,16 +37,22 @@ export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
 export const OKBT_MULTI_SOURCE_MAP: Record<string, OkbtMultiSource> =
   Object.fromEntries(OKBT_MULTI_SOURCES.map((s) => [s.id, s]));
 
-function buildOkbtMultiCols(): ColDef[] {
+function buildOkbtMultiColsForSources(sourceIds: readonly string[]): ColDef[] {
   const cols: ColDef[] = [];
+  const idSet = new Set(sourceIds);
   for (const src of OKBT_MULTI_SOURCES) {
+    if (!idSet.has(src.id)) continue;
+    const is7 = src.id === "macid";
     for (const idx of src.indices) {
+      const label = is7
+        ? (OKBT_7_BASAMAK_LABELS[idx as number] ?? String(idx))
+        : (OKBT_BASAMAK_LABELS[idx as number] ?? String(idx));
       cols.push({
         id: `${src.id}_obktb_${idx}`,
-        label: OKBT_BASAMAK_LABELS[idx]!,
-        key: `__okbtm_${src.id}_${idx}`,  // __ prefix → staticCfRawJson tarafından atlanır
+        label,
+        key: `__okbtm_${src.id}_${idx}`,
         group: src.group,
-        width: 54,
+        width: 60,
       });
     }
   }
@@ -104,6 +111,11 @@ export const ALL_COLS: ColDef[] = [
   { id: "iy1", label: "IY1", key: "IY1", group: "İlk Yarı", width: 60 },
   { id: "iyx", label: "IYX", key: "IYX", group: "İlk Yarı", width: 60 },
   { id: "iy2", label: "IY2", key: "IY2", group: "İlk Yarı", width: 60 },
+
+  // ── 2. yarı maç sonucu (oranlar: raw_data IKIYS1 / IKIYSX / IKIYS2) ──────────
+  { id: "ikiys1", label: "2Y1", key: "IKIYS1", group: "2. Yarı MS", width: 60 },
+  { id: "ikiysx", label: "2YX", key: "IKIYSX", group: "2. Yarı MS", width: 60 },
+  { id: "ikiys2", label: "2Y2", key: "IKIYS2", group: "2. Yarı MS", width: 60 },
 
   // ── İYMS (İY / MS kombinasyonu) ─────────────────────────────────────────────
   { id: "iyms11", label: "1/1", key: "IYMS11", group: "İYMS", width: 56 },
@@ -207,11 +219,6 @@ export const ALL_COLS: ColDef[] = [
   { id: "igo", label: "İlk G.Y", key: "IGO", group: "İlk Gol", width: 64 },
   { id: "ig2", label: "İlk G.2", key: "IG2", group: "İlk Gol", width: 64 },
 
-  // ── 2. yarı maç sonucu (oranlar: raw_data IKIYS1 / IKIYSX / IKIYS2) ──────────
-  { id: "ikiys1", label: "2Y1", key: "IKIYS1", group: "2. Yarı MS", width: 60 },
-  { id: "ikiysx", label: "2YX", key: "IKIYSX", group: "2. Yarı MS", width: 60 },
-  { id: "ikiys2", label: "2Y2", key: "IKIYS2", group: "2. Yarı MS", width: 60 },
-
   // ── IY Skoru ──────────────────────────────────────────────────────────────
   { id: "h1ys_00", label: "IY 0-0", key: "H1YS_1_1",  group: "IY Skoru", width: 60 },
   { id: "h1ys_01", label: "IY 0-1", key: "H1YS_2_1",  group: "IY Skoru", width: 60 },
@@ -231,8 +238,8 @@ export const ALL_COLS: ColDef[] = [
   { id: "kod_iy",  label: "IY Kod",  key: "kod_iy",  dbCol: true, group: "Diğer", width: 72 },
   { id: "kod_au",  label: "A/Ü Kod", key: "kod_au",  dbCol: true, group: "Diğer", width: 72 },
 
-  // ── Çok kaynaklı OKBT ─────────────────────────────────────────────────────
-  ...buildOkbtMultiCols(),
+  // ── Çok kaynaklı OKBT (tüm kaynaklar; macid 7 hane A–G) ─────────────────────
+  ...buildOkbtMultiColsForSources(["macid", "t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"]),
 ];
 
 /** API / DB alan adlarını karşılaştırmak (T1ANTRENOR ↔ t1_antrenor) */
@@ -444,7 +451,7 @@ export const GROUP_COLORS: Record<string, string> = {
   "MBS":                    "bg-indigo-200",
   "Takımlar":               "bg-orange-200",
   "Skor":                   "bg-green-200",
-  "Maç Sonucu":             "bg-blue-200",
+  "Maç Sonucu":             "bg-fuchsia-200",
   "İlk Yarı":               "bg-indigo-200",
   "Maç ID · OKBT":          "bg-purple-100",
   "T1 ID · OKBT":           "bg-orange-100",

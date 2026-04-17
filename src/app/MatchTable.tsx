@@ -10,7 +10,7 @@ import {
   mergeAllCols,
   type ColDef,
 } from "@/lib/columns";
-import { okbtBasamakHucreDegeri } from "@/lib/okbt-basamak-toplamlari";
+import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
 
 type Match = Record<string, unknown>;
 
@@ -55,19 +55,6 @@ function matchWildcard(value: string, pattern: string): boolean {
   });
 }
 
-function applyColFilters(rows: Match[], filters: Record<string, string>, cols: ColDef[]): Match[] {
-  const active = Object.entries(filters).filter(([, v]) => v.trim());
-  if (!active.length) return rows;
-  return rows.filter((row) =>
-    active.every(([colId, pat]) => {
-      const col = cols.find((c) => c.id === colId);
-      if (!col) return true;
-      const raw = row[col.key];
-      const val = raw == null ? "" : col.id === "saat" ? String(raw).slice(0, 5) : String(raw);
-      return matchWildcard(val, pat.trim());
-    })
-  );
-}
 
 const GUN_FMT = new Intl.DateTimeFormat("tr-TR", { weekday: "long" });
 
@@ -110,10 +97,22 @@ function cellVal(row: Match, col: ColDef): string {
     const srcId = multiOkbtM[1]!;
     const idx = Number(multiOkbtM[2]);
     const src = OKBT_MULTI_SOURCE_MAP[srcId];
-    if (src && Number.isInteger(idx) && idx >= 0 && idx <= 14) {
-      return okbtBasamakHucreDegeri(row[src.rowKey], idx);
+    if (src && Number.isInteger(idx) && idx >= 0) {
+      if (src.id === "macid") {
+        return idx < OKBT_7_IDX_COUNT ? okbt7BasamakHucreDegeri(row[src.rowKey], idx) : "";
+      }
+      return idx <= 14 ? okbtBasamakHucreDegeri(row[src.rowKey], idx) : "";
     }
     return "";
+  }
+
+  if (col.id === "id") {
+    const rawId = row[col.key] ?? null;
+    if (rawId == null || rawId === "") return "";
+    const n = typeof rawId === "number" ? rawId : Number(rawId);
+    if (!Number.isFinite(n)) return String(rawId);
+    const s = String(Math.abs(Math.round(n)));
+    return s.length <= 7 ? s.padStart(7, "0") : s;
   }
 
   const raw = row[col.key] ?? null;
@@ -140,6 +139,29 @@ function cellVal(row: Match, col: ColDef): string {
 
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
 const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
+
+/** cellVal ile filtrelenen client-side sütunlar — hesaplamalı sütunlar sunucuya gönderilmez */
+const CELL_VAL_CLIENT_COL_IDS = new Set(["mbs", "suffix3", "suffix4"]);
+
+/** Sütun paneli: *_obktb_{0–14} her biçim için ayrı renk (seçili / kapalı) */
+function colPanelChipClass(_colId: string, on: boolean): string {
+  return on
+    ? "border bg-blue-600 border-blue-500 text-white"
+    : "border bg-white border-gray-300 text-gray-800 hover:bg-gray-100";
+}
+
+function applyColFilters(rows: Match[], filters: Record<string, string>, cols: ColDef[]): Match[] {
+  const active = Object.entries(filters).filter(([, v]) => v.trim());
+  if (!active.length) return rows;
+  return rows.filter((row) =>
+    active.every(([colId, pat]) => {
+      const col = cols.find((c) => c.id === colId);
+      if (!col) return true;
+      const val = cellVal(row, col);
+      return matchWildcard(val, pat.trim());
+    })
+  );
+}
 
 /** Hane pozisyonu → A-Z harfi (tüm sütunlarda tutarlı etiket). */
 const DIGIT_POS_LABEL: Record<number, string> = {
@@ -406,10 +428,11 @@ const HIT_COLORS = [
   "bg-orange-500/30 text-orange-900",
 ] as const;
 
+/** Sütun başlıklarının üstündeki yapışkan grup satırı (colSpan). */
 function buildGroupSpans(cols: ColDef[]) {
   const spans: { group: string; count: number }[] = [];
   for (const c of cols) {
-    if (spans.length && spans[spans.length-1].group === c.group) spans[spans.length-1].count++;
+    if (spans.length && spans[spans.length - 1].group === c.group) spans[spans.length - 1].count++;
     else spans.push({ group: c.group, count: 1 });
   }
   return spans;
@@ -798,7 +821,8 @@ export default function MatchTable() {
   // Son hane filtresi paneli (çift-tık)
   const [codePick, setCodePick] = useState<CodePickPanel>(null);
   // Çift-tık ile seçilen son-hane vurgusu (filtrelemez, sadece sarı)
-  const [rowClickHighlight, setRowClickHighlight] = useState<{ digits: string; n: number } | null>(null);
+  /** Panel'den seçilen KOD son hane filtresi — herhangi bir KOD sütunu eşleşen satırları gösterir */
+  const [anyKodSuffix, setAnyKodSuffix] = useState<{ digits: string; n: number } | null>(null);
 
   /** Satır süzmeden oyun kodu hücrelerinde sonek vurgusu; N ve kaynak kod seçilebilir. */
   const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
@@ -1158,12 +1182,19 @@ export default function MatchTable() {
     () => orderedVisibleCols(mergedCols, visibleIds, colOrder),
     [mergedCols, visibleIds, colOrder]
   );
-  const groupSpans   = buildGroupSpans(visibleCols);
+  const groupSpans = useMemo(() => buildGroupSpans(visibleCols), [visibleCols]);
   const groups       = Array.from(new Set(mergedCols.map((c) => c.group)));
+  /** table-fixed + %100 genişlik sütunları ezmesin — yatay kaydır */
+  const tableScrollWidth = useMemo(
+    () => 16 + visibleCols.reduce((s, c) => s + colW(c), 0),
+    [visibleCols, colW]
+  );
 
-  // Sunucu: tüm cf_* (OKBT obktb_* dahil). İstemci: yalnızca CF_CLIENT_ONLY_COL_IDS (genelde boş).
+  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar (mbs, suffix3, suffix4)
   const rawColFilters = Object.fromEntries(
-    Object.entries(colFiltersCommitted).filter(([id]) => CF_CLIENT_ONLY_COL_IDS.has(id))
+    Object.entries(colFiltersCommitted).filter(
+      ([id]) => CF_CLIENT_ONLY_COL_IDS.has(id) || CELL_VAL_CLIENT_COL_IDS.has(id)
+    )
   );
   const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
 
@@ -1189,7 +1220,7 @@ export default function MatchTable() {
   useEffect(() => {
     const dbPart = Object.fromEntries(
       Object.entries(colFiltersCommitted).filter(
-        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id)
+        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id) && !CELL_VAL_CLIENT_COL_IDS.has(id)
       )
     );
     setDbColFiltersApplied(dbPart);
@@ -1278,6 +1309,11 @@ export default function MatchTable() {
       p.set("ks_n", String(kodSuffixN));
       p.set("ks_suffix", gHighlight);
     }
+    // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
+    if (anyKodSuffix) {
+      p.set("ks_any_suffix", anyKodSuffix.digits);
+      p.set("ks_any_n", String(anyKodSuffix.n));
+    }
     try {
       const [res, syncRes] = await Promise.all([
         fetch(`/api/matches?${p}`),
@@ -1335,6 +1371,7 @@ export default function MatchTable() {
     kodSuffixN,
     kodSuffixRefKey,
     kodSon4Highlight,
+    anyKodSuffix,
   ]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
 
@@ -1410,11 +1447,16 @@ export default function MatchTable() {
     setPage(1);
   }
 
+  const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
+  const codePickPanelW = Math.min(380, viewportW - 16);
+  const codePickPanelH = Math.min(440, viewportH - 24);
+
   return (
     <div className="flex flex-col h-screen bg-gray-200 text-gray-900 overflow-hidden">
 
       {/* ── HEADER ── */}
-      <header className="flex-none border-b border-gray-300 bg-gray-300">
+      <header className="relative z-50 isolate flex-none min-w-0 shrink-0 border-b border-gray-300 bg-gray-300">
         {fetchError && (
           <div
             className="px-4 py-1.5 text-xs text-red-900 bg-red-100 border-b border-red-200"
@@ -1422,98 +1464,109 @@ export default function MatchTable() {
             {fetchError}
           </div>
         )}
-        <div className="flex items-center gap-2 px-4 py-2 flex-wrap">
-          <span className="text-xs text-gray-700 whitespace-nowrap">
-            {total.toLocaleString("tr-TR")} maç
-            {lastSyncAt && (
-              <span className="text-gray-700">
-                {" "}
-                · son veri çekimi:{" "}
-                <span className="text-gray-800 tabular-nums" title="Europe/Istanbul">
-                  {formatLastSyncTr(lastSyncAt)}
-                </span>
+        {/* Üst bilgi: mobilde satır kırılır; kontroller ayrı şeritte yatay kaydırılır */}
+        <div className="px-4 pt-2 pb-1 text-xs text-gray-700 leading-snug break-words">
+          <span className="tabular-nums">{total.toLocaleString("tr-TR")} maç</span>
+          {lastSyncAt && (
+            <span className="text-gray-700">
+              {" "}
+              · son veri çekimi:{" "}
+              <span className="text-gray-800 tabular-nums" title="Europe/Istanbul">
+                {formatLastSyncTr(lastSyncAt)}
               </span>
-            )}
-            {loading && <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />}
-            {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && !loading && (
-              <span className="text-amber-600"> · {kodSuffixFilteredRows.length} eşleşti</span>
-            )}
-            {globalKodSuffix && !loading && (
-              <span
-                className="text-amber-800 whitespace-nowrap"
-                title={`Son ${kodSuffixN} rakam eşleşmesi: tablo yalnızca bu soneki taşıyan satırları listeler; oyun kodu hücreleri sarı vurgulanır.`}>
-                · son {kodSuffixN}: <span className="font-mono font-semibold">{globalKodSuffix}</span>
-              </span>
-            )}
-          </span>
-
+            </span>
+          )}
+          {loading && (
+            <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />
+          )}
+          {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && !loading && (
+            <span className="text-amber-600"> · {kodSuffixFilteredRows.length} eşleşti</span>
+          )}
+          {globalKodSuffix && !loading && (
+            <span
+              className="text-amber-800"
+              title={`Son ${kodSuffixN} rakam eşleşmesi: tablo yalnızca bu soneki taşıyan satırları listeler; oyun kodu hücreleri sarı vurgulanır.`}>
+              {" "}
+              · son {kodSuffixN}: <span className="font-mono font-semibold">{globalKodSuffix}</span>
+            </span>
+          )}
+        </div>
+        {/* Masaüstü: eski tek satır (kod + Bakiye/düğmeler). Mobil: alt alta; Sütunlar paneli overflow dışında */}
+        <div className="flex min-w-0 flex-col gap-2 px-4 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2">
           <div
-            className="flex items-center gap-1 text-[11px] text-gray-800 whitespace-nowrap shrink-0"
-            title="Kutuya N rakam yazınca tablo yalnızca seçili kod alanında bu son N haneye sahip satırları gösterir ve oyun kodu hücrelerinde sarı vurgu yapar. Kutu boşken satır bazlı vurgu (filtre yok). Üst MBS (suffix4) filtresi varsa sonek mac_suffix4 üzerinden süzülür.">
-            <label className="flex items-center gap-0.5">
-              <span className="hidden sm:inline text-gray-700">Kod</span>
-              <select
-                value={kodSuffixRefKey}
-                onChange={(e) => {
-                  setKodSuffixRefKey(e.target.value as KodSuffixRefKey);
-                  setPage(1);
-                }}
-                className="max-w-[7.5rem] sm:max-w-none bg-white border border-gray-400 rounded px-0.5 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
-                {KOD_SUFFIX_REF_OPTIONS.map((o) => (
-                  <option key={o.key} value={o.key}>{o.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-0.5">
-              <span className="text-gray-700">son</span>
-              <select
-                value={kodSuffixN}
-                onChange={(e) => {
-                  setKodSuffixN(Number(e.target.value) as KodSuffixN);
-                  setPage(1);
-                }}
-                className="bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
-                {KOD_SUFFIX_LENS.map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
-            </label>
-            <input
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={kodSon4Highlight}
-              onChange={(e) => {
-                const d = e.target.value.replace(/\D/g, "").slice(0, kodSuffixN);
-                setKodSon4Highlight(d);
-                setPage(1);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setKodSon4Highlight("");
-                  setPage(1);
-                }
-              }}
-              placeholder={kodSuffixN === 3 ? "575" : kodSuffixN === 5 ? "15754" : "5754"}
-              maxLength={kodSuffixN}
-              title={`En fazla ${kodSuffixN} rakam. Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
-              className="w-[5.25rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
-            />
-            {kodSon4Highlight.trim() ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setKodSon4Highlight("");
-                  setPage(1);
-                }}
-                className="text-gray-600 hover:text-gray-900 px-0.5"
-                title="Kutuyu temizle (satıra göre vurgu)">
-                {"\u2715"}
-              </button>
-            ) : null}
+            className="min-w-0 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x sm:overflow-visible sm:pb-0"
+            title="Mobilde kod satırını yatay kaydırabilirsiniz.">
+            <div className="flex w-max flex-nowrap items-center gap-2 sm:w-auto sm:flex-wrap sm:gap-x-2 sm:gap-y-1">
+              <div
+                className="flex shrink-0 items-center gap-1 text-[11px] text-gray-800 whitespace-nowrap"
+                title="Kutuya N rakam yazınca tablo yalnızca seçili kod alanında bu son N haneye sahip satırları gösterir ve oyun kodu hücrelerinde sarı vurgu yapar. Kutu boşken satır bazlı vurgu (filtre yok). Üst MBS (suffix4) filtresi varsa sonek mac_suffix4 üzerinden süzülür.">
+                <label className="flex items-center gap-0.5">
+                  <span className="hidden sm:inline text-gray-700">Kod</span>
+                  <select
+                    value={kodSuffixRefKey}
+                    onChange={(e) => {
+                      setKodSuffixRefKey(e.target.value as KodSuffixRefKey);
+                      setPage(1);
+                    }}
+                    className="max-w-[9rem] bg-white border border-gray-400 rounded px-0.5 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 sm:max-w-none">
+                    {KOD_SUFFIX_REF_OPTIONS.map((o) => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-0.5">
+                  <span className="text-gray-700">son</span>
+                  <select
+                    value={kodSuffixN}
+                    onChange={(e) => {
+                      setKodSuffixN(Number(e.target.value) as KodSuffixN);
+                      setPage(1);
+                    }}
+                    className="bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
+                    {KOD_SUFFIX_LENS.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </label>
+                <input
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={kodSon4Highlight}
+                  onChange={(e) => {
+                    const d = e.target.value.replace(/\D/g, "").slice(0, kodSuffixN);
+                    setKodSon4Highlight(d);
+                    setPage(1);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setKodSon4Highlight("");
+                      setPage(1);
+                    }
+                  }}
+                  placeholder={kodSuffixN === 3 ? "575" : kodSuffixN === 5 ? "15754" : "5754"}
+                  maxLength={kodSuffixN}
+                  title={`En fazla ${kodSuffixN} rakam. Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
+                  className="w-[5.25rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
+                />
+                {kodSon4Highlight.trim() ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKodSon4Highlight("");
+                      setPage(1);
+                    }}
+                    className="text-gray-600 hover:text-gray-900 px-0.5"
+                    title="Kutuyu temizle (satıra göre vurgu)">
+                    {"\u2715"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </div>
 
-          {/* Sütunlar butonu */}
-          <div className="relative ml-auto flex items-center gap-3" ref={panelRef}>
+          <div
+            className="relative flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:ml-auto sm:shrink-0"
+            ref={panelRef}>
             {balance != null && (
               <span className="text-xs text-gray-700 whitespace-nowrap">
                 Bakiye:{" "}
@@ -1557,7 +1610,7 @@ export default function MatchTable() {
             </button>
 
             {showColPanel && (
-              <div className="absolute right-0 top-full mt-1 z-50 w-[620px] max-h-[80vh] overflow-y-auto bg-white border border-gray-300 rounded-lg shadow-2xl p-3">
+              <div className="absolute right-0 top-full mt-1 z-[100] w-[min(620px,calc(100vw-12px))] max-w-[calc(100vw-12px)] max-h-[80vh] overflow-y-auto bg-white border border-gray-300 rounded-lg shadow-2xl p-3">
 
                 {/* ── Araç çubuğu ── */}
                 <div className="flex flex-wrap gap-2 mb-3 pb-3 border-b border-gray-700">
@@ -1740,9 +1793,7 @@ export default function MatchTable() {
                       <div className="flex flex-wrap gap-1 pl-1">
                         {cols.map((c) => (
                           <button key={c.id} onClick={() => toggleCol(c.id)}
-                            className={`text-[11px] px-2 py-0.5 rounded border transition ${
-                              visibleIds.has(c.id) ? "bg-blue-600 border-blue-500 text-white" : "bg-white border-gray-300 text-gray-800 hover:bg-gray-100"
-                            }`}>
+                            className={`text-[11px] px-2 py-0.5 rounded transition font-medium ${colPanelChipClass(c.id, visibleIds.has(c.id))}`}>
                             {c.label}
                           </button>
                         ))}
@@ -1757,7 +1808,8 @@ export default function MatchTable() {
 
         {/* ── Çift Yönlü (⇄) Arama Satırı ── */}
         {showBidirRow && (
-          <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 bg-blue-50 border-t border-blue-200 text-xs">
+          <div className="overflow-x-auto overflow-y-visible overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x min-w-0 border-t border-blue-200 bg-blue-50">
+          <div className="flex flex-nowrap sm:flex-wrap items-center gap-2 px-3 py-1.5 text-xs w-max sm:w-auto min-w-0">
             <span className="font-semibold text-blue-700 shrink-0">⇄</span>
 
             {/* ── Referans Maç ── */}
@@ -2551,25 +2603,13 @@ export default function MatchTable() {
               </div>
             </div>
           </div>
+        </div>
         )}
 
-        {/* Grup renk çubuğu */}
-        <div className="flex overflow-x-auto">
-          {groups.map((grp) => {
-            const cnt = mergedCols.filter((c) => c.group===grp && visibleIds.has(c.id)).length;
-            if (cnt === 0) return null;
-            return (
-              <button key={grp} onClick={() => toggleGroup(grp)}
-                className={`text-[10px] px-2 py-0.5 whitespace-nowrap border-r border-gray-300 text-gray-900 ${GROUP_COLORS[grp]??"bg-gray-200"} hover:brightness-95 transition`}>
-                {grp} <span className="text-gray-600">·{cnt}</span>
-              </button>
-            );
-          })}
-        </div>
       </header>
 
-      {/* ── TABLO ── */}
-      <div className="flex-1 overflow-auto relative">
+      {/* ── TABLO ── (z-0: üstteki header + Sütunlar paneli her zaman üstte) */}
+      <div className="relative z-0 flex-1 min-h-0 overflow-auto">
         {/* Loading overlay */}
         {loading && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-200/70 backdrop-blur-[1px]">
@@ -2579,22 +2619,31 @@ export default function MatchTable() {
             </div>
           </div>
         )}
-        <table className="text-xs border-collapse table-fixed" style={{ minWidth: visibleCols.reduce((s,c) => s+colW(c), 0) }}>
-          <thead className="sticky top-0 z-20">
+        <table
+          className="text-sm border-collapse table-fixed max-w-none"
+          style={{ width: tableScrollWidth, minWidth: tableScrollWidth }}
+        >
+          <thead className="sticky top-0 z-10">
             <tr>
+              <th className="w-4 min-w-4 max-w-4 border-r border-gray-400 bg-gray-200 align-middle py-1" />
               {groupSpans.map((gs, i) => (
-                <th key={i} colSpan={gs.count}
-                  className={`px-1 py-0.5 text-center text-[10px] font-semibold text-gray-900 border-b border-gray-400 border-r border-gray-400 whitespace-nowrap ${GROUP_COLORS[gs.group]??"bg-gray-300"}`}>
+                <th
+                  key={i}
+                  colSpan={gs.count}
+                  className={`px-1.5 py-1.5 text-center text-xs font-semibold text-gray-900 border-b border-gray-400 border-r border-gray-400 leading-snug whitespace-normal break-words ${GROUP_COLORS[gs.group] ?? "bg-gray-200"}`}
+                >
                   {gs.group}
                 </th>
               ))}
             </tr>
             <tr className="bg-gray-300">
+              {/* boş hücre — ◉ buton sütunu */}
+              <th className="w-4 min-w-4 max-w-4 border-r border-gray-400 align-top py-1" />
               {visibleCols.map((c) => (
                 <th
                   key={c.id}
                   style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
-                  className="relative px-1.5 py-1 text-left font-medium text-gray-900 whitespace-nowrap border-b border-gray-400 border-r border-gray-400 select-none group"
+                  className="relative px-1 py-1 text-left font-medium text-gray-900 border-b border-gray-400 border-r border-gray-400 select-none group align-top"
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.dataTransfer.dropEffect = "move";
@@ -2606,7 +2655,7 @@ export default function MatchTable() {
                     setColOrder((prev) => reorderColOrder(mergedCols, visibleIds, prev, fromId, c.id));
                   }}
                 >
-                  <div className="flex items-stretch gap-0.5 pr-2">
+                  <div className="flex items-start gap-0.5 pr-0.5">
                     <span
                       draggable
                       title="Sürükleyerek sırala"
@@ -2614,23 +2663,24 @@ export default function MatchTable() {
                         e.dataTransfer.setData("text/plain", c.id);
                         e.dataTransfer.effectAllowed = "move";
                       }}
-                      className="cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-800 px-0.5 -ml-0.5 shrink-0"
+                      className="cursor-grab active:cursor-grabbing text-gray-500 hover:text-gray-800 px-0.5 -ml-0.5 shrink-0 text-[10px] leading-none mt-0.5"
                       onClick={(e) => e.stopPropagation()}
                     >
                       {"\u22EE\u22EE"}
                     </span>
                     <button
                       type="button"
-                      className="flex min-w-0 flex-1 items-center gap-0.5 text-left font-medium text-gray-900 hover:bg-gray-400/40 rounded px-0.5 -mx-0.5 cursor-pointer"
+                      title={c.label}
+                      className="flex min-w-0 flex-1 items-start gap-0.5 text-left font-semibold text-gray-900 hover:bg-gray-400/40 rounded px-0.5 -mx-0.5 cursor-pointer text-[11px] leading-snug"
                       onClick={() => handleSort(c.id)}
                     >
-                      <span className="truncate">{c.label}</span>
+                      <span className="whitespace-normal break-words hyphens-auto text-center w-full">{c.label}</span>
                       {sortCol === c.id ? (
-                        <span className="text-blue-700 text-[10px] shrink-0">
+                        <span className="text-blue-700 text-[9px] shrink-0 leading-none mt-0.5">
                           {sortDir === "asc" ? " \u25B2" : " \u25BC"}
                         </span>
                       ) : (
-                        <span className="text-gray-400 text-[10px] opacity-0 group-hover:opacity-100 shrink-0">
+                        <span className="text-gray-400 text-[9px] opacity-0 group-hover:opacity-100 shrink-0 leading-none mt-0.5">
                           {" \u21C5"}
                         </span>
                       )}
@@ -2652,6 +2702,8 @@ export default function MatchTable() {
             {/* ── Hane seçici satırı (gizlenebilir) ── */}
             {showDigitRow && (
               <tr className="bg-gray-50 border-b border-gray-300">
+                {/* boş hücre — ◉ buton sütunu */}
+                <th className="w-4 min-w-4 max-w-4 border-r border-gray-300" />
                 {visibleCols.map((c) => {
                   const isDigitCol = isDigitClickCol(c);
                   const tmpl = digitClickTemplate(c);
@@ -2702,6 +2754,8 @@ export default function MatchTable() {
               </tr>
             )}
             <tr className="bg-gray-200">
+              {/* boş hücre — ◉ buton sütunu */}
+              <th className="w-4 min-w-4 max-w-4 border-r border-gray-400" />
               {visibleCols.map((c) => {
                 const isDigitCol = isDigitClickCol(c);
                 const tmpl = digitClickTemplate(c);
@@ -2799,7 +2853,7 @@ export default function MatchTable() {
                             ? "Metin: cf_tarih. Gün/ay: ⊞ Hane satırından (tarih_gun / tarih_ay, tarih_arama)."
                             : "Esc → temizle | *5?6*: wildcard | 4.9,3.2: VEYA | 4.9+3.2: VE"
                         }
-                        className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[10px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
+                        className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[11px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
                           colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
                         }`}
                       />
@@ -2848,33 +2902,38 @@ export default function MatchTable() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={visibleCols.length} className="py-2" /></tr>
+              <tr><td colSpan={visibleCols.length + 1} className="py-2" /></tr>
             ) : sortedRows.length === 0 ? (
-              <tr><td colSpan={visibleCols.length} className="text-center py-16 text-gray-700">Veri yok.</td></tr>
+              <tr><td colSpan={visibleCols.length + 1} className="text-center py-16 text-gray-700">Veri yok.</td></tr>
             ) : (
               sortedRows.map((m, ri) => {
                 let hitIdx = 0;
                 return (
-                  <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors"
-                    onDoubleClick={(e) => {
-                      const rd = m.raw_data as Record<string, unknown> | null;
-                      if (!rd) return;
-                      const entries: CodePickEntry[] = [];
-                      for (const [k, v] of Object.entries(rd)) {
-                        if (!k.startsWith("KOD")) continue;
-                        const num = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-                        if (!Number.isFinite(num) || num === null) continue;
-                        const intVal = Math.abs(Math.round(num));
-                        if (intVal === 0) continue;
-                        entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
-                      }
-                      entries.sort((a, b) => a.key.localeCompare(b.key));
-                      if (entries.length === 0) return;
-                      // Tıklanan hücrenin konumunu kullan
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      setCodePick({ entries, x: rect.left + 60, y: rect.top });
-                    }}
-                  >
+                  <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors group">
+                    {/* Son hane paneli açıcı — her satırın sol başında */}
+                    <td className="w-4 min-w-4 max-w-4 px-0 border-r border-gray-400 text-center align-middle">
+                      <button
+                        title="KOD son hane vurgusu — tıkla"
+                        className="w-4 h-4 flex items-center justify-center text-[9px] text-amber-500 hover:text-amber-800 hover:bg-amber-100 rounded"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rd = m.raw_data as Record<string, unknown> | null;
+                          const entries: CodePickEntry[] = [];
+                          if (rd) {
+                            for (const [k, v] of Object.entries(rd)) {
+                              if (!k.startsWith("KOD")) continue;
+                              const raw = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+                              if (!Number.isFinite(raw)) continue;
+                              const intVal = Math.abs(Math.round(raw));
+                              entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
+                            }
+                            entries.sort((a, b) => a.key.localeCompare(b.key));
+                          }
+                          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          setCodePick({ entries, x: rect.right + 4, y: rect.top });
+                        }}
+                      >◉</button>
+                    </td>
                     {visibleCols.map((c) => {
                       const val = cellVal(m, c);
                       const suffixForRow =
@@ -2886,11 +2945,17 @@ export default function MatchTable() {
                         !!suffixForRow &&
                         shouldScanColForKodSuffix(c) &&
                         cellDigitsEndWith(val, suffixForRow);
-                      // Çift-tık son hane vurgusu: filtrelemez, tüm satırlarda sarı gösterir
+                      // ◉ panel KOD son hane: sadece KOD/oyun kodu sütunlarını vurgula (oran sütunları hariç)
+                      const isKodCol =
+                        DIGIT_CLICK_COL_IDS.has(c.id) ||
+                        (c.group === RAW_API_GROUP && (c.key as string).startsWith("KOD"));
                       const rowClickHit =
-                        !!rowClickHighlight &&
-                        shouldScanColForKodSuffix(c) &&
-                        cellDigitsEndWith(val, rowClickHighlight.digits);
+                        !!anyKodSuffix &&
+                        isKodCol &&
+                        (() => {
+                          const d = val.replace(/\D/g, "");
+                          return d.length >= anyKodSuffix.n && d.endsWith(anyKodSuffix.digits);
+                        })();
                       let cls: string;
                       if (kodSonHit || rowClickHit) {
                         cls = "bg-yellow-300/90 text-gray-900 font-semibold";
@@ -2905,7 +2970,7 @@ export default function MatchTable() {
                       }
                       return (
                         <td key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
-                          className={`px-1.5 py-1 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-400 font-mono cursor-pointer ${cls}`}
+                          className={`px-1.5 py-2 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-400 font-mono cursor-pointer ${cls}`}
                           title={val}
                           onClick={() => {
                             if (!val) return;
@@ -2942,12 +3007,12 @@ export default function MatchTable() {
           {/* Backdrop — tıklayınca kapat */}
           <div className="fixed inset-0 z-40" onClick={() => setCodePick(null)} />
           <div
-            className="fixed z-50 bg-white border border-gray-300 rounded-lg shadow-xl flex flex-col text-xs"
+            className="fixed z-50 bg-white border border-gray-300 rounded-lg shadow-xl flex flex-col text-xs min-w-0"
             style={{
-              left: Math.min(codePick.x + 4, (typeof window !== "undefined" ? window.innerWidth : 1200) - 310),
-              top:  Math.min(codePick.y + 4, (typeof window !== "undefined" ? window.innerHeight : 800) - 420),
-              width: 300,
-              maxHeight: 420,
+              left: Math.max(8, Math.min(codePick.x + 4, viewportW - codePickPanelW - 8)),
+              top: Math.max(8, Math.min(codePick.y + 4, viewportH - codePickPanelH - 8)),
+              width: codePickPanelW,
+              maxHeight: codePickPanelH,
             }}
           >
             {/* Başlık */}
@@ -2955,51 +3020,57 @@ export default function MatchTable() {
               <span className="font-semibold text-gray-700">Son hane vurgusu</span>
               <button className="text-gray-400 hover:text-gray-700 text-sm leading-none" onClick={() => setCodePick(null)}>✕</button>
             </div>
-            {/* Aktif vurgu göstergesi */}
-            {rowClickHighlight && (
+            {/* Aktif filtre göstergesi */}
+            {anyKodSuffix && (
               <div className="flex items-center gap-2 px-2 py-1 bg-yellow-50 border-b text-[10px] text-yellow-800">
-                <span className="font-semibold">Aktif:</span>
-                <span className="font-mono bg-yellow-200 px-1 rounded">son {rowClickHighlight.n} = {rowClickHighlight.digits}</span>
-                <button className="ml-auto text-yellow-600 hover:text-red-600 font-semibold" onClick={() => { setRowClickHighlight(null); setCodePick(null); }}>Temizle</button>
+                <span className="font-semibold">Filtre aktif:</span>
+                <span className="font-mono bg-yellow-200 px-1 rounded">son {anyKodSuffix.n} = {anyKodSuffix.digits}</span>
+                <button className="ml-auto text-yellow-600 hover:text-red-600 font-semibold" onClick={() => { setAnyKodSuffix(null); setPage(1); setCodePick(null); }}>Temizle</button>
               </div>
             )}
-            {/* Başlık satırı */}
-            <div className="flex items-center gap-1 px-2 py-0.5 bg-gray-50 border-b text-[10px] text-gray-400 font-medium">
-              <span className="w-32">Kod</span>
-              <span className="w-16 text-right">Değer</span>
-              <span className="flex gap-1 ml-auto">
-                <span className="w-12 text-center">son 3</span>
-                <span className="w-12 text-center">son 4</span>
-                <span className="w-14 text-center">son 5</span>
-              </span>
+            {/* Başlık satırı — grid ile hizalı; mobilde kod adı kırılır */}
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(4.25rem,auto)_auto] gap-x-1.5 items-center px-2 py-1 bg-gray-50 border-b text-[11px] text-gray-500 font-medium">
+              <span className="min-w-0">Kod</span>
+              <span className="text-right tabular-nums shrink-0">Değer</span>
+              <div className="flex gap-0.5 justify-end shrink-0">
+                <span className="w-[2.75rem] text-center">son 3</span>
+                <span className="w-[2.75rem] text-center">son 4</span>
+                <span className="w-[2.85rem] text-center">son 5</span>
+              </div>
             </div>
             {/* Kod listesi */}
-            <div className="overflow-y-auto flex-1">
+            <div className="overflow-y-auto overflow-x-hidden flex-1 min-h-0 min-w-0">
+              {codePick.entries.length === 0 && (
+                <div className="px-3 py-4 text-center text-gray-400 text-[11px]">Bu satırda KOD verisi bulunamadı.</div>
+              )}
               {codePick.entries.map(({ key, value }) => {
                 const s3 = value % 1000;
                 const s4 = value % 10000;
                 const s5 = value % 100000;
                 return (
-                  <div key={key} className="flex items-center gap-1 px-2 py-0.5 border-b border-gray-100 hover:bg-yellow-50">
-                    <span className="font-mono font-semibold w-32 truncate text-gray-800" title={key}>{key}</span>
-                    <span className="font-mono text-gray-500 w-16 text-right shrink-0">{value}</span>
-                    <div className="flex gap-0.5 ml-auto shrink-0">
+                  <div
+                    key={key}
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(4.25rem,auto)_auto] gap-x-1.5 items-center px-2 py-1 border-b border-gray-100 hover:bg-yellow-50">
+                    <span className="font-mono font-semibold min-w-0 text-gray-800 text-xs break-all leading-snug">{key}</span>
+                    <span className="font-mono text-gray-600 text-xs text-right tabular-nums shrink-0">{value}</span>
+                    <div className="flex gap-0.5 justify-end shrink-0">
                       {([3, 4, 5] as const).map((n) => {
                         const suffix = n === 3 ? s3 : n === 4 ? s4 : s5;
                         const tooShort = value < Math.pow(10, n - 1);
-                        if (tooShort) return <span key={n} className="w-12" />;
-                        const isActive = rowClickHighlight?.digits === String(suffix) && rowClickHighlight?.n === n;
+                        if (tooShort) return <span key={n} className="w-[2.75rem]" />;
+                        const isActive = anyKodSuffix?.digits === String(suffix) && anyKodSuffix?.n === n;
                         return (
                           <button
                             key={n}
-                            title={`Tüm maçlarda son ${n} hane = ${suffix} olan kodları sarı ile göster`}
-                            className={`w-12 px-0.5 py-0.5 rounded font-mono text-[10px] transition-colors ${
+                            title={`Tüm DB'de herhangi bir KOD sütununun son ${n} hanesi = ${suffix} olan satırları filtrele`}
+                            className={`w-[2.75rem] min-h-[28px] px-0.5 py-0.5 rounded font-mono text-[11px] transition-colors ${
                               isActive
                                 ? "bg-yellow-400 text-yellow-900 font-bold"
                                 : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
                             }`}
                             onClick={() => {
-                              setRowClickHighlight(isActive ? null : { digits: String(suffix), n });
+                              setAnyKodSuffix(isActive ? null : { digits: String(suffix), n });
+                              setPage(1);
                               setCodePick(null);
                             }}
                           >
@@ -3017,18 +3088,19 @@ export default function MatchTable() {
       )}
 
       {/* ── SAYFALAMA ── */}
-      <div className="flex-none flex items-center justify-between px-4 py-2 border-t border-gray-300 bg-gray-300/60 text-xs text-gray-900">
-        <span>
+      <div className="relative z-0 flex-none min-w-0 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x border-t border-gray-300 bg-gray-300/60">
+      <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
+        <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none">
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
           {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
-          {rowClickHighlight && (
+          {anyKodSuffix && (
             <span className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
-              ● son {rowClickHighlight.n} = {rowClickHighlight.digits}
-              <button className="hover:text-red-600 ml-0.5" title="Vurguyu temizle" onClick={() => setRowClickHighlight(null)}>✕</button>
+              ● KOD son {anyKodSuffix.n} = {anyKodSuffix.digits}
+              <button className="hover:text-red-600 ml-0.5" title="Filtreyi temizle" onClick={() => { setAnyKodSuffix(null); setPage(1); }}>✕</button>
             </span>
           )}
         </span>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 shrink-0">
           {[
             { label:"««", disabled:page<=1,          action:()=>setPage(1) },
             { label:"‹",  disabled:page<=1,          action:()=>setPage((p)=>p-1) },
@@ -3041,6 +3113,7 @@ export default function MatchTable() {
             </button>
           ))}
         </div>
+      </div>
       </div>
     </div>
   );

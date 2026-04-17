@@ -468,12 +468,31 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // ── Herhangi bir KOD sütunu son hane filtresi (panel seçimi) ─────────────
+  const ksAnySuffixRaw = sp.get("ks_any_suffix")?.trim() ?? "";
+  const ksAnyN = Number(sp.get("ks_any_n") ?? 3);
+  let ksAnyFilterIds: number[] | null = null;
+
   /** Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım */
   const countMode =
-    tarihFiltParts.length > 0 || useKsView || hasAnyCfParam ? ("planned" as const) : ("exact" as const);
+    tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw ? ("planned" as const) : ("exact" as const);
 
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
+
+  // ks_any_suffix: herhangi bir KOD sütununun son N hanesi eşleşen maçlar
+  if (
+    /^\d+$/.test(ksAnySuffixRaw) &&
+    ksAnySuffixRaw.length > 0 &&
+    KS_N_OK.has(ksAnyN)
+  ) {
+    const suffixNum = Number(ksAnySuffixRaw);
+    const { data: idData } = await supabase.rpc("get_matches_by_kod_suffix", {
+      p_suffix: suffixNum,
+      p_n: ksAnyN,
+    });
+    ksAnyFilterIds = (idData as number[] | null) ?? [];
+  }
 
   // ── Ham veri leading-wildcard ön-filtre ──────────────────────────────────────
   // ORDER BY tarih ile birlikte leading-% ILIKE planner'ı tarih index'ini seçmeye
@@ -792,6 +811,15 @@ export async function GET(req: NextRequest) {
     query = query.eq(`sfx_${ksRef}_${ksN}`, ksSuffixNum);
   }
 
+  if (ksAnyFilterIds !== null) {
+    if (ksAnyFilterIds.length === 0) {
+      // Hiç eşleşme yok — boş sonuç
+      query = query.in("id", [-1]);
+    } else {
+      query = query.in("id", ksAnyFilterIds);
+    }
+  }
+
   const { data, count, error } = await query
     .order("tarih", { ascending: false })
     .order("saat",  { ascending: false, nullsFirst: false })
@@ -924,7 +952,7 @@ export async function GET(req: NextRequest) {
   const rows = ((data as unknown) as RawRow[] || []).map((row: RawRow) => {
     const rd = (row["raw_data"] as Record<string, unknown>) ?? {};
     const flat: Record<string, unknown> = { ...row };
-    delete flat["raw_data"];
+    // raw_data'yı koru (panel için lazım), ama içindeki alanları da düzleştir
     for (const [k, v] of Object.entries(rd)) {
       flat[k] = flattenRawValue(v);
     }
