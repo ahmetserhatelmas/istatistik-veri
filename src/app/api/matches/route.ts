@@ -359,7 +359,6 @@ const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms2: "ms2",
 };
 
-const RAW_KEY_SAMPLE = 2500;
 const RAW_KEY_CACHE_MS = 10 * 60 * 1000;
 let rawKeyUnionCache: { keys: string[]; fetchedAt: number } | null = null;
 
@@ -370,25 +369,12 @@ async function fetchRawDataKeyUnion(
   if (rawKeyUnionCache && now - rawKeyUnionCache.fetchedAt < RAW_KEY_CACHE_MS) {
     return rawKeyUnionCache.keys;
   }
-  const { data, error } = await supabase
-    .from("matches")
-    .select("raw_data")
-    .order("tarih", { ascending: false })
-    .limit(RAW_KEY_SAMPLE);
-
-  if (error) {
+  // get_raw_data_keys(): son 5 satırdan DISTINCT jsonb key'leri döndürür — ~20KB transfer, <1ms
+  const { data, error } = await supabase.rpc("get_raw_data_keys");
+  if (error || !data) {
     return rawKeyUnionCache?.keys ?? [];
   }
-  const keys = new Set<string>();
-  for (const row of data ?? []) {
-    const rd = row.raw_data as Record<string, unknown> | null;
-    if (rd && typeof rd === "object" && !Array.isArray(rd)) {
-      for (const k of Object.keys(rd)) {
-        if (!isRawKeyExcludedFromColumns(k)) keys.add(k);
-      }
-    }
-  }
-  const arr = Array.from(keys);
+  const arr = (data as string[]).filter((k) => !isRawKeyExcludedFromColumns(k));
   rawKeyUnionCache = { keys: arr, fetchedAt: now };
   return arr;
 }

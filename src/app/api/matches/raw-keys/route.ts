@@ -2,31 +2,19 @@ import { NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { isRawKeyExcludedFromColumns } from "@/lib/columns";
 
-/** raw_data içinde geçen tüm alan adlarının birleşimi (örnek satırlardan; sütun paneli için) */
-const SAMPLE = 2500;
-
+/** raw_data içinde geçen tüm alan adlarının birleşimi — get_raw_data_keys() RPC ile hızlı (~1ms SQL) */
 export async function GET() {
   try {
     const supabase = createServiceClient();
-    const { data, error } = await supabase
-      .from("matches")
-      .select("raw_data")
-      .order("tarih", { ascending: false })
-      .limit(SAMPLE);
+    const { data, error } = await supabase.rpc("get_raw_data_keys");
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    const keys = new Set<string>();
-    for (const row of data ?? []) {
-      const rd = row.raw_data as Record<string, unknown> | null;
-      if (rd && typeof rd === "object" && !Array.isArray(rd)) {
-        for (const k of Object.keys(rd)) {
-          if (!isRawKeyExcludedFromColumns(k)) keys.add(k);
-        }
-      }
-    }
+    const keys = ((data as string[]) ?? [])
+      .filter((k) => !isRawKeyExcludedFromColumns(k))
+      .sort();
 
-    return NextResponse.json({ keys: Array.from(keys).sort() });
+    return NextResponse.json({ keys });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
