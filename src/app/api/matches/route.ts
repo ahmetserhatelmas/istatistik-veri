@@ -140,10 +140,10 @@ function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "pref
   const rm = t.match(/^(\d[\d.]*)\s*(?:\.\.|\<-\>)\s*(\d[\d.]*)$/)
           ?? t.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/);
   if (rm) return { kind: "between", lo: rm[1]!, hi: rm[2]! };
-  // Joker
+  // Joker — contains modunda her zaman ilike (büyük/küçük harf duyarsız)
   if (t.includes("*") || t.includes("?")) {
     const pat = cfPatternToIlikePattern(t);
-    return { kind: pat.startsWith("%") ? "ilike" : "like", pat };
+    return { kind: (pat.startsWith("%") || defaultWrap === "contains") ? "ilike" : "like", pat };
   }
   // Sade değer
   if (defaultWrap === "prefix")   return { kind: "like", pat: `${t}%` };
