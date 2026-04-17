@@ -90,9 +90,16 @@ const CODE_ILIKE_ARAMA: Record<string, string> = {
   kod_au: "kod_au_arama",
 };
 
-function splitCfOrParts(v: string): string[] {
+/** "," → OR parçalarına böl. */
+function splitOrParts(v: string): string[] {
+  return v.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/** "+" → AND parçalarına böl. */
+function splitAndParts(v: string): string[] {
   return v.split("+").map((s) => s.trim()).filter(Boolean);
 }
+
 
 /** UI ? * → SQL ILIKE _ % (Postgres varsayılan kaçış yok; el ile % _ nadir). */
 function cfPatternToIlikePattern(pattern: string): string {
@@ -103,6 +110,113 @@ function cfPatternToIlikePattern(pattern: string): string {
     else out += c;
   }
   return out;
+}
+
+// ─── Genel filtre parser ───────────────────────────────────────────────────
+
+type FilterBranch =
+  | { kind: "like";    pat: string }
+  | { kind: "ilike";   pat: string }
+  | { kind: "eq";      val: string }
+  | { kind: "neq";     val: string }
+  | { kind: "gt";      val: string }
+  | { kind: "gte";     val: string }
+  | { kind: "lt";      val: string }
+  | { kind: "lte";     val: string }
+  | { kind: "between"; lo: string; hi: string };
+
+/**
+ * Tek bir parçayı (joker / karşılaştırma / aralık / sade değer) parse eder.
+ * defaultWrap: sade değer için "prefix" → val% (kodlar), "contains" → %val% (metin).
+ */
+function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "prefix"): FilterBranch {
+  const t = p.trim();
+  if (t.startsWith(">=")) return { kind: "gte", val: t.slice(2).trim() };
+  if (t.startsWith("<=")) return { kind: "lte", val: t.slice(2).trim() };
+  if (t.startsWith("<>")) return { kind: "neq", val: t.slice(2).trim() };
+  if (t.startsWith(">"))  return { kind: "gt",  val: t.slice(1).trim() };
+  if (t.startsWith("<"))  return { kind: "lt",  val: t.slice(1).trim() };
+  // Aralık: 10-20, 10..20, 10<->20
+  const rm = t.match(/^(\d[\d.]*)\s*(?:\.\.|\<-\>)\s*(\d[\d.]*)$/)
+          ?? t.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/);
+  if (rm) return { kind: "between", lo: rm[1]!, hi: rm[2]! };
+  // Joker
+  if (t.includes("*") || t.includes("?")) {
+    const pat = cfPatternToIlikePattern(t);
+    return { kind: pat.startsWith("%") ? "ilike" : "like", pat };
+  }
+  // Sade değer
+  if (defaultWrap === "prefix")   return { kind: "like", pat: `${t}%` };
+  return { kind: "ilike", pat: `%${t}%` };
+}
+
+/** PostgREST or() ifadesi için string. BETWEEN: and(gte,lte) iç grup kullanır. */
+function branchToOrStr(field: string, b: FilterBranch): string {
+  const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+  switch (b.kind) {
+    case "like":    return `${field}.like.${q(b.pat)}`;
+    case "ilike":   return `${field}.ilike.${q(b.pat)}`;
+    case "eq":      return `${field}.eq.${q(b.val)}`;
+    case "neq":     return `${field}.neq.${q(b.val)}`;
+    case "gt":      return `${field}.gt.${q(b.val)}`;
+    case "gte":     return `${field}.gte.${q(b.val)}`;
+    case "lt":      return `${field}.lt.${q(b.val)}`;
+    case "lte":     return `${field}.lte.${q(b.val)}`;
+    case "between": return `and(${field}.gte.${q(b.lo)},${field}.lte.${q(b.hi)})`;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyBranchDirect(q: any, field: string, b: FilterBranch): any {
+  switch (b.kind) {
+    case "like":    return q.like(field, b.pat);
+    case "ilike":   return q.ilike(field, b.pat);
+    case "eq":      return q.eq(field, b.val);
+    case "neq":     return q.neq(field, b.val);
+    case "gt":      return q.gt(field, b.val);
+    case "gte":     return q.gte(field, b.val);
+    case "lt":      return q.lt(field, b.val);
+    case "lte":     return q.lte(field, b.val);
+    case "between": return q.gte(field, b.lo).lte(field, b.hi);
+  }
+}
+
+/**
+ * Genel filtre uygulayıcı: "," → OR, "+" → AND.
+ * field: PostgREST sütun ifadesi (ör: "lig_adi", "raw_data->>KODAU45")
+ * defaultWrap: joker/op olmayan değer için sarma biçimi
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyGenericFilter(
+  query: any,
+  field: string,
+  v: string,
+  defaultWrap: "prefix" | "contains" = "prefix"
+): any {
+  const orParts = splitOrParts(v);
+  if (!orParts.length) return query;
+
+  if (orParts.length === 1) {
+    // Tek OR → AND zincirleri doğrudan uygula
+    for (const ap of splitAndParts(orParts[0]!)) {
+      query = applyBranchDirect(query, field, parseFilterBranch(ap, defaultWrap));
+    }
+    return query;
+  }
+
+  // Birden fazla OR → or() ifadesi
+  const segments: string[] = [];
+  for (const orPart of orParts) {
+    const andParts = splitAndParts(orPart);
+    if (andParts.length === 1) {
+      segments.push(branchToOrStr(field, parseFilterBranch(andParts[0]!, defaultWrap)));
+    } else {
+      // AND grubu or() içinde: and(cond1,cond2,...)
+      const andExprs = andParts.map((ap) => branchToOrStr(field, parseFilterBranch(ap, defaultWrap)));
+      segments.push(`and(${andExprs.join(",")})`);
+    }
+  }
+  return query.or(segments.join(","));
 }
 
 /**
@@ -119,62 +233,120 @@ const INTEGER_CF_ILIKE_ARAMA: Record<string, string> = {
 };
 const INTEGER_EQ_CF_COLS = new Set(Object.keys(INTEGER_CF_ILIKE_ARAMA));
 
+/**
+ * Tam sayı sütun filtresi — karşılaştırma, aralık ve OR/AND destekli.
+ * Joker/metin → _arama sütununda; sayısal op → col'da gerçek integer karşılaştırması.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   const t = v.trim();
   if (!t) return query;
   const arama = INTEGER_CF_ILIKE_ARAMA[col];
-  if (t.includes("*") || t.includes("?")) {
-    if (!arama) return query;
-    const pat = cfPatternToIlikePattern(t);
-    if (!pat) return query;
-    return query.ilike(arama, pat);
+
+  const orParts = splitOrParts(t);
+  if (!orParts.length) return query;
+
+  // Tüm OR parçaları saf tam sayı ise → .in() ile hızlı çok-değer
+  const allPureInt = orParts.length > 1 && orParts.every((p) => /^\d+$/.test(p.trim()));
+  if (allPureInt) {
+    return query.in(col, orParts.map((p) => Number(p.trim())));
   }
-  if (/^\d+$/.test(t)) {
-    const n = Number(t);
-    if (Number.isFinite(n)) return query.eq(col, n);
+
+  const applyOne = (q: any, p: string): any => {
+    const b = parseFilterBranch(p.trim(), "prefix");
+    if (b.kind === "like" || b.kind === "ilike") {
+      // Joker → _arama metin sütunu
+      return arama ? q[b.kind](arama, b.pat) : q;
+    }
+    if (b.kind === "between") {
+      const lo = Number(b.lo), hi = Number(b.hi);
+      return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(col, lo).lte(col, hi) : q;
+    }
+    if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
+      const n = Number(b.val);
+      return Number.isFinite(n) ? q[b.kind](col, n) : (arama ? q.ilike(arama, `%${b.val}%`) : q);
+    }
+    return q;
+  };
+
+  const branchStr = (p: string): string => {
+    const b = parseFilterBranch(p.trim(), "prefix");
+    if (b.kind === "like" || b.kind === "ilike") {
+      return arama ? `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"` : "";
+    }
+    if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
+    const n = Number((b as { val: string }).val);
+    return Number.isFinite(n) ? `${col}.${b.kind}.${n}` : "";
+  };
+
+  if (orParts.length === 1) {
+    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
+    return query;
   }
-  return query;
+
+  const segments = orParts.map((orPart) => {
+    const ands = splitAndParts(orPart);
+    if (ands.length === 1) return branchStr(ands[0]!);
+    const exprs = ands.map(branchStr).filter(Boolean);
+    return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
+  }).filter(Boolean);
+
+  return segments.length ? query.or(segments.join(",")) : query;
 }
 
-type CodeFilterBranch =
-  | { kind: "ilike"; col: string; pat: string }
-  | { kind: "eq"; col: string; num: number };
-
+/**
+ * Kod sütun filtresi (kod_ms, kod_iy, vs.) — OR/AND/karşılaştırma/aralık/joker.
+ * Saf tam sayı → integer col üzerinde eq/gt/gte/lt/lte/neq/between;
+ * joker/metin → _arama metin sütununda.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any {
   const arama = CODE_ILIKE_ARAMA[colId];
   const def = DB_COL_MAP[colId];
   if (!arama || !def) return query;
-  const parts = splitCfOrParts(v);
-  if (!parts.length) return query;
 
-  const branches: CodeFilterBranch[] = [];
-  for (const p of parts) {
-    if (p.includes("*") || p.includes("?")) {
-      branches.push({ kind: "ilike", col: arama, pat: cfPatternToIlikePattern(p) });
-    } else if (/^\d+$/.test(p)) {
-      branches.push({ kind: "eq", col: def.col, num: Number(p) });
-    } else {
-      branches.push({ kind: "ilike", col: arama, pat: cfPatternToIlikePattern(p) });
+  const orParts = splitOrParts(v);
+  if (!orParts.length) return query;
+
+  const col = def.col;
+
+  const applyOne = (q: any, p: string): any => {
+    const b = parseFilterBranch(p.trim(), "prefix");
+    if (b.kind === "like" || b.kind === "ilike") return q[b.kind](arama, b.pat);
+    if (b.kind === "between") {
+      const lo = Number(b.lo), hi = Number(b.hi);
+      return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(col, lo).lte(col, hi) : q;
     }
+    const n = Number((b as { val: string }).val);
+    return Number.isFinite(n) ? q[b.kind](col, n) : q.ilike(arama, `%${(b as { val: string }).val}%`);
+  };
+
+  const branchStr = (p: string): string => {
+    const b = parseFilterBranch(p.trim(), "prefix");
+    if (b.kind === "like" || b.kind === "ilike") return `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
+    if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
+    const n = Number((b as { val: string }).val);
+    return Number.isFinite(n) ? `${col}.${b.kind}.${n}` : "";
+  };
+
+  // Tüm parçalar saf tam sayı → .in()
+  if (orParts.length > 1 && orParts.every((p) => /^\d+$/.test(p.trim()))) {
+    return query.in(col, orParts.map((p) => Number(p.trim())));
   }
-  if (branches.length === 0) return query;
-  if (branches.length === 1) {
-    const b = branches[0]!;
-    if (b.kind === "ilike") return query.ilike(b.col, b.pat);
-    return query.eq(b.col, b.num);
+
+  if (orParts.length === 1) {
+    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
+    return query;
   }
-  const orExpr = branches
-    .map((b) => {
-      if (b.kind === "ilike") {
-        const esc = b.pat.replace(/"/g, '""');
-        return `${b.col}.ilike."${esc}"`;
-      }
-      return `${b.col}.eq.${b.num}`;
-    })
-    .join(",");
-  return query.or(orExpr);
+
+  const segments = orParts.map((orPart) => {
+    const ands = splitAndParts(orPart);
+    if (ands.length === 1) return branchStr(ands[0]!);
+    const exprs = ands.map(branchStr).filter(Boolean);
+    return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
+  }).filter(Boolean);
+
+  return segments.length ? query.or(segments.join(",")) : query;
 }
 
 /** Ham veri alan adı: PostgREST ifadesi için güvenli anahtar. */
@@ -228,68 +400,23 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
   return { ...base, ...dyn };
 }
 
+/**
+ * Ham veri (raw_data) alan filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
+ * Sade değer → LIKE 'val%' (ile başlar) → btree text_pattern_ops index kullanır.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
-  const field = `raw_data->>${jsonKey}`;
-  const parts = splitCfOrParts(v);
-  if (!parts.length) return query;
-
-  /**
-   * Strateji (btree text_pattern_ops index kullanabilmek için):
-   *  • Joker var, leading % yok (örn: "3%", "30%") → LIKE  → index kullanır
-   *  • Joker var, leading % var (örn: "%3%")         → ILIKE → full scan
-   *  • Joker yok (örn: "30", "35628")                → LIKE 'val%' (başlıyor ile)
-   *    → btree index kullanır; "30" → "30%", yani "30 ile başlayan"
-   */
-  type Br = { kind: "like" | "ilike"; pat: string };
-  const branches: Br[] = [];
-  for (const p of parts) {
-    if (p.includes("*") || p.includes("?")) {
-      const pat = cfPatternToIlikePattern(p);
-      branches.push({ kind: pat.startsWith("%") ? "ilike" : "like", pat });
-    } else {
-      // Joker yok → "p ile başlayanlar" → btree index kullanılabilir
-      branches.push({ kind: "like", pat: `${p}%` });
-    }
-  }
-  if (branches.length === 1) {
-    const b = branches[0]!;
-    return b.kind === "like" ? query.like(field, b.pat) : query.ilike(field, b.pat);
-  }
-  const orExpr = branches
-    .map(({ kind, pat }) => {
-      const esc = pat.replace(/"/g, '""');
-      return `${field}.${kind}."${esc}"`;
-    })
-    .join(",");
-  return query.or(orExpr);
+  return applyGenericFilter(query, `raw_data->>${jsonKey}`, v, "prefix");
 }
 
+/**
+ * Metin sütun filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
+ * Sade değer → ILIKE '%val%' (içerir) → kullanıcı dostu metin arama.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
-  const parts = splitCfOrParts(v);
-  if (!parts.length) return query;
-
-  type Br = { pat: string };
-  const branches: Br[] = [];
-  for (const p of parts) {
-    if (p.includes("*") || p.includes("?")) {
-      branches.push({ pat: cfPatternToIlikePattern(p) });
-    } else {
-      branches.push({ pat: `%${p}%` });
-    }
-  }
-  if (branches.length === 1) {
-    return query.ilike(col, branches[0]!.pat);
-  }
-  const orExpr = branches
-    .map(({ pat }) => {
-      const esc = pat.replace(/"/g, '""');
-      return `${col}.ilike."${esc}"`;
-    })
-    .join(",");
-  return query.or(orExpr);
+  return applyGenericFilter(query, col, v, "contains");
 }
 
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
@@ -409,12 +536,9 @@ export async function GET(req: NextRequest) {
   const bidirTakimDep = sp.get("bidir_takim_dep")?.trim() ?? "";
   const bidirTakimLegacy = sp.get("bidir_takim")?.trim();
 
+  /** Tek takim sütunu için genel filtre (contains modu). */
   const applyBidirTakimIlikes = (col: "t1" | "t2", raw: string) => {
-    const parts = splitCfOrParts(raw);
-    const pats = parts.map((p) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
-    );
-    for (const pat of pats) query = query.ilike(col, pat);
+    query = applyGenericFilter(query, col, raw, "contains");
   };
 
   if (bidirTakimEv || bidirTakimDep) {
@@ -422,20 +546,34 @@ export async function GET(req: NextRequest) {
     if (bidirTakimDep) applyBidirTakimIlikes("t2", bidirTakimDep);
   } else if (bidirTakimLegacy) {
     const mode = sp.get("bidir_takim_mode") || "ikisi";
-    const parts = splitCfOrParts(bidirTakimLegacy);
-    const pats = parts.map((p) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
-    );
     if (mode === "ev") {
-      for (const pat of pats) query = query.ilike("t1", pat);
+      query = applyGenericFilter(query, "t1", bidirTakimLegacy, "contains");
     } else if (mode === "dep") {
-      for (const pat of pats) query = query.ilike("t2", pat);
+      query = applyGenericFilter(query, "t2", bidirTakimLegacy, "contains");
     } else {
-      const orParts = pats.flatMap((pat) => {
-        const esc = pat.replace(/"/g, '""');
-        return [`t1.ilike."${esc}"`, `t2.ilike."${esc}"`];
+      // "ikisi": (t1 veya t2)'de OR — her OR grubu hem t1 hem t2'ye yayılır
+      const orParts = splitOrParts(bidirTakimLegacy);
+      const orSegments = orParts.flatMap((orPart) => {
+        const andParts = splitAndParts(orPart);
+        const buildContainsPat = (p: string) =>
+          p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`;
+        if (andParts.length === 1) {
+          const pat = buildContainsPat(andParts[0]!);
+          const esc = pat.replace(/"/g, '""');
+          return [`t1.ilike."${esc}"`, `t2.ilike."${esc}"`];
+        }
+        // AND grubu: and(t1.ilike.X,t1.ilike.Y)
+        const t1andExprs = andParts.map((ap) => {
+          const pat = buildContainsPat(ap);
+          return `t1.ilike."${pat.replace(/"/g, '""')}"`;
+        });
+        const t2andExprs = andParts.map((ap) => {
+          const pat = buildContainsPat(ap);
+          return `t2.ilike."${pat.replace(/"/g, '""')}"`;
+        });
+        return [`and(${t1andExprs.join(",")})`, `and(${t2andExprs.join(",")})`];
       });
-      query = query.or(orParts.join(","));
+      if (orSegments.length) query = query.or(orSegments.join(","));
     }
   }
 
@@ -443,22 +581,10 @@ export async function GET(req: NextRequest) {
   const bidirTakimidDep = sp.get("bidir_takimid_dep")?.trim() ?? "";
   const bidirTakimidLegacy = sp.get("bidir_takimid")?.trim();
 
+  /** Takım ID sütunu — sayısal karşılaştırma/aralık/OR/AND destekli. */
   const applyBidirTakimidSide = (side: "ev" | "dep", raw: string) => {
     const col = side === "ev" ? "t1i" : "t2i";
-    const arama = side === "ev" ? "t1i_arama" : "t2i_arama";
-    const parts = splitCfOrParts(raw);
-    for (const p of parts) {
-      if (!p) continue;
-      const hasGlob = p.includes("*") || p.includes("?");
-      if (!hasGlob && /^\d+$/.test(p)) {
-        const n = Number(p);
-        if (!Number.isFinite(n)) continue;
-        query = query.eq(col, n);
-      } else {
-        const pat = hasGlob ? cfPatternToIlikePattern(p) : `%${p}%`;
-        query = query.ilike(arama, pat);
-      }
-    }
+    query = applyCfIntegerEqColumnFilter(query, col, raw);
   };
 
   if (bidirTakimidEv || bidirTakimidDep) {
@@ -466,27 +592,29 @@ export async function GET(req: NextRequest) {
     if (bidirTakimidDep) applyBidirTakimidSide("dep", bidirTakimidDep);
   } else if (bidirTakimidLegacy) {
     const mode = sp.get("bidir_takimid_mode") || "ikisi";
-    const parts = splitCfOrParts(bidirTakimidLegacy);
-    for (const p of parts) {
-      if (!p) continue;
-      const hasGlob = p.includes("*") || p.includes("?");
-      if (!hasGlob && /^\d+$/.test(p)) {
-        const n = Number(p);
-        if (!Number.isFinite(n)) continue;
-        if (mode === "ev") query = query.eq("t1i", n);
-        else if (mode === "dep") query = query.eq("t2i", n);
-        else query = query.or(`t1i.eq.${n},t2i.eq.${n}`);
-      } else {
-        const pat = hasGlob ? cfPatternToIlikePattern(p) : `%${p}%`;
-        const esc = pat.replace(/"/g, '""');
-        if (mode === "ev") {
-          query = query.ilike("t1i_arama", pat);
-        } else if (mode === "dep") {
-          query = query.ilike("t2i_arama", pat);
-        } else {
-          query = query.or(`t1i_arama.ilike."${esc}",t2i_arama.ilike."${esc}"`);
+    if (mode === "ev") {
+      query = applyCfIntegerEqColumnFilter(query, "t1i", bidirTakimidLegacy);
+    } else if (mode === "dep") {
+      query = applyCfIntegerEqColumnFilter(query, "t2i", bidirTakimidLegacy);
+    } else {
+      // "ikisi": (t1i veya t2i)'de OR
+      const orParts = splitOrParts(bidirTakimidLegacy);
+      const idSegments = orParts.flatMap((p) => {
+        const b = parseFilterBranch(p.trim(), "prefix");
+        if (b.kind === "like" || b.kind === "ilike") {
+          const esc = b.pat.replace(/"/g, '""');
+          return [`t1i_arama.${b.kind}."${esc}"`, `t2i_arama.${b.kind}."${esc}"`];
         }
-      }
+        if (b.kind === "between") {
+          return [`and(t1i.gte.${b.lo},t1i.lte.${b.hi})`, `and(t2i.gte.${b.lo},t2i.lte.${b.hi})`];
+        }
+        const val = (b as { val: string }).val;
+        const n = Number(val);
+        return Number.isFinite(n)
+          ? [`t1i.${b.kind}.${n}`, `t2i.${b.kind}.${n}`]
+          : [];
+      });
+      if (idSegments.length) query = query.or(idSegments.join(","));
     }
   }
 
@@ -496,52 +624,51 @@ export async function GET(req: NextRequest) {
   const bidirAntLegacy = sp.get("bidir_ant")?.trim();
   const bidirPersonelLegacy = sp.get("bidir_personel")?.trim();
 
+  /**
+   * Personel sütunları filtresi — OR/AND/joker destekli.
+   * Tek sütun: doğrudan applyGenericFilter; çok sütun: her OR parçası tüm sütunlara yayılır.
+   */
   const applyBidirPersonelPats = (cols: ("hakem" | "t1_antrenor" | "t2_antrenor")[], raw: string) => {
-    const parts = splitCfOrParts(raw);
-    const pats = parts.map((p) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
-    );
     if (cols.length === 1) {
-      for (const pat of pats) query = query.ilike(cols[0]!, pat);
-    } else {
-      const orParts = pats.flatMap((pat) =>
-        cols.map((col) => {
-          const esc = pat.replace(/"/g, '""');
-          return `${col}.ilike."${esc}"`;
-        })
-      );
-      query = query.or(orParts.join(","));
+      query = applyGenericFilter(query, cols[0]!, raw, "contains");
+      return;
     }
+    const orParts = splitOrParts(raw);
+    if (!orParts.length) return;
+    const makePat = (p: string) =>
+      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`;
+    const orSegments = orParts.flatMap((orPart) => {
+      const andParts = splitAndParts(orPart);
+      if (andParts.length === 1) {
+        const pat = makePat(andParts[0]!);
+        const esc = pat.replace(/"/g, '""');
+        return cols.map((col) => `${col}.ilike."${esc}"`);
+      }
+      return cols.map((col) => {
+        const exprs = andParts.map((ap) => {
+          const pat = makePat(ap);
+          return `${col}.ilike."${pat.replace(/"/g, '""')}"`;
+        });
+        return `and(${exprs.join(",")})`;
+      });
+    });
+    if (orSegments.length) query = query.or(orSegments.join(","));
   };
 
   if (bidirHakem || bidirAntEv || bidirAntDep || bidirAntLegacy) {
     if (bidirHakem) applyBidirPersonelPats(["hakem"], bidirHakem);
     if (bidirAntEv) applyBidirPersonelPats(["t1_antrenor"], bidirAntEv);
     if (bidirAntDep) applyBidirPersonelPats(["t2_antrenor"], bidirAntDep);
-    // Ev veya dep TD’de eşleşme (OR); ev/dep ayrı kutularla birlikte VE ile birleşir.
+    // Ev veya dep TD'de eşleşme (OR); ev/dep ayrı kutularla birlikte VE ile birleşir.
     if (bidirAntLegacy) applyBidirPersonelPats(["t1_antrenor", "t2_antrenor"], bidirAntLegacy);
   } else if (bidirPersonelLegacy) {
     const mode = sp.get("bidir_personel_mode") || "all";
-    const parts = splitCfOrParts(bidirPersonelLegacy);
-    const pats = parts.map((p) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`
-    );
     type PersonelCols = ("hakem" | "t1_antrenor" | "t2_antrenor")[];
     const cols: PersonelCols =
       mode === "hakem" ? ["hakem"]
       : mode === "ant"  ? ["t1_antrenor", "t2_antrenor"]
       :                   ["hakem", "t1_antrenor", "t2_antrenor"];
-    if (cols.length === 1) {
-      for (const pat of pats) query = query.ilike(cols[0]!, pat);
-    } else {
-      const orParts = pats.flatMap((pat) =>
-        cols.map((col) => {
-          const esc = pat.replace(/"/g, '""');
-          return `${col}.ilike."${esc}"`;
-        })
-      );
-      query = query.or(orParts.join(","));
-    }
+    applyBidirPersonelPats(cols, bidirPersonelLegacy);
   }
   if (sp.get("sonuc_iy"))  query = query.ilike("sonuc_iy", `%${sp.get("sonuc_iy")}%`);
   if (sp.get("sonuc_ms"))  query = query.ilike("sonuc_ms", `%${sp.get("sonuc_ms")}%`);
