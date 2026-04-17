@@ -352,6 +352,20 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
 /** Ham veri alan adı: PostgREST ifadesi için güvenli anahtar. */
 const SAFE_RAW_JSON_KEY = /^[A-Za-z0-9_]+$/;
 
+/**
+ * Filtre değeri tek bir basit leading-wildcard ilike ise o pattern'i döndürür.
+ * Ör: "*7987*" → "%7987%", "*abc" → "%abc"
+ * OR (,) veya AND (+) içeriyorsa → null (karmaşık: eski yol kullanılır).
+ */
+function getSimpleIlikePattern(v: string): string | null {
+  const orParts = splitOrParts(v);
+  if (orParts.length !== 1) return null;
+  const andParts = splitAndParts(orParts[0]!);
+  if (andParts.length !== 1) return null;
+  const b = parseFilterBranch(andParts[0]!.trim(), "prefix");
+  return b.kind === "ilike" ? b.pat : null;
+}
+
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
 const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms1: "ms1",
@@ -460,10 +474,55 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
+
+  // ── Ham veri leading-wildcard ön-filtre ──────────────────────────────────────
+  // ORDER BY tarih ile birlikte leading-% ILIKE planner'ı tarih index'ini seçmeye
+  // zorlar (397k satır tam tarama, ~67s). Çözüm: önce trgm index ile ID'leri al
+  // (ORDER BY yok → 55ms), sonra ana sorguda WHERE id IN (...) kullan.
+  const preFilterColIds = new Set<string>(); // bu col'ları ana döngüde atla
+  const idSetsForIntersect: number[][] = [];
+
+  for (const [k, v] of sp.entries()) {
+    if (!k.startsWith("cf_")) continue;
+    const colId = k.slice(3);
+    const jsonKey = mergedRawCf[colId];
+    if (!jsonKey || !SAFE_RAW_JSON_KEY.test(jsonKey)) continue;
+    const ilikePattern = getSimpleIlikePattern(v.trim());
+    if (!ilikePattern) continue; // OR/AND karmaşığı → eski yol
+
+    preFilterColIds.add(colId);
+    // get_matches_raw_ilike_ids: ORDER BY olmadan trgm index kullanır
+    const { data: idsData } = await supabase.rpc("get_matches_raw_ilike_ids", {
+      json_key: jsonKey,
+      ilike_pattern: ilikePattern,
+    });
+    const ids = (idsData as number[] | null) ?? [];
+    idSetsForIntersect.push(ids);
+  }
+
+  // Birden fazla leading-wildcard kolonu: AND semantiği → kesişim (intersection)
+  let preFilteredIds: number[] | null = null;
+  if (idSetsForIntersect.length > 0) {
+    let combined = idSetsForIntersect[0]!;
+    for (let i = 1; i < idSetsForIntersect.length; i++) {
+      const s = new Set(idSetsForIntersect[i]);
+      combined = combined.filter((id) => s.has(id));
+    }
+    preFilteredIds = combined;
+  }
+
   const fromTable = useKsView ? "matches_with_suffix_cols" : "matches";
   let query = supabase
     .from(fromTable)
     .select(DB_COLS.join(","), { count: countMode });
+
+  // Sıfır eşleşme → hemen boş dön
+  if (preFilteredIds !== null && preFilteredIds.length === 0) {
+    return NextResponse.json({ data: [], page, limit, total: 0, totalPages: 0 });
+  }
+  if (preFilteredIds !== null) {
+    query = query.in("id", preFilteredIds);
+  }
 
   // ── Üst filtreler ────────────────────────────────────────────────────────────
   const tarihFrom = sp.get("tarih_from") || "";
@@ -724,6 +783,7 @@ export async function GET(req: NextRequest) {
 
     const jsonKey = mergedRawCf[colId];
     if (jsonKey) {
+      if (preFilterColIds.has(colId)) continue; // leading-wildcard → zaten id IN ile filtrelendi
       query = applyRawJsonPathIlikeFilter(query, jsonKey, v);
     }
   }
