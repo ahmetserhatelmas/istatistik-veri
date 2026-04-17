@@ -1470,6 +1470,8 @@ export default function MatchTable() {
     setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
     setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
     setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
+    setAnyKodSuffix(null);
+    setCodePick(null);
     setPage(1);
   }
 
@@ -1602,7 +1604,7 @@ export default function MatchTable() {
             <button
               type="button"
               onClick={clearColumnFiltersOnly}
-              title="Sütun ara kutuları ile ⇄ satırı (Ref, Takım, T-ID, Personel) ve öneri listelerini sıfırlar"
+              title="Sütun ara kutuları, ⇄ satırı (Ref, Takım, T-ID, Personel), öneri listeleri ve ◉ panel KOD son hane filtresini sıfırlar"
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               Sütunları temizle
             </button>
