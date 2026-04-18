@@ -420,6 +420,47 @@ function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
 }
 
+/** Düz skor "0-0" … "12-3" — joker yok; içerir araması 14-2, 4-20 gibi yanlış pozitif üretir. */
+const PLAIN_SKOR_TOKEN_RE = /^\d+-\d+$/;
+
+function isPlainSkorToken(t: string): boolean {
+  const s = t.trim();
+  if (!s) return false;
+  if (s.includes("*") || s.includes("?")) return false;
+  return PLAIN_SKOR_TOKEN_RE.test(s);
+}
+
+/**
+ * İY / MS sütun filtresi: düz "4-2" girdisi → tam eşleşme (.eq), SQL'deki
+ * TRIM(sonuc_ms) = '4-2' ile aynı sonuç (hücrede ekstra boşluk yoksa).
+ * Virgülle birden fazla skor → OR ile tam eşleşmeler. Joker / metin araması → eski ILIKE.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: string): any {
+  const v = raw.trim();
+  if (!v) return query;
+  const orParts = splitOrParts(v);
+  if (!orParts.length) return query;
+
+  const segments: string[] = [];
+  for (const orPart of orParts) {
+    const andParts = splitAndParts(orPart);
+    if (andParts.length !== 1) {
+      return applyCfTextColumnIlikeFilter(query, col, raw);
+    }
+    const token = andParts[0]!.trim();
+    if (!isPlainSkorToken(token)) {
+      return applyCfTextColumnIlikeFilter(query, col, raw);
+    }
+    const q = token.replace(/"/g, '""');
+    segments.push(`${col}.eq."${q}"`);
+  }
+  if (segments.length === 1) {
+    return query.eq(col, splitAndParts(orParts[0]!)[0]!.trim());
+  }
+  return query.or(segments.join(","));
+}
+
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
 const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
 const KS_N_OK = new Set([3, 4, 5]);
@@ -735,8 +776,12 @@ export async function GET(req: NextRequest) {
       :                   ["hakem", "t1_antrenor", "t2_antrenor"];
     applyBidirPersonelPats(cols, bidirPersonelLegacy);
   }
-  if (sp.get("sonuc_iy"))  query = query.ilike("sonuc_iy", `%${sp.get("sonuc_iy")}%`);
-  if (sp.get("sonuc_ms"))  query = query.ilike("sonuc_ms", `%${sp.get("sonuc_ms")}%`);
+  if (sp.get("sonuc_iy")) {
+    query = applyCfSkorColumnFilter(query, "sonuc_iy", sp.get("sonuc_iy")!.trim());
+  }
+  if (sp.get("sonuc_ms")) {
+    query = applyCfSkorColumnFilter(query, "sonuc_ms", sp.get("sonuc_ms")!.trim());
+  }
   if (sp.get("hakem"))     query = query.ilike("hakem", `%${sp.get("hakem")}%`);
   if (sp.get("suffix4"))   query = query.ilike("mac_suffix4", `%${sp.get("suffix4")}%`);
   if (sp.get("suffix3"))   query = query.ilike("mac_suffix3", `%${sp.get("suffix3")}%`);
@@ -773,7 +818,11 @@ export async function GET(req: NextRequest) {
         continue;
       }
       if (def.mode === "ilike") {
-        query = applyCfTextColumnIlikeFilter(query, def.col, v);
+        if (def.col === "sonuc_iy" || def.col === "sonuc_ms") {
+          query = applyCfSkorColumnFilter(query, def.col, v);
+        } else {
+          query = applyCfTextColumnIlikeFilter(query, def.col, v);
+        }
       } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
         if (def.col === "id") {
