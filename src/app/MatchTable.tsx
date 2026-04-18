@@ -11,6 +11,7 @@ import {
   type ColDef,
 } from "@/lib/columns";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
+import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 
 type Match = Record<string, unknown>;
 
@@ -507,6 +508,7 @@ const LS_COL_ORDER = "om_col_order";
 const LS_COL_WIDTHS = "om_col_widths";
 const LS_SHOW_DIGIT_ROW  = "om_show_digit_row";
 const LS_DIGIT_POS_MODE  = "om_digit_pos_mode";
+const LS_SCORE_RECENT    = "om_score_recent";
 const LS_VIEW_PRESETS = "om_view_presets";
 
 const KOD_SUFFIX_LENS = [3, 4, 5] as const;
@@ -968,6 +970,20 @@ export default function MatchTable() {
     () => lsGet<DigitPosMode>(LS_DIGIT_POS_MODE, "contains")
   );
 
+  // ⚽ Skor Kutusu
+  const [showScoreBox, setShowScoreBox] = useState(false);
+  const [scoreIy, setScoreIy] = useState<string>("");
+  const [scoreMs, setScoreMs] = useState<string>("");
+  const [scoreRecent, setScoreRecent] = useState<{ iy: string; ms: string }[]>(
+    () => lsGet<{ iy: string; ms: string }[]>(LS_SCORE_RECENT, [])
+  );
+  const scoreBoxRef = useRef<HTMLDivElement>(null);
+
+  // 🎯 Eşleştirme Paneli
+  const [showEslestirme, setShowEslestirme] = useState(false);
+  /** Eşleştirme panelinden uygulanan aktif etiket (örn. "Tekrar 48") — temizle butonunda görünür */
+  const [eslestirmeLabel, setEslestirmeLabel] = useState<string | null>(null);
+
   // çift yönlü arama
   const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(readBidirFiltersFromStorage);
   const [showBidirRow, setShowBidirRow] = useState<boolean>(
@@ -1408,6 +1424,83 @@ export default function MatchTable() {
     return () => document.removeEventListener("mousedown", fn);
   }, [showColPanel]);
 
+  // Skor kutusu dışı tıkla kapat
+  useEffect(() => {
+    const fn = (e: MouseEvent) => {
+      if (scoreBoxRef.current && !scoreBoxRef.current.contains(e.target as Node)) setShowScoreBox(false);
+    };
+    if (showScoreBox) document.addEventListener("mousedown", fn);
+    return () => document.removeEventListener("mousedown", fn);
+  }, [showScoreBox]);
+
+  /** Eşleştirme sonucunu tabloya uygula: id listesini cf_id'ye koy */
+  const applyEslestirmeIdList = useCallback((ids: number[], label: string) => {
+    if (ids.length === 0) {
+      alert("Bu kategoride maç yok.");
+      return;
+    }
+    // URL sığdırma + backend performansı için limit
+    const MAX = 5000;
+    const clipped = ids.length > MAX ? ids.slice(0, MAX) : ids;
+    const idsStr = clipped.join(",");
+    setColFilters((prev) => {
+      const next = { ...prev, id: idsStr };
+      commitColFilters(next);
+      return next;
+    });
+    setEslestirmeLabel(ids.length > MAX ? `${label} (ilk ${MAX})` : label);
+    setPage(1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Eşleştirme etiketini (ve id filtresini) temizle */
+  const clearEslestirme = useCallback(() => {
+    setColFilters((prev) => {
+      const next = { ...prev };
+      delete next.id;
+      commitColFilters(next);
+      return next;
+    });
+    setEslestirmeLabel(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Eşleştirme Paneli için kapsam: tablodaki mevcut filtreleri derle */
+  const eslestirmeCurrentScope: EslestirmeScope = useMemo(() => {
+    const altLigRaw = colFiltersCommitted.alt_lig_id?.trim();
+    const altLigNum = altLigRaw && /^\d+$/.test(altLigRaw) ? Number(altLigRaw) : undefined;
+    return {
+      sonuc_iy: (colFiltersCommitted.sonuc_iy ?? "").trim() || undefined,
+      sonuc_ms: (colFiltersCommitted.sonuc_ms ?? "").trim() || undefined,
+      tarih_from: applied.tarih_from?.trim() || undefined,
+      tarih_to: applied.tarih_to?.trim() || undefined,
+      lig_adi: (colFiltersCommitted.lig_adi ?? "").trim() || undefined,
+      alt_lig_id: altLigNum,
+    };
+  }, [colFiltersCommitted, applied.tarih_from, applied.tarih_to]);
+
+  /** Skor combo'sunu cell filtrelerine uygular + recent listesine ekler */
+  const applyScoreCombo = useCallback((iy: string, ms: string) => {
+    const iyT = iy.trim();
+    const msT = ms.trim();
+    const next = { ...colFilters };
+    if (iyT) next.sonuc_iy = iyT; else delete next.sonuc_iy;
+    if (msT) next.sonuc_ms = msT; else delete next.sonuc_ms;
+    setColFilters(next);
+    commitColFilters(next);
+    // recent list
+    if (iyT || msT) {
+      setScoreRecent((prev) => {
+        const filtered = prev.filter((s) => !(s.iy === iyT && s.ms === msT));
+        const updated = [{ iy: iyT, ms: msT }, ...filtered].slice(0, 5);
+        lsSet(LS_SCORE_RECENT, updated);
+        return updated;
+      });
+    }
+    setPage(1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colFilters]);
+
   // sütun işlemleri
   function toggleCol(id: string) { setVisibleIds((p) => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
   function toggleGroup(grp: string) {
@@ -1472,6 +1565,7 @@ export default function MatchTable() {
     setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
     setAnyKodSuffix(null);
     setCodePick(null);
+    setEslestirmeLabel(null);
     setPage(1);
   }
 
@@ -1649,6 +1743,96 @@ export default function MatchTable() {
               }`}
             >
               {showBidirRow ? "⇄ Çift Yönlü ✓" : "⇄ Çift Yönlü"}
+            </button>
+            {/* ⚽ Skor Kutusu */}
+            <div ref={scoreBoxRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setScoreIy((colFilters.sonuc_iy ?? "").trim());
+                  setScoreMs((colFilters.sonuc_ms ?? "").trim());
+                  setShowScoreBox((v) => !v);
+                }}
+                title="İY / MS skor hızlı filtresi — iki kutuya skorları yazıp Uygula'ya bas"
+                className={`border text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap ${
+                  (colFilters.sonuc_iy?.trim() || colFilters.sonuc_ms?.trim())
+                    ? "bg-emerald-700 border-emerald-800 text-white hover:bg-emerald-600"
+                    : "bg-white border-gray-300 text-gray-900 hover:bg-gray-100"
+                }`}
+              >
+                {(colFilters.sonuc_iy?.trim() || colFilters.sonuc_ms?.trim())
+                  ? `⚽ ${colFilters.sonuc_iy?.trim() || "*"} / ${colFilters.sonuc_ms?.trim() || "*"}`
+                  : "⚽ Skor"}
+              </button>
+              {showScoreBox && (
+                <div className="absolute right-0 top-full mt-1 z-[90] w-[min(320px,calc(100vw-12px))] bg-white border border-gray-300 rounded-lg shadow-2xl p-3 text-xs">
+                  <div className="font-semibold text-gray-800 mb-2">Skor Filtresi</div>
+                  <div className="flex items-end gap-2 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <label className="block text-[10px] text-gray-600 mb-0.5">İlk Yarı</label>
+                      <input
+                        value={scoreIy}
+                        onChange={(e) => setScoreIy(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { applyScoreCombo(scoreIy, scoreMs); setShowScoreBox(false); } }}
+                        placeholder="örn. 1-0"
+                        className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono focus:border-emerald-500 outline-none"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <label className="block text-[10px] text-gray-600 mb-0.5">Maç Sonu</label>
+                      <input
+                        value={scoreMs}
+                        onChange={(e) => setScoreMs(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { applyScoreCombo(scoreIy, scoreMs); setShowScoreBox(false); } }}
+                        placeholder="örn. 3-0"
+                        className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono focus:border-emerald-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => { applyScoreCombo(scoreIy, scoreMs); setShowScoreBox(false); }}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-2 py-1 rounded font-medium">
+                      Uygula
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setScoreIy(""); setScoreMs(""); applyScoreCombo("", ""); setShowScoreBox(false); }}
+                      className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-700 px-2 py-1 rounded"
+                      title="İY ve MS skor filtrelerini temizle">
+                      Temizle
+                    </button>
+                  </div>
+                  <div className="text-[10px] text-gray-500 mb-1">
+                    Boş bırak = o alan serbest. Yıldız (*) wildcard: <span className="font-mono">1-*</span> → ilk yarısı 1 ile başlayan tüm maçlar.
+                  </div>
+                  {scoreRecent.length > 0 && (
+                    <div className="border-t border-gray-200 pt-2 mt-1">
+                      <div className="text-[10px] text-gray-600 mb-1">Son kullanılanlar:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {scoreRecent.map((s, i) => (
+                          <button
+                            key={`${s.iy}|${s.ms}|${i}`}
+                            type="button"
+                            onClick={() => { setScoreIy(s.iy); setScoreMs(s.ms); applyScoreCombo(s.iy, s.ms); setShowScoreBox(false); }}
+                            className="font-mono text-[11px] bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 px-1.5 py-0.5 rounded">
+                            {s.iy || "*"} / {s.ms || "*"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowEslestirme(true)}
+              title="Eşleştirme Paneli: kod son 2/3/4 kombinasyonlarına göre tekrar/benzersiz analizi"
+              className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs px-3 py-1.5 rounded transition font-semibold whitespace-nowrap shadow-sm">
+              🎯 Eşleştirme
             </button>
             <button onClick={() => setShowColPanel((v) => !v)}
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
@@ -2654,6 +2838,14 @@ export default function MatchTable() {
 
       </header>
 
+      {/* ── Eşleştirme Paneli (modal) ── */}
+      <EslestirmePaneli
+        open={showEslestirme}
+        onClose={() => setShowEslestirme(false)}
+        currentScope={eslestirmeCurrentScope}
+        onApplyIdList={applyEslestirmeIdList}
+      />
+
       {/* ── TABLO ── (z-0: üstteki header + Sütunlar paneli her zaman üstte) */}
       <div className="relative z-0 flex-1 min-h-0 overflow-auto">
         {/* Loading overlay */}
@@ -3165,6 +3357,12 @@ export default function MatchTable() {
             <span className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
               ● KOD son {anyKodSuffix.n} = {anyKodSuffix.digits}
               <button className="hover:text-red-600 ml-0.5" title="Filtreyi temizle" onClick={() => { setAnyKodSuffix(null); setPage(1); }}>✕</button>
+            </span>
+          )}
+          {eslestirmeLabel && (
+            <span className="ml-2 inline-flex items-center gap-1 bg-indigo-200 text-indigo-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
+              🎯 {eslestirmeLabel}
+              <button className="hover:text-red-600 ml-0.5" title="Eşleştirme filtresini temizle" onClick={clearEslestirme}>✕</button>
             </span>
           )}
         </span>
