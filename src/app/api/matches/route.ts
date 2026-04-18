@@ -136,9 +136,11 @@ function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "pref
   if (t.startsWith("<>")) return { kind: "neq", val: t.slice(2).trim() };
   if (t.startsWith(">"))  return { kind: "gt",  val: t.slice(1).trim() };
   if (t.startsWith("<"))  return { kind: "lt",  val: t.slice(1).trim() };
-  // Aralık: 10-20, 10..20, 10<->20
-  const rm = t.match(/^(\d[\d.]*)\s*(?:\.\.|\<-\>)\s*(\d[\d.]*)$/)
-          ?? t.match(/^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/);
+  // Aralık: 10..20 veya 10<->20 (AÇIK ayraçlar).
+  // NOT: Bare dash (ör. "1-0", "2-1") ARTIK aralık sayılmaz — skor/kod/mbs gibi
+  // alanlarda dash doğal olarak yer aldığından yanlış BETWEEN yorumu yapıp boş
+  // sonuç döndürüyordu. Gerçek sayısal aralık için ".." veya "<->" kullanılmalı.
+  const rm = t.match(/^(\d[\d.]*)\s*(?:\.\.|\<-\>)\s*(\d[\d.]*)$/);
   if (rm) return { kind: "between", lo: rm[1]!, hi: rm[2]! };
   // Joker — contains modunda her zaman ilike (büyük/küçük harf duyarsız)
   if (t.includes("*") || t.includes("?")) {
