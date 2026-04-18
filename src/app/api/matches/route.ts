@@ -430,6 +430,29 @@ function isPlainSkorToken(t: string): boolean {
   return PLAIN_SKOR_TOKEN_RE.test(s);
 }
 
+/** Virgül-VEYA / +-VE ile bile yalnızca düz skor tokenları mı (exact count gerekir). */
+function isPlainSkorFilterValue(raw: string): boolean {
+  const orParts = splitOrParts(raw.trim());
+  if (!orParts.length) return false;
+  for (const orPart of orParts) {
+    const andParts = splitAndParts(orPart);
+    if (!andParts.length) return false;
+    for (const ap of andParts) {
+      if (!isPlainSkorToken(ap)) return false;
+    }
+  }
+  return true;
+}
+
+/** Düz İY/MS skoru → PostgREST planned count sapmasın diye exact count. */
+function spRequestsPlainSkorExactCount(sp: URLSearchParams): boolean {
+  const candidates = [sp.get("sonuc_ms"), sp.get("sonuc_iy"), sp.get("cf_sonuc_ms"), sp.get("cf_sonuc_iy")];
+  for (const v of candidates) {
+    if (v?.trim() && isPlainSkorFilterValue(v)) return true;
+  }
+  return false;
+}
+
 /**
  * İY / MS sütun filtresi: düz "4-2" girdisi → tam eşleşme (.eq), SQL'deki
  * TRIM(sonuc_ms) = '4-2' ile aynı sonuç (hücrede ekstra boşluk yoksa).
@@ -515,9 +538,16 @@ export async function GET(req: NextRequest) {
   const ksAnyN = Number(sp.get("ks_any_n") ?? 3);
   let ksAnyFilterIds: number[] | null = null;
 
-  /** Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım */
-  const countMode =
-    tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw ? ("planned" as const) : ("exact" as const);
+  /**
+   * Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım.
+   * Düz İY/MS skoru (ör. 4-2) varken planned toplam SQL COUNT ile uyuşmayabiliyor → exact zorunlu.
+   */
+  const forceExactCount = spRequestsPlainSkorExactCount(sp);
+  const countMode = forceExactCount
+    ? ("exact" as const)
+    : tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw
+      ? ("planned" as const)
+      : ("exact" as const);
 
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
