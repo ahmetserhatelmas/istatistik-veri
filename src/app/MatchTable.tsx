@@ -148,7 +148,19 @@ const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
 const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
 
 /** cellVal ile filtrelenen client-side sütunlar — hesaplamalı sütunlar sunucuya gönderilmez */
-const CELL_VAL_CLIENT_COL_IDS = new Set(["mbs", "suffix3", "suffix4"]);
+const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["mbs", "suffix3", "suffix4"]);
+/**
+ * Bir sütun client-side mı filtrelenmeli?
+ * - Statik set (mbs, MsMKT, MBS): rowKey'den computed (digitSum vb.)
+ * - Maç ID · OKBT (macid_obktb_*): Client 7-haneli formül kullanırken DB fonksiyonu
+ *   5-haneli hesap yapıyor → filtre uyuşmazlığı. 20 formülün tamamını client'ta
+ *   yap (sunucuya gönderme).
+ */
+function isCellValClientCol(id: string): boolean {
+  if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return true;
+  if (/^macid_obktb_\d+$/.test(id)) return true;
+  return false;
+}
 
 /** Sütun paneli: *_obktb_{0–14} her biçim için ayrı renk (seçili / kapalı) */
 function colPanelChipClass(_colId: string, on: boolean): string {
@@ -1232,10 +1244,11 @@ export default function MatchTable() {
     [visibleCols, colW]
   );
 
-  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar (mbs, suffix3, suffix4)
+  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
+  // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
   const rawColFilters = Object.fromEntries(
     Object.entries(colFiltersCommitted).filter(
-      ([id]) => CF_CLIENT_ONLY_COL_IDS.has(id) || CELL_VAL_CLIENT_COL_IDS.has(id)
+      ([id]) => CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)
     )
   );
   const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
@@ -1262,7 +1275,7 @@ export default function MatchTable() {
   useEffect(() => {
     const dbPart = Object.fromEntries(
       Object.entries(colFiltersCommitted).filter(
-        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id) && !CELL_VAL_CLIENT_COL_IDS.has(id)
+        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id) && !isCellValClientCol(id)
       )
     );
     setDbColFiltersApplied(dbPart);

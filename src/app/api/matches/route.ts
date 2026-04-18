@@ -793,6 +793,11 @@ export async function GET(req: NextRequest) {
     if (multiOkbtM) {
       const srcId = multiOkbtM[1]!;
       const idx = Number(multiOkbtM[2]);
+      // NOT: macid OKBT'leri 7-haneli formülle client tarafında hesaplanıyor —
+      // DB fonksiyonu 5-haneli. Uyuşmazlık olmaması için server'a gönderilmez
+      // (frontend `isCellValClientCol` ile de filtrelemez). Güvenlik için burada
+      // yine de atlıyoruz.
+      if (srcId === "macid") continue;
       if (OKBT_MULTI_SOURCE_MAP[srcId] !== undefined && Number.isInteger(idx) && idx >= 0 && idx < 15) {
         const n = Number(v);
         if (Number.isFinite(n) && n >= 0) {
