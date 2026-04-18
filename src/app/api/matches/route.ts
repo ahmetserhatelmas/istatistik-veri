@@ -3,7 +3,6 @@ import { createServiceClient } from "@/lib/supabase/server";
 import {
   dynamicRawColIdToJsonKey,
   isRawKeyExcludedFromColumns,
-  OKBT_MULTI_SOURCE_MAP,
   staticCfRawJsonKeyByColId,
 } from "@/lib/columns";
 import { OKBT_BASAMAK_LABELS } from "@/lib/okbt-basamak-toplamlari";
@@ -788,22 +787,13 @@ export async function GET(req: NextRequest) {
       }
       continue;
     }
-    // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → PostgreSQL computed column fn
+    // Çok kaynaklı OKBT: {srcId}_obktb_{idx}
+    // NOT: Tüm OKBT çoklu sütunları ARTIK tamamen client-side filtreleniyor
+    // (isCellValClientCol). Bu blok yalnızca geriye dönük güvenlik içindir:
+    // olası eski bir istemci macid_obktb_* veya *_obktb_* gönderirse DB
+    // fonksiyonuna başvurmak yerine sessizce geçiyoruz (yanlış satır dönmesin).
     const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(colId);
     if (multiOkbtM) {
-      const srcId = multiOkbtM[1]!;
-      const idx = Number(multiOkbtM[2]);
-      // NOT: macid OKBT'leri 7-haneli formülle client tarafında hesaplanıyor —
-      // DB fonksiyonu 5-haneli. Uyuşmazlık olmaması için server'a gönderilmez
-      // (frontend `isCellValClientCol` ile de filtrelemez). Güvenlik için burada
-      // yine de atlıyoruz.
-      if (srcId === "macid") continue;
-      if (OKBT_MULTI_SOURCE_MAP[srcId] !== undefined && Number.isInteger(idx) && idx >= 0 && idx < 15) {
-        const n = Number(v);
-        if (Number.isFinite(n) && n >= 0) {
-          query = query.eq(`${srcId}_obktb_${idx}`, Math.round(n));
-        }
-      }
       continue;
     }
 

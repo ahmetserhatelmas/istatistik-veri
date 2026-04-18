@@ -152,13 +152,16 @@ const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["mbs", "suffix3", "suffix4"]);
 /**
  * Bir sütun client-side mı filtrelenmeli?
  * - Statik set (mbs, MsMKT, MBS): rowKey'den computed (digitSum vb.)
- * - Maç ID · OKBT (macid_obktb_*): Client 7-haneli formül kullanırken DB fonksiyonu
- *   5-haneli hesap yapıyor → filtre uyuşmazlığı. 20 formülün tamamını client'ta
- *   yap (sunucuya gönderme).
+ * - Tüm çoklu OKBT sütunları ({src}_obktb_{idx}):
+ *     · macid 7-haneli formülle hesaplanıyor, DB fonksiyonu 5-haneli (uyuşmazlık)
+ *     · Diğer kaynaklar 5-haneli ama DB fonksiyonu kurulu/güncel değilse filtre
+ *       yanlış satırı döndürebiliyor.
+ *   İstemci zaten doğru değeri `cellVal` ile hesaplıyor → filtre de aynı yerden
+ *   yapılsın; DB durumuna bağımlılık sıfırlanır, ekrandaki değer = filtre değeri.
  */
 function isCellValClientCol(id: string): boolean {
   if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return true;
-  if (/^macid_obktb_\d+$/.test(id)) return true;
+  if (/^[a-z][a-z0-9]*_obktb_\d+$/.test(id)) return true;
   return false;
 }
 
