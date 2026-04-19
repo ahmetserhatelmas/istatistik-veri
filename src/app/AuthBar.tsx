@@ -175,7 +175,7 @@ export function AuthBar() {
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") void sendLink(); }}
                 placeholder="ornek@eposta.com"
-                className="w-full border border-gray-300 rounded px-2 py-1 text-xs mb-2"
+                className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400 mb-2"
                 disabled={status === "sending" || status === "sent"}
               />
               <button
