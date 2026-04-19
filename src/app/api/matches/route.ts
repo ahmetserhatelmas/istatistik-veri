@@ -480,6 +480,7 @@ function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
 }
 
+
 /** Düz skor "0-0" … "12-3" — joker yok; içerir araması 14-2, 4-20 gibi yanlış pozitif üretir. */
 const PLAIN_SKOR_TOKEN_RE = /^\d+-\d+$/;
 
@@ -511,6 +512,15 @@ function spRequestsPlainSkorExactCount(sp: URLSearchParams): boolean {
     if (v?.trim() && isPlainSkorFilterValue(v)) return true;
   }
   return false;
+}
+
+/**
+ * Saat sütunu (saat_arama): planned sayım seçici ILIKE / prefix desenlerde çok küçük
+ * kalabiliyor (örn. gerçek on binlerce satır varken total ~ yüzlerce) → sayfalama erken biter.
+ * Prefix / tam eşleşme btree (text_pattern_ops) ile exact count genelde kabul edilebilir.
+ */
+function spRequestsSaatExactCount(sp: URLSearchParams): boolean {
+  return Boolean(sp.get("cf_saat")?.trim());
 }
 
 /**
@@ -792,7 +802,8 @@ export async function GET(req: NextRequest) {
   const taramaQRaw = sp.get("tarama_q")?.trim() ?? "";
   const taramaQActive = taramaQRaw.length > 0;
 
-  const forceExactCount = spRequestsPlainSkorExactCount(sp);
+  const forceExactCount =
+    spRequestsPlainSkorExactCount(sp) || spRequestsSaatExactCount(sp);
   const countMode = forceExactCount
     ? ("exact" as const)
     : tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
@@ -1116,6 +1127,8 @@ export async function GET(req: NextRequest) {
         if (def.col === "sonuc_iy" || def.col === "sonuc_ms") {
           query = applyCfSkorColumnFilter(query, def.col, v);
         } else {
+          // saat_arama dahil tüm metin sütunları: düz metin = tam eşleşme,
+          // joker istiyorsa kullanıcı * / ? açıkça yazar (örn. 14*, 19:??).
           query = applyCfTextColumnIlikeFilter(query, def.col, v);
         }
       } else if (def.mode === "eq") {
@@ -1364,7 +1377,19 @@ export async function GET(req: NextRequest) {
     return flat;
   });
 
-  const total = count ?? 0;
+  // planned sayım PG istatistiklerinden geldiği için özellikle seçici filtrelerde
+  // (ör. saat_arama ILIKE '21' → gerçekte 0) çok sapabiliyor. İlk sayfa boşsa
+  // ve sonraki sayfa olamaz (offset=0, satır yok) → total'i 0 olarak döndür ki
+  // UI'de "yaklaşık X maç" yanılsaması olmasın.
+  let total = count ?? 0;
+  if (rows.length === 0 && page === 1) {
+    total = 0;
+  } else if (countMode === "planned") {
+    // planned tahmin << gerçek olduğunda (özellikle son sayfa dışında) en azından
+    // elimizdeki satırları yansıtacak kadar yüksek tutalım.
+    const minTotal = (page - 1) * limit + rows.length;
+    if (total < minTotal) total = minTotal;
+  }
   return NextResponse.json({
     data: rows,
     page,
