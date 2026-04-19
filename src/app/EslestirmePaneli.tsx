@@ -28,6 +28,22 @@ export interface EslestirmeScope {
   tarih_to?: string;
   lig_adi?: string;
   alt_lig_id?: number;
+  /** Takvim bileşenleri — tarih_from/to ile de birlikte kullanılabilir (EXTRACT ile) */
+  gun?: number; // 1-31
+  ay?: number;  // 1-12
+  yil?: number; // 1900-2100
+}
+
+/** Sunucunun boyut başına hesapladığı "görülmüş/eksik uçlar" özeti. */
+export interface EslestirmeDimCoverage {
+  col: EslestirmeCol;
+  n: number;
+  universe: number;      // toplam olası uç (10^n)
+  seen: number;          // gözlenen benzersiz uç sayısı
+  missing: number;       // eksik uç sayısı (universe - seen)
+  /** Eksik uçların listesi; çok büyükse (>5000) kısaltılmış olabilir. */
+  missingSamples: string[];
+  missingTruncated: boolean;
 }
 
 export interface EslestirmeResult {
@@ -41,6 +57,8 @@ export interface EslestirmeResult {
   truncated: boolean;
   totalCombos: number;
   dims: string[];
+  /** Her boyut için olası uç uzayındaki kapsam. */
+  coverage: EslestirmeDimCoverage[];
 }
 
 export interface SavedCombo {
@@ -96,10 +114,17 @@ export function EslestirmePaneli({
   const [manualMs, setManualMs] = useState("");
   const [manualTarihFrom, setManualTarihFrom] = useState("");
   const [manualTarihTo, setManualTarihTo] = useState("");
+  const [manualLigAdi, setManualLigAdi] = useState("");
+  const [manualAltLigId, setManualAltLigId] = useState("");
+  const [manualGun, setManualGun] = useState("");
+  const [manualAy, setManualAy] = useState("");
+  const [manualYil, setManualYil] = useState("");
 
   const [result, setResult] = useState<EslestirmeResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  /** Açılan "eksik uçlar" detay listesi (boyut × eksik parçalar). */
+  const [missingFor, setMissingFor] = useState<EslestirmeDimCoverage | null>(null);
 
   const [saveName, setSaveName] = useState("");
   const [savedCombos, setSavedCombos] = useState<SavedCombo[]>(
@@ -113,6 +138,7 @@ export function EslestirmePaneli({
     if (!open) {
       setResult(null);
       setErrorMsg(null);
+      setMissingFor(null);
     }
   }, [open]);
 
@@ -126,13 +152,27 @@ export function EslestirmePaneli({
 
   const scope: EslestirmeScope = useMemo(() => {
     if (useCurrentScope) return currentScope;
+    const altLigNum = manualAltLigId.trim() && /^\d+$/.test(manualAltLigId.trim())
+      ? Number(manualAltLigId.trim()) : undefined;
+    const toIntInRange = (s: string, lo: number, hi: number): number | undefined => {
+      const t = s.trim();
+      if (!t || !/^\d+$/.test(t)) return undefined;
+      const n = Number(t);
+      return n >= lo && n <= hi ? n : undefined;
+    };
     return {
       sonuc_iy: manualIy.trim() || undefined,
       sonuc_ms: manualMs.trim() || undefined,
       tarih_from: manualTarihFrom.trim() || undefined,
       tarih_to: manualTarihTo.trim() || undefined,
+      lig_adi: manualLigAdi.trim() || undefined,
+      alt_lig_id: altLigNum,
+      gun: toIntInRange(manualGun, 1, 31),
+      ay:  toIntInRange(manualAy,  1, 12),
+      yil: toIntInRange(manualYil, 1900, 2100),
     };
-  }, [useCurrentScope, currentScope, manualIy, manualMs, manualTarihFrom, manualTarihTo]);
+  }, [useCurrentScope, currentScope, manualIy, manualMs, manualTarihFrom, manualTarihTo,
+      manualLigAdi, manualAltLigId, manualGun, manualAy, manualYil]);
 
   const dims: EslestirmeDim[] = useMemo(() => {
     const out: EslestirmeDim[] = [];
@@ -234,8 +274,8 @@ export function EslestirmePaneli({
   if (!open) return null;
 
   const hasScope = useCurrentScope
-    ? Boolean(currentScope.sonuc_iy || currentScope.sonuc_ms || currentScope.tarih_from || currentScope.tarih_to || currentScope.lig_adi || currentScope.alt_lig_id)
-    : Boolean(manualIy || manualMs || manualTarihFrom || manualTarihTo);
+    ? Boolean(currentScope.sonuc_iy || currentScope.sonuc_ms || currentScope.tarih_from || currentScope.tarih_to || currentScope.lig_adi || currentScope.alt_lig_id || currentScope.gun || currentScope.ay || currentScope.yil)
+    : Boolean(manualIy || manualMs || manualTarihFrom || manualTarihTo || manualLigAdi || manualAltLigId || manualGun || manualAy || manualYil);
 
   return (
     <div
@@ -298,32 +338,73 @@ export function EslestirmePaneli({
                     {currentScope.tarih_from && <div>Tarih: {currentScope.tarih_from} → {currentScope.tarih_to || "…"}</div>}
                     {currentScope.lig_adi && <div>Lig: {currentScope.lig_adi}</div>}
                     {currentScope.alt_lig_id != null && <div>Alt Lig ID: {currentScope.alt_lig_id}</div>}
+                    {currentScope.gun != null && <div>Gün: {currentScope.gun}</div>}
+                    {currentScope.ay  != null && <div>Ay: {currentScope.ay}</div>}
+                    {currentScope.yil != null && <div>Yıl: {currentScope.yil}</div>}
                   </>
                 ) : (
                   <span className="text-gray-400 italic">Filtre yok — tüm veritabanı analiz edilir (yavaş olabilir)</span>
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div>
-                  <label className="block text-[10px] text-gray-600">İlk Yarı</label>
-                  <input value={manualIy} onChange={(e) => setManualIy(e.target.value)} placeholder="1-0"
-                    className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div>
+                    <label className="block text-[10px] text-gray-600">İlk Yarı</label>
+                    <input value={manualIy} onChange={(e) => setManualIy(e.target.value)} placeholder="1-0"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-600">Maç Sonu</label>
+                    <input value={manualMs} onChange={(e) => setManualMs(e.target.value)} placeholder="3-0"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-600">Tarih (başl.)</label>
+                    <input type="date" value={manualTarihFrom} onChange={(e) => setManualTarihFrom(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-600">Tarih (bit.)</label>
+                    <input type="date" value={manualTarihTo} onChange={(e) => setManualTarihTo(e.target.value)}
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs" />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[10px] text-gray-600">Maç Sonu</label>
-                  <input value={manualMs} onChange={(e) => setManualMs(e.target.value)} placeholder="3-0"
-                    className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] text-gray-600">Lig Adı (tam eşleşme)</label>
+                    <input value={manualLigAdi} onChange={(e) => setManualLigAdi(e.target.value)} placeholder="Süper Lig"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-600">Alt Lig ID</label>
+                    <input value={manualAltLigId} onChange={(e) => setManualAltLigId(e.target.value)} placeholder="125"
+                      inputMode="numeric"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-600">Yıl</label>
+                    <input value={manualYil} onChange={(e) => setManualYil(e.target.value)} placeholder="2024"
+                      inputMode="numeric"
+                      className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-gray-600">Ay</label>
+                      <input value={manualAy} onChange={(e) => setManualAy(e.target.value)} placeholder="3"
+                        inputMode="numeric"
+                        className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-gray-600">Gün</label>
+                      <input value={manualGun} onChange={(e) => setManualGun(e.target.value)} placeholder="15"
+                        inputMode="numeric"
+                        className="w-full border border-gray-300 rounded px-2 py-1 text-xs font-mono" />
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[10px] text-gray-600">Tarih (başl.)</label>
-                  <input type="date" value={manualTarihFrom} onChange={(e) => setManualTarihFrom(e.target.value)}
-                    className="w-full border border-gray-300 rounded px-2 py-1 text-xs" />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-600">Tarih (bit.)</label>
-                  <input type="date" value={manualTarihTo} onChange={(e) => setManualTarihTo(e.target.value)}
-                    className="w-full border border-gray-300 rounded px-2 py-1 text-xs" />
+                <div className="text-[10px] text-gray-500 italic">
+                  İpucu: Gün/Ay/Yıl her biri bağımsız uygulanır — ör. <b>sadece Ay=3</b> yazarsan, farklı yıllardaki tüm Mart maçları analiz edilir.
                 </div>
               </div>
             )}
@@ -445,6 +526,65 @@ export function EslestirmePaneli({
                   </button>
                 </div>
 
+                {/* Boyut başına kapsama / eksik uçlar */}
+                {result.coverage && result.coverage.length > 0 && (
+                  <div className="border border-gray-200 rounded bg-white">
+                    <div className="px-2 py-1.5 text-[11px] font-semibold text-gray-700 bg-gray-50 border-b border-gray-200">
+                      🧩 Boyut kapsaması — hangi uçlar hiç görülmedi?
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[11px]">
+                        <thead>
+                          <tr className="text-gray-500 border-b border-gray-200">
+                            <th className="text-left px-2 py-1">Boyut</th>
+                            <th className="text-right px-2 py-1">Olası</th>
+                            <th className="text-right px-2 py-1">Görüldü</th>
+                            <th className="text-right px-2 py-1">Eksik</th>
+                            <th className="text-right px-2 py-1">%</th>
+                            <th className="text-right px-2 py-1 w-20">Detay</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.coverage.map((cv, i) => {
+                            const label = DIM_COLS.find((x) => x.col === cv.col)?.label ?? cv.col;
+                            const pct = cv.universe > 0 ? (cv.seen / cv.universe) * 100 : 0;
+                            const canList = cv.n <= 5 && cv.missing > 0;
+                            return (
+                              <tr key={`${cv.col}-${cv.n}-${i}`} className="border-b border-gray-100 hover:bg-gray-50">
+                                <td className="px-2 py-1 font-mono">
+                                  <span className="font-semibold">{label}</span>
+                                  <span className="text-gray-400"> · son {cv.n}</span>
+                                </td>
+                                <td className="px-2 py-1 text-right tabular-nums">{cv.universe.toLocaleString("tr-TR")}</td>
+                                <td className="px-2 py-1 text-right tabular-nums text-emerald-700">{cv.seen.toLocaleString("tr-TR")}</td>
+                                <td className="px-2 py-1 text-right tabular-nums text-red-700 font-semibold">{cv.missing.toLocaleString("tr-TR")}</td>
+                                <td className="px-2 py-1 text-right tabular-nums text-gray-600">{pct.toFixed(1)}%</td>
+                                <td className="px-2 py-1 text-right">
+                                  {canList ? (
+                                    <button
+                                      onClick={() => setMissingFor(cv)}
+                                      className="text-[10px] text-blue-700 hover:text-blue-900 underline"
+                                      title="Eksik uçları listele">
+                                      Göster
+                                    </button>
+                                  ) : cv.n > 5 ? (
+                                    <span className="text-[10px] text-gray-400" title="son 6+ için eksik listesi çok büyük olur">—</span>
+                                  ) : (
+                                    <span className="text-[10px] text-emerald-600">✓ tamam</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="px-2 py-1 text-[10px] text-gray-500 italic border-t border-gray-100">
+                      Not: Kombinasyonlar ortak kapsam içinde sayıldığından, bir boyutta &quot;eksik&quot; görünen uç, o boyut tek başına analiz edildiğinde görülmüş olabilir.
+                    </div>
+                  </div>
+                )}
+
                 {/* İlk 30 kombinasyon önizleme */}
                 {result.combos.length > 0 && (
                   <details className="border border-gray-200 rounded bg-gray-50">
@@ -520,6 +660,52 @@ export function EslestirmePaneli({
             )}
           </section>
         </div>
+
+        {/* Eksik uçlar detay popup */}
+        {missingFor && (
+          <div
+            className="fixed inset-0 z-[210] bg-black/40 flex items-center justify-center p-4"
+            onMouseDown={(e) => { if (e.target === e.currentTarget) setMissingFor(null); }}
+          >
+            <div className="bg-white rounded-lg shadow-2xl w-full max-w-[560px] max-h-[80vh] flex flex-col">
+              <div className="bg-gradient-to-r from-red-600 to-rose-600 text-white px-3 py-2 rounded-t-lg flex items-center justify-between">
+                <div className="text-xs font-semibold">
+                  Eksik uçlar — {DIM_COLS.find((x) => x.col === missingFor.col)?.label} · son {missingFor.n}
+                  <span className="opacity-80 ml-2 font-mono">
+                    ({missingFor.missing.toLocaleString("tr-TR")} / {missingFor.universe.toLocaleString("tr-TR")})
+                  </span>
+                </div>
+                <button onClick={() => setMissingFor(null)} className="hover:bg-white/10 rounded px-2 py-0.5 text-sm">✕</button>
+              </div>
+              <div className="p-3 overflow-y-auto">
+                {missingFor.missingSamples.length === 0 ? (
+                  <div className="text-[11px] text-emerald-700 italic">Bu boyutta eksik yok — tüm olası uçlar en az bir kez görüldü.</div>
+                ) : (
+                  <>
+                    {missingFor.missingTruncated && (
+                      <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                        ⚠︎ İlk {missingFor.missingSamples.length.toLocaleString("tr-TR")} eksik gösteriliyor (tamamı çok uzun).
+                      </div>
+                    )}
+                    <div className="font-mono text-[11px] text-gray-800 leading-relaxed break-words">
+                      {missingFor.missingSamples.join(", ")}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (typeof navigator !== "undefined" && navigator.clipboard) {
+                          navigator.clipboard.writeText(missingFor.missingSamples.join(", ")).catch(() => {});
+                        }
+                      }}
+                      className="mt-3 text-[10px] bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
+                      title="Eksik listesini panoya kopyala">
+                      📋 Kopyala
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

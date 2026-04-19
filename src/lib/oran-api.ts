@@ -8,20 +8,27 @@ function authPayload() {
   };
 }
 
+/** Harici Oran API; bazen yavaş / zaman aşımı — Node varsayılanı uzun bekleyebilir. */
+const ORAN_FETCH_TIMEOUT_MS = 20_000;
+
 async function apiPost(func: string, extra: Record<string, string> = {}) {
   const body = new URLSearchParams({ ...authPayload(), ...extra });
-  const res = await fetch(
-    `${BASE_URL}/index.php/DataAPI/${func}.html`,
-    {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ORAN_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${BASE_URL}/index.php/DataAPI/${func}.html`, {
       method: "POST",
+      signal: ac.signal,
       headers: {
         "X-Requested-With": "XMLHttpRequest",
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
       },
       body: body.toString(),
-    }
-  );
-  return res.json();
+    });
+    return res.json();
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export async function getBalance(): Promise<number> {

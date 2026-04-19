@@ -9,14 +9,23 @@
 -- p_dims: ör. ARRAY['id:2','kod_ms:2','kod_cs:2'] → maç kodu son-2 + MS son-2 + CS son-2
 --         format: "alan:n" — alan ∈ {id, kod_ms, kod_cs, kod_iy, kod_au}, n ∈ {2,3,4,5,...}
 --
--- p_sonuc_iy / p_sonuc_ms / p_tarih_from / p_tarih_to / p_lig_adi / p_alt_lig_id:
---   kapsam filtreleri. NULL verilirse o filtre uygulanmaz.
+-- Kapsam filtreleri (NULL → uygulanmaz):
+--   p_sonuc_iy / p_sonuc_ms : ILIKE kalıbı (ör. '%1-0%')
+--   p_tarih_from / p_tarih_to : tarih aralığı
+--   p_lig_adi : tam eşleşme
+--   p_alt_lig_id : tam eşleşme
+--   p_gun / p_ay / p_yil : takvim bileşenleri (tarih sütunundan EXTRACT)
+--     Ay & Gün her yıldan çapraz uygulanır (ör. her Mart = p_ay=3).
 --
 -- Dönüş: (combo text, cnt bigint, ids bigint[])
 --   combo: "74|38|27" gibi birleşik string (ayraç: '|')
 --   cnt:   o kombinasyonda kaç maç var
 --   ids:   maç id dizisi (limit yok, istemci tarafta süzülür)
 -- ============================================================================
+
+-- Eski imza kaldır (parametre sayısı değiştiği için)
+DROP FUNCTION IF EXISTS analyze_combos(text[], text, text, date, date, text, integer, integer);
+DROP FUNCTION IF EXISTS analyze_combos(text[], text, text, date, date, text, integer, integer, integer, integer, integer);
 
 CREATE OR REPLACE FUNCTION analyze_combos(
   p_dims         text[],
@@ -26,6 +35,9 @@ CREATE OR REPLACE FUNCTION analyze_combos(
   p_tarih_to     date    DEFAULT NULL,
   p_lig_adi      text    DEFAULT NULL,
   p_alt_lig_id   integer DEFAULT NULL,
+  p_gun          integer DEFAULT NULL,
+  p_ay           integer DEFAULT NULL,
+  p_yil          integer DEFAULT NULL,
   p_limit        integer DEFAULT 50000
 )
 RETURNS TABLE(combo text, cnt bigint, ids bigint[])
@@ -80,9 +92,12 @@ BEGIN
         AND ($4 IS NULL OR tarih <= $4)
         AND ($5 IS NULL OR lig_adi = $5)
         AND ($6 IS NULL OR alt_lig_id = $6)
+        AND ($7 IS NULL OR EXTRACT(DAY   FROM tarih)::int = $7)
+        AND ($8 IS NULL OR EXTRACT(MONTH FROM tarih)::int = $8)
+        AND ($9 IS NULL OR EXTRACT(YEAR  FROM tarih)::int = $9)
         -- boyutlardaki NULL değerleri dışla ki lpad patlaması olmasın
         %s
-      LIMIT $7
+      LIMIT $10
     ) AS sub
     WHERE combo IS NOT NULL AND combo <> ''
     GROUP BY combo
@@ -102,18 +117,23 @@ BEGIN
       p_tarih_to,
       NULLIF(p_lig_adi, ''),
       p_alt_lig_id,
+      p_gun,
+      p_ay,
+      p_yil,
       p_limit;
 END;
 $$;
 
 -- Yetki
-GRANT EXECUTE ON FUNCTION analyze_combos(text[], text, text, date, date, text, integer, integer)
+GRANT EXECUTE ON FUNCTION analyze_combos(text[], text, text, date, date, text, integer, integer, integer, integer, integer)
   TO anon, authenticated, service_role;
 
--- Örnek kullanım:
+-- Örnek:
 -- SELECT * FROM analyze_combos(
 --   ARRAY['kod_ms:2','kod_cs:2'],
---   '1-0', '3-0',
---   '2026-01-01', '2026-12-31',
---   NULL, NULL, 50000
+--   NULL, NULL,             -- sonuc_iy, sonuc_ms
+--   NULL, NULL,             -- tarih_from, tarih_to
+--   NULL, NULL,             -- lig_adi, alt_lig_id
+--   NULL, 3, 2024,          -- gun=NULL, ay=Mart, yil=2024
+--   50000
 -- ) LIMIT 20;

@@ -9,30 +9,16 @@ export const maxDuration = 60;
  * Eşleştirme Paneli RPC çağrısı. İstemciden seçilen boyutları ve
  * kapsam filtrelerini alıp analyze_combos() fonksiyonunu çağırır.
  *
- * Body:
- * {
- *   dims: Array<{ col: "id"|"kod_ms"|"kod_cs"|"kod_iy"|"kod_au", n: 2|3|4|5 }>,
- *   scope?: {
- *     sonuc_iy?: string,    // örn "1-0" (ILIKE ile %... %)
- *     sonuc_ms?: string,    // örn "3-0"
- *     tarih_from?: string,  // "YYYY-MM-DD"
- *     tarih_to?:   string,  // "YYYY-MM-DD"
- *     lig_adi?: string,
- *     alt_lig_id?: number,
- *   },
- *   limit?: number          // max analiz edilecek maç sayısı (güvenlik) — default 50000
- * }
+ * Kapsam filtreleri — NULL ise o filtre uygulanmaz:
+ *   sonuc_iy / sonuc_ms : ILIKE '%...%' ile kısmi eşleşme (örn "1-0")
+ *   tarih_from / tarih_to : tarih aralığı
+ *   lig_adi : tam eşleşme
+ *   alt_lig_id : tam eşleşme
+ *   gun / ay / yil : takvim bileşenleri (EXTRACT)
  *
- * Response:
- * {
- *   ok: true,
- *   total: number,         // analiz edilen toplam maç
- *   uniqueCount: number,   // benzersiz kombinasyon
- *   repeatCount: number,   // 2+ kere görülen kombinasyon sayısı
- *   repeatMatches: number, // tekrar kombinasyonlardaki toplam maç sayısı
- *   combos: Array<{ combo: string, cnt: number, ids: number[] }> // dolaylı (ilk 1000)
- *   dims: string[],        // kullanıcıya geri gösterim için
- * }
+ * Ayrıca sunucu, boyut başına **kapsam (coverage)** hesaplar:
+ *   her boyutun olası uç uzayı (10^n) vs. gerçekten gözlenen uç sayısı.
+ *   Eksik uçlar kullanıcıya listelenir (çok büyükse kısaltılmış).
  */
 
 type DimCol = "id" | "kod_ms" | "kod_cs" | "kod_iy" | "kod_au";
@@ -47,6 +33,9 @@ interface AnalyzeRequest {
     tarih_to?: string;
     lig_adi?: string;
     alt_lig_id?: number;
+    gun?: number;
+    ay?: number;
+    yil?: number;
   };
   limit?: number;
 }
@@ -55,6 +44,22 @@ interface ComboRow {
   combo: string;
   cnt: number | string;
   ids: number[] | null;
+}
+
+/** Eksik uç listesinin ne kadarını istemciye iletelim. */
+const MAX_MISSING_SAMPLES = 5000;
+
+/**
+ * Verilen n için tüm olası uçları sıralı olarak üretir: 0..10^n-1, lpad(n).
+ * Bu fonksiyonun universe hali bellekte O(10^n) — n ≤ 5 için sorun değil.
+ */
+function enumerateUniverse(n: number): string[] {
+  const total = 10 ** n;
+  const out: string[] = new Array(total);
+  for (let i = 0; i < total; i++) {
+    out[i] = String(i).padStart(n, "0");
+  }
+  return out;
 }
 
 export async function POST(req: NextRequest) {
@@ -87,9 +92,13 @@ export async function POST(req: NextRequest) {
   const scope = body.scope ?? {};
   const limit = Math.min(Math.max(body.limit ?? 50000, 100), 200000);
 
+  // takvim bileşen doğrulaması
+  const gun = Number.isInteger(scope.gun) && scope.gun! >= 1 && scope.gun! <= 31 ? scope.gun! : null;
+  const ay  = Number.isInteger(scope.ay)  && scope.ay!  >= 1 && scope.ay!  <= 12 ? scope.ay!  : null;
+  const yil = Number.isInteger(scope.yil) && scope.yil! >= 1900 && scope.yil! <= 2100 ? scope.yil! : null;
+
   const supabase = createServiceClient();
 
-  // Skor filtresi: kullanıcı "1-0" yazdı → %1-0% (ILIKE pattern)
   const iyLike = scope.sonuc_iy?.trim() ? `%${scope.sonuc_iy.trim()}%` : null;
   const msLike = scope.sonuc_ms?.trim() ? `%${scope.sonuc_ms.trim()}%` : null;
 
@@ -101,6 +110,9 @@ export async function POST(req: NextRequest) {
     p_tarih_to: scope.tarih_to?.trim() || null,
     p_lig_adi: scope.lig_adi?.trim() || null,
     p_alt_lig_id: typeof scope.alt_lig_id === "number" ? scope.alt_lig_id : null,
+    p_gun: gun,
+    p_ay: ay,
+    p_yil: yil,
     p_limit: limit,
   });
 
@@ -136,6 +148,48 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // --- Boyut başına "görüldü / eksik" analizi ---
+  // combos elementi "part0|part1|..." biçiminde olduğundan, her boyut için
+  // benzersiz parçaları topluyoruz. Bu, combos kırpılmadan ÖNCE — yani tüm
+  // combos üzerinden hesaplanıyor ki kapsam doğru olsun.
+  const coverage = dims.map((d, idx) => {
+    const seenSet = new Set<string>();
+    for (const c of combos) {
+      const parts = c.combo.split("|");
+      const v = parts[idx];
+      if (v !== undefined) seenSet.add(v);
+    }
+    // n ≤ 5 için olası uzayı listele; daha büyük n'de eksik listesi anlamlı
+    // değil (10^6 = çok büyük), yalnızca sayıyı bildiriyoruz.
+    const universeSize = 10 ** d.n;
+    let missingSamples: string[] = [];
+    let missingTruncated = false;
+    if (d.n <= 5) {
+      const universe = enumerateUniverse(d.n);
+      const missingAll: string[] = [];
+      for (const u of universe) {
+        if (!seenSet.has(u)) missingAll.push(u);
+      }
+      if (missingAll.length > MAX_MISSING_SAMPLES) {
+        missingSamples = missingAll.slice(0, MAX_MISSING_SAMPLES);
+        missingTruncated = true;
+      } else {
+        missingSamples = missingAll;
+      }
+    } else {
+      missingTruncated = true; // liste verilmedi
+    }
+    return {
+      col: d.col,
+      n: d.n,
+      universe: universeSize,
+      seen: seenSet.size,
+      missing: Math.max(0, universeSize - seenSet.size),
+      missingSamples,
+      missingTruncated,
+    };
+  });
+
   // Büyük combos listesi frontend'e transfer maliyetini artırır — ilk 2000 ile sınırla
   const combosTrimmed = combos.slice(0, 2000);
 
@@ -149,5 +203,6 @@ export async function POST(req: NextRequest) {
     truncated: combos.length > combosTrimmed.length,
     totalCombos: combos.length,
     dims: dimStrings,
+    coverage,
   });
 }

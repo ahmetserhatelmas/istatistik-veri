@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ALL_COLS,
   CF_CLIENT_ONLY_COL_IDS,
@@ -12,6 +13,9 @@ import {
 } from "@/lib/columns";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
+import { AuthBar } from "./AuthBar";
+import { SavedFiltersPanel } from "./SavedFiltersPanel";
+import { TaramaModu } from "./TaramaModu";
 
 type Match = Record<string, unknown>;
 
@@ -46,19 +50,74 @@ function formatLastSyncTr(iso: string | null): string {
   }
 }
 
-// ── wildcard / contains filtre ────────────────────────────────────────────────
-// "," → OR, "+" → AND (sunucu tarafı ile tutarlı)
+// ── wildcard / tam eşleşme filtre ─────────────────────────────────────────────
+// "," → OR, "+" → AND (sunucu tarafı ile tutarlı); joker yoksa tam metin eşleşmesi
 function matchWildcard(value: string, pattern: string): boolean {
-  const val = value.toLowerCase();
+  const val = value.trim().toLowerCase();
   const orParts = pattern.split(",").map((s) => s.trim()).filter(Boolean);
   if (!orParts.length) return true;
   const testPart = (part: string): boolean => {
-    if (!part.includes("*") && !part.includes("?")) return val.includes(part.toLowerCase());
-    const re = part.replace(/[-[\]{}()|^$\\]/g, "\\$&").replace(/\./g, "\\.").replace(/\*/g, ".*").replace(/\?/g, ".");
-    try { return new RegExp(`^${re}$`, "i").test(val); } catch { return val.includes(part.toLowerCase()); }
+    const p = part.trim();
+    if (!p.includes("*") && !p.includes("?")) return val === p.toLowerCase();
+    const re = p.replace(/[-[\]{}()|^$\\]/g, "\\$&").replace(/\./g, "\\.").replace(/\*/g, ".*").replace(/\?/g, ".");
+    try { return new RegExp(`^${re}$`, "i").test(val); } catch { return val === p.toLowerCase(); }
   };
   return orParts.some((orPart) =>
     orPart.split("+").map((s) => s.trim()).filter(Boolean).every(testPart)
+  );
+}
+
+/**
+ * İstemci-only sütun filtreleri (MKT/MsMKT/MBS, OKBT): `/api/matches` ile aynı
+ * `,` → OR, `+` → VE ve `< > <= >= <>` ile `a..b` / `a<->b` aralığı.
+ * Karşılaştırma atomları sayısal; değilse `matchWildcard` (tam eşleşme / joker).
+ */
+function toFilterNum(s: string): number {
+  const n = Number(String(s).trim().replace(",", "."));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function evalClientFilterAtom(cellVal: string, atom: string): boolean {
+  const t = atom.trim();
+  if (!t) return true;
+  if (t.startsWith(">=")) {
+    const r = toFilterNum(t.slice(2));
+    return Number.isFinite(r) && toFilterNum(cellVal) >= r;
+  }
+  if (t.startsWith("<=")) {
+    const r = toFilterNum(t.slice(2));
+    return Number.isFinite(r) && toFilterNum(cellVal) <= r;
+  }
+  if (t.startsWith("<>")) {
+    const rhs = t.slice(2).trim();
+    const n = toFilterNum(cellVal);
+    const rn = toFilterNum(rhs);
+    if (Number.isFinite(n) && Number.isFinite(rn)) return n !== rn;
+    return cellVal.trim() !== rhs;
+  }
+  if (t.startsWith(">")) {
+    const r = toFilterNum(t.slice(1));
+    return Number.isFinite(r) && toFilterNum(cellVal) > r;
+  }
+  if (t.startsWith("<")) {
+    const r = toFilterNum(t.slice(1));
+    return Number.isFinite(r) && toFilterNum(cellVal) < r;
+  }
+  const rm = t.match(/^(\d[\d.]*)\s*(?:\.\.|<->)\s*(\d[\d.]*)$/);
+  if (rm) {
+    const n = toFilterNum(cellVal);
+    const lo = toFilterNum(rm[1]!);
+    const hi = toFilterNum(rm[2]!);
+    return Number.isFinite(n) && Number.isFinite(lo) && Number.isFinite(hi) && n >= lo && n <= hi;
+  }
+  return matchWildcard(cellVal, t);
+}
+
+function evalClientColFilter(cellVal: string, rawPattern: string): boolean {
+  const orParts = rawPattern.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!orParts.length) return true;
+  return orParts.some((orPart) =>
+    orPart.split("+").map((s) => s.trim()).filter(Boolean).every((atom) => evalClientFilterAtom(cellVal, atom)),
   );
 }
 
@@ -147,6 +206,13 @@ function cellVal(row: Match, col: ColDef): string {
 const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
 const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
 
+/** Kesin MS skoru var mı — yoksa henüz oynanmamış / sonuçlanmamış (sync-matches ile aynı kural). */
+function rowHasPlayedMs(row: Match): boolean {
+  const s = String(row["sonuc_ms"] ?? "").trim();
+  if (s === "" || s === "-" || s === "–") return false;
+  return true;
+}
+
 /** cellVal ile filtrelenen client-side sütunlar — hesaplamalı sütunlar sunucuya gönderilmez */
 const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["mbs", "suffix3", "suffix4"]);
 /**
@@ -180,7 +246,7 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
       const col = cols.find((c) => c.id === colId);
       if (!col) return true;
       const val = cellVal(row, col);
-      return matchWildcard(val, pat.trim());
+      return evalClientColFilter(val, pat.trim());
     })
   );
 }
@@ -192,58 +258,91 @@ const DIGIT_POS_LABEL: Record<number, string> = {
 const RAW_API_GROUP = "Ham veri (API)";
 
 // ── Hane seçici (digit-position click) ───────────────────────────────────────
-/** Kod/oran sütunları: hücreye tıklayınca hangi rakam haneleri filtrelensin? */
-const DIGIT_CLICK_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
+/** Spesifik oyun kodu / maç ID sütunları (KOD son hane vurgusu vb. için). */
+const KOD_ID_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
 
-function isDigitClickCol(col: ColDef): boolean {
-  return DIGIT_CLICK_COL_IDS.has(col.id) || ODDS_GROUPS.has(col.group) || col.group === RAW_API_GROUP;
+/**
+ * Adam'ın isteği: "isimler de hane sayılsın, neden sayılmasın" → Hane artık
+ * sadece rakam değil, **ayraç olmayan her karakter** (harf dahil).
+ * Ayraçlar pozisyon saymaz — ör. "20:00" için 1-4, "Süper Lig" için 1-9.
+ */
+const HANE_SEPARATORS = new Set([".", ":", "-", "/", ",", " ", "(", ")", "_", "'"]);
+function isHaneSeparator(ch: string): boolean {
+  return HANE_SEPARATORS.has(ch);
 }
 
 /**
- * Sütunun tipik değer şablonu: rakamlar '0', ayraçlar olduğu gibi.
- * Widget bunu karaktere göre çizer: rakam → tıklanabilir kutu, diğerleri → ayraç etiketi.
- * Örn. skor sütunu → "0-0", oran → "0.00", kod → "00000"
+ * Hangi sütunlarda hane kutucukları gösterilmesin?
+ *  • tarih — özel gün/ay widget'ı var
+ *  • dahili `__...` sütunlar (kod_suffix_active vb.)
+ */
+function isHaneClickCol(col: ColDef): boolean {
+  if (col.id === "tarih") return false;
+  if (col.id.startsWith("__")) return false;
+  return true;
+}
+
+/** Geriye dönük uyumluluk — eski isim bazı yerlerde kalırsa bozulmasın. */
+function isDigitClickCol(col: ColDef): boolean {
+  return isHaneClickCol(col);
+}
+
+/**
+ * Sütunun tipik değer şablonu: hane karakterleri `#`, ayraçlar olduğu gibi.
+ * Widget bunu karaktere göre çizer: ayraç değilse tıklanabilir kutu.
+ * Örn. skor → "#-#", oran → "#.##", kod → "#####", saat → "##:##"
+ *
+ * Metin sütunlarında sabit uzunluk yok — 6 kutu (A-F) gösteriyoruz;
+ * kullanıcı soldan N karakteri sabitler, geri kalan joker olur.
  */
 function digitClickTemplate(col: ColDef): string {
-  if (col.id === "id") return "0000000";          // 7 haneli maç kodu
-  if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "00000"; // 5 haneli oyun kodu
-  if (col.id === "sonuc_iy" || col.id === "sonuc_ms") return "0-0";           // skor: X-Y
-  // Oran grupları: "0.00" (noktalı 3 rakam); Alt/Üst gibi bazıları "0.5" da olabilir
-  if (ODDS_GROUPS.has(col.group)) return "0.00";
-  return "00000"; // varsayılan
+  if (col.id === "id") return "#######";               // 7 haneli maç kodu
+  if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "#####"; // 5 haneli oyun kodu
+  if (col.id === "sonuc_iy" || col.id === "sonuc_ms") return "#-#";           // skor: X-Y
+  if (col.id === "saat") return "##:##";                // 20:00
+  if (col.id === "mbs") return "#";                     // MBS: tek basamaklı
+  if (col.id === "suffix3") return "##";                // 2 haneli digit-sum
+  if (col.id === "suffix4") return "##";                // 2 haneli digit-sum
+  // Oran grupları: "#.##"
+  if (ODDS_GROUPS.has(col.group)) return "#.##";
+  // OKBT multi sütunları: 2 haneli toplam
+  if (/_obktb_\d+$/.test(col.id)) return "##";
+  // Metin sütunları (lig adı, takımlar, gün vb.) — soldan 6 hane
+  return "######";
 }
 
 /**
  * Seçili hane konumlarına göre wildcard pattern üretir.
- * Val içindeki her karakter sırayla işlenir; rakam ise konumu sayılır.
- * Seçili rakam pozisyonu (1-indexed, soldan) → rakam olduğu gibi kalır.
- * Seçilmemiş rakam → "?" (tek karakter joker).
- * Rakam olmayan karakterler (nokta, tire vb.) olduğu gibi kalır.
+ * Val içindeki her karakter sırayla işlenir.
+ * Ayraç değil ise hane sayılır; seçili pozisyon → olduğu gibi; seçilmemiş → "?".
+ * Ayraç karakterleri olduğu gibi kalır.
+ *
  * Örn. "24895" + pos=[2,3] → "?48??"
  * Örn. "2.35"  + pos=[2,3] → "?.35"
+ * Örn. "Süper Lig" + pos=[1,2] → "Sü??? ???"
+ * Örn. "20:00" + pos=[1,2] → "20:??"
  */
 type DigitPosMode = "contains" | "positional";
 
 /**
- * Seçili hane konumlarına göre wildcard pattern üretir.
  * mode="contains"   → baş ve son ? blokları * olur: *09* (herhangi yerde bul, ilike %09%)
  * mode="positional" → ? karakterleri olduğu gibi kalır: ?09???? (tam pozisyon eşleşmesi)
  */
 function buildDigitPosPattern(val: string, positions: number[], mode: DigitPosMode = "contains"): string {
   if (!positions.length) return val;
   const posSet = new Set(positions);
-  let digitIdx = 0;
+  let haneIdx = 0;
   let result = "";
   for (const ch of val) {
-    if (/\d/.test(ch)) {
-      digitIdx++;
-      result += posSet.has(digitIdx) ? ch : "?";
+    if (!isHaneSeparator(ch)) {
+      haneIdx++;
+      result += posSet.has(haneIdx) ? ch : "?";
     } else {
       result += ch;
     }
   }
   if (mode === "contains") {
-    result = result.replace(/^\?+/, "*").replace(/\?+$/, "*");
+    result = result.replace(/^[?\s]+/, "*").replace(/[?\s]+$/, "*");
   }
   return result;
 }
@@ -515,28 +614,21 @@ const LS_VISIBLE  = "om_visible_cols";
 const LS_COL_FILT = "om_col_filters";
 const LS_TOP_FILT = "om_top_filters";
 const LS_PRESETS  = "om_col_presets";
-const LS_KOD_SON4 = "om_kod_son4_vurgula";
-const LS_KOD_SON_N = "om_kod_son_n";
-const LS_KOD_SON_REF = "om_kod_son_ref";
 const LS_COL_CLICK_POS = "om_col_click_pos";
 const LS_COL_ORDER = "om_col_order";
 const LS_COL_WIDTHS = "om_col_widths";
 const LS_SHOW_DIGIT_ROW  = "om_show_digit_row";
 const LS_DIGIT_POS_MODE  = "om_digit_pos_mode";
+const LS_COL_DIGIT_MODE  = "om_col_digit_mode"; // per-column H/A override (Record<colId, mode>)
 const LS_SCORE_RECENT    = "om_score_recent";
 const LS_VIEW_PRESETS = "om_view_presets";
 
-const KOD_SUFFIX_LENS = [3, 4, 5] as const;
-type KodSuffixN = (typeof KOD_SUFFIX_LENS)[number];
+type KodSuffixN = 3 | 4 | 5;
+type KodSuffixRefKey = "id" | "kod_ms" | "kod_iy" | "kod_cs" | "kod_au";
 
-const KOD_SUFFIX_REF_OPTIONS = [
-  { key: "id", label: "Maç kodu" },
-  { key: "kod_ms", label: "MS kodu" },
-  { key: "kod_iy", label: "İY kodu" },
-  { key: "kod_cs", label: "ÇŞ kodu" },
-  { key: "kod_au", label: "A/Ü kodu" },
-] as const;
-type KodSuffixRefKey = (typeof KOD_SUFFIX_REF_OPTIONS)[number]["key"];
+/** Üst «Kod» satırı kaldırıldı; satır bazlı sarı sonek vurgusu için sabit kaynak. */
+const DEFAULT_KOD_ROW_SUFFIX_N: KodSuffixN = 4;
+const DEFAULT_KOD_ROW_SUFFIX_REF: KodSuffixRefKey = "id";
 
 function lsGet<T>(key: string, fb: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fb; }
@@ -799,6 +891,14 @@ const REF_FIELD_TO_COL_ID: Partial<Record<RefMatchField, string>> = {
 export default function MatchTable() {
   const [matches, setMatches]     = useState<Match[]>([]);
   const [loading, setLoading]     = useState(false);
+  /** overflow:auto içinde absolute örtü yarım kalabiliyor; body’de fixed + rect ile tam kapat */
+  const tableScrollAreaRef = useRef<HTMLDivElement>(null);
+  const [tableLoadGuardRect, setTableLoadGuardRect] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [page, setPage]           = useState(1);
   const [total, setTotal]         = useState(0);
   const [totalPages, setTotalPages] = useState(0);
@@ -862,28 +962,8 @@ export default function MatchTable() {
   /** Panel'den seçilen KOD son hane filtresi — herhangi bir KOD sütunu eşleşen satırları gösterir */
   const [anyKodSuffix, setAnyKodSuffix] = useState<{ digits: string; n: number } | null>(null);
 
-  /** Satır süzmeden oyun kodu hücrelerinde sonek vurgusu; N ve kaynak kod seçilebilir. */
-  const [kodSon4Highlight, setKodSon4Highlight] = useState(() => lsGet<string>(LS_KOD_SON4, ""));
-  const [kodSuffixN, setKodSuffixN] = useState<KodSuffixN>(() => {
-    const v = lsGet<number>(LS_KOD_SON_N, 4);
-    return v === 3 || v === 4 || v === 5 ? v : 4;
-  });
-  const [kodSuffixRefKey, setKodSuffixRefKey] = useState<KodSuffixRefKey>(() => {
-    const k = lsGet<string>(LS_KOD_SON_REF, "id");
-    return KOD_SUFFIX_REF_OPTIONS.some((o) => o.key === k) ? (k as KodSuffixRefKey) : "id";
-  });
-  useEffect(() => { lsSet(LS_KOD_SON4, kodSon4Highlight); }, [kodSon4Highlight]);
-  useEffect(() => { lsSet(LS_KOD_SON_N, kodSuffixN); }, [kodSuffixN]);
-  // son 3/4/5 değişince kutudaki rakamları en fazla N ile sınırla (son N rakam)
-  useEffect(() => {
-    setKodSon4Highlight((prev) => {
-      const d = prev.replace(/\D/g, "");
-      if (d.length <= kodSuffixN) return d;
-      return d.slice(-kodSuffixN);
-    });
-    setPage(1);
-  }, [kodSuffixN]);
-  useEffect(() => { lsSet(LS_KOD_SON_REF, kodSuffixRefKey); }, [kodSuffixRefKey]);
+  const kodSuffixN = DEFAULT_KOD_ROW_SUFFIX_N;
+  const kodSuffixRefKey = DEFAULT_KOD_ROW_SUFFIX_REF;
 
   function commitColFilters(next: Record<string,string>) {
     setColFiltersCommitted(next);
@@ -984,6 +1064,18 @@ export default function MatchTable() {
   const [digitPosMode, setDigitPosMode] = useState<DigitPosMode>(
     () => lsGet<DigitPosMode>(LS_DIGIT_POS_MODE, "contains")
   );
+  /**
+   * Sütun başına H/A override. Boş ise global `digitPosMode` kullanılır.
+   * Adam: "tek toggle yerine istediğimde yerinde istediğimde karışık seçebilirsem".
+   */
+  const [colDigitMode, setColDigitMode] = useState<Record<string, DigitPosMode>>(
+    () => lsGet<Record<string, DigitPosMode>>(LS_COL_DIGIT_MODE, {})
+  );
+  /** Verilen sütun için efektif hane modu (override varsa o, yoksa global). */
+  const effectiveDigitMode = useCallback(
+    (colId: string): DigitPosMode => colDigitMode[colId] ?? digitPosMode,
+    [colDigitMode, digitPosMode],
+  );
 
   // ⚽ Skor Kutusu
   const [showScoreBox, setShowScoreBox] = useState(false);
@@ -998,6 +1090,12 @@ export default function MatchTable() {
   const [showEslestirme, setShowEslestirme] = useState(false);
   /** Eşleştirme panelinden uygulanan aktif etiket (örn. "Tekrar 48") — temizle butonunda görünür */
   const [eslestirmeLabel, setEslestirmeLabel] = useState<string | null>(null);
+
+  // 💾 Filtrelerim (server-side, user-specific)
+  const [showSavedFilters, setShowSavedFilters] = useState(false);
+
+  // 🔍 Tarama Modu — sıra sıra maç inceleme
+  const [showTarama, setShowTarama] = useState(false);
 
   // çift yönlü arama
   const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(readBidirFiltersFromStorage);
@@ -1038,6 +1136,7 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_COL_CLICK_POS, colClickPos); }, [colClickPos]);
   useEffect(() => { lsSet(LS_SHOW_DIGIT_ROW, showDigitRow); }, [showDigitRow]);
   useEffect(() => { lsSet(LS_DIGIT_POS_MODE, digitPosMode); }, [digitPosMode]);
+  useEffect(() => { lsSet(LS_COL_DIGIT_MODE, colDigitMode); }, [colDigitMode]);
   useEffect(() => { lsSet(LS_BIDIR, bidirFilters); }, [bidirFilters]);
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
 
@@ -1273,28 +1372,33 @@ export default function MatchTable() {
     }
   };
 
-  // dbCol filtreleri değişince server fetch
+  // dbCol filtreleri değişince server fetch.
+  // NOT: *_obktb_* sütunları da sunucuya iletilir — sunucu basit sayısal
+  // ifadeleri RPC ile ID'ye indirger (pagination tutarsızlığını önler).
+  // mbs/suffix3/suffix4 istemcide kalır (ayrı suffix3/suffix4 üst paramı üzerinden
+  // server-side ayrıca filtrelenir).
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
-      Object.entries(colFiltersCommitted).filter(
-        ([id, v]) => v.trim() && !CF_CLIENT_ONLY_COL_IDS.has(id) && !isCellValClientCol(id)
-      )
+      Object.entries(colFiltersCommitted).filter(([id, v]) => {
+        if (!v.trim()) return false;
+        if (CF_CLIENT_ONLY_COL_IDS.has(id)) return false;
+        if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // mbs/suffix3/suffix4
+        return true; // *_obktb_* dahil — server push dener
+      })
     );
     setDbColFiltersApplied(dbPart);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colFiltersCommitted]);
 
-  /** Üst / sütun filtresi veya bu kutudan: tüm satırlarda aynı sonek. Boşsa satıra göre seçilen kodun son N hanesi. */
+  /** Üst / sütun MBS (suffix4) filtresi: tüm satırlarda aynı sonek. Boşsa satıra göre maç kodu son N hane. */
   const globalKodSuffix = useMemo(() => {
     return (
       normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN) ??
       normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN) ??
-      normalizeKodSuffixDigits(kodSon4Highlight.trim(), kodSuffixN)
+      null
     );
-  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSon4Highlight, kodSuffixN]);
-
-  const kodSuffixRefLabel = KOD_SUFFIX_REF_OPTIONS.find((o) => o.key === kodSuffixRefKey)?.label ?? kodSuffixRefKey;
+  }, [applied.suffix4, dbColFiltersApplied.suffix4, kodSuffixN]);
 
   /** Üst / cf MBS filtresi aktifse satır alanı mac_suffix4; yoksa Kod açılır listesindeki alan. */
   const kodSuffixFilterRowKey = useMemo(() => {
@@ -1331,12 +1435,12 @@ export default function MatchTable() {
     });
   }, [kodSuffixFilteredRows, sortCol, sortDir, mergedCols]);
 
-  // veri çek
-  const fetchMatches = useCallback(async () => {
-    const myGen = ++matchesFetchGenRef.current;
-    setLoading(true);
-    setFetchError(null);
-    const p = new URLSearchParams({ page: String(page), limit: "100" });
+  /**
+   * `/api/matches` için page/limit hariç tüm sorgu parametreleri.
+   * Tarama modu “tüm veride ara” bu parametrelere `tarama_q` + sayfa ekleyerek çağırır.
+   */
+  const buildMatchesApiParams = useCallback((): URLSearchParams => {
+    const p = new URLSearchParams();
     // bidir_* önce: çok cf_ ile uzun URL’de proxy kesintisi riskini azaltır
     const te = bidirFilters.takim.ev.committed.trim();
     const td = bidirFilters.takim.dep.committed.trim();
@@ -1354,24 +1458,38 @@ export default function MatchTable() {
     if (pEv) p.set("bidir_ant_ev", pEv);
     if (pDep) p.set("bidir_ant_dep", pDep);
     if (pHer) p.set("bidir_ant", pHer);
-    Object.entries(applied).forEach(([k,v]) => { if (v.trim()) p.set(k, v.trim()); });
+    Object.entries(applied).forEach(([k, v]) => { if (v.trim()) p.set(k, v.trim()); });
     Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
       if (v.trim()) p.set(`cf_${id}`, v.trim());
     });
-    // Üst kod kutusu: MBS üst/sütun filtresi yoksa tüm DB’de son N hane (API + görünüm)
-    const fromAppliedS4 = normalizeKodSuffixDigits(String(applied.suffix4 ?? ""), kodSuffixN);
-    const fromCfS4 = normalizeKodSuffixDigits(String(dbColFiltersApplied.suffix4 ?? ""), kodSuffixN);
-    const gHighlight = normalizeKodSuffixDigits(kodSon4Highlight.trim(), kodSuffixN);
-    if (fromAppliedS4 == null && fromCfS4 == null && gHighlight != null) {
-      p.set("ks_ref", kodSuffixRefKey);
-      p.set("ks_n", String(kodSuffixN));
-      p.set("ks_suffix", gHighlight);
-    }
     // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
     if (anyKodSuffix) {
       p.set("ks_any_suffix", anyKodSuffix.digits);
       p.set("ks_any_n", String(anyKodSuffix.n));
     }
+    return p;
+  }, [
+    applied,
+    dbColFiltersApplied,
+    bidirFilters.takim.ev.committed,
+    bidirFilters.takim.dep.committed,
+    bidirFilters.takimid.ev.committed,
+    bidirFilters.takimid.dep.committed,
+    bidirFilters.personel.hakem.committed,
+    bidirFilters.personel.antEv.committed,
+    bidirFilters.personel.antDep.committed,
+    bidirFilters.personel.antHer.committed,
+    anyKodSuffix,
+  ]);
+
+  // veri çek
+  const fetchMatches = useCallback(async () => {
+    const myGen = ++matchesFetchGenRef.current;
+    setLoading(true);
+    setFetchError(null);
+    const p = buildMatchesApiParams();
+    p.set("page", String(page));
+    p.set("limit", "100");
     try {
       const [res, syncRes] = await Promise.all([
         fetch(`/api/matches?${p}`),
@@ -1414,24 +1532,44 @@ export default function MatchTable() {
     } finally {
       if (matchesFetchGenRef.current === myGen) setLoading(false);
     }
-  }, [
-    page,
-    applied,
-    dbColFiltersApplied,
-    bidirFilters.takim.ev.committed,
-    bidirFilters.takim.dep.committed,
-    bidirFilters.takimid.ev.committed,
-    bidirFilters.takimid.dep.committed,
-    bidirFilters.personel.hakem.committed,
-    bidirFilters.personel.antEv.committed,
-    bidirFilters.personel.antDep.committed,
-    bidirFilters.personel.antHer.committed,
-    kodSuffixN,
-    kodSuffixRefKey,
-    kodSon4Highlight,
-    anyKodSuffix,
-  ]);
+  }, [page, buildMatchesApiParams]);
   useEffect(() => { fetchMatches(); }, [fetchMatches]);
+
+  const recalcTableLoadGuard = useCallback(() => {
+    const el = tableScrollAreaRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setTableLoadGuardRect({
+      top: r.top,
+      left: r.left,
+      width: r.width,
+      height: r.height,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!loading) {
+      setTableLoadGuardRect(null);
+      return;
+    }
+    recalcTableLoadGuard();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        recalcTableLoadGuard();
+      });
+    });
+    const el = tableScrollAreaRef.current;
+    const ro = el ? new ResizeObserver(() => { recalcTableLoadGuard(); }) : null;
+    if (el && ro) ro.observe(el);
+    const onViewport = () => { recalcTableLoadGuard(); };
+    window.addEventListener("resize", onViewport);
+    window.addEventListener("scroll", onViewport, true);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", onViewport);
+      window.removeEventListener("scroll", onViewport, true);
+    };
+  }, [loading, recalcTableLoadGuard]);
 
   // panel dışı tıkla kapat
   useEffect(() => {
@@ -1517,6 +1655,83 @@ export default function MatchTable() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colFilters]);
 
+  /**
+   * 💾 Filtrelerim — güncel filtre durumunun serialize edilmiş özeti.
+   * Sunucuya kaydedilecek payload budur. `v` şema versiyonudur; ileride
+   * alan eklendiğinde eski kayıtları tolere edebilmek için.
+   */
+  const captureFilterSnapshot = useCallback((): Record<string, unknown> => ({
+    v: 1,
+    colFilters: colFiltersCommitted,
+    colClickPos,
+    colDigitMode,
+    digitPosMode,
+    anyKodSuffix,
+    bidirFilters,
+    tarihPick,
+    topFilters: filters,
+  }), [colFiltersCommitted, colClickPos, colDigitMode, digitPosMode, anyKodSuffix, bidirFilters, tarihPick, filters]);
+
+  /**
+   * 💾 Kayıtlı bir snapshot'ı state'lere uygular. Eksik alanlar tolere edilir;
+   * şema versiyonu ileride değişirse burada fallback/migrate yapılır.
+   */
+  const applyFilterSnapshot = useCallback((payload: Record<string, unknown>, _name: string) => {
+    const p = payload ?? {};
+    // Sütun filtreleri
+    if (p.colFilters && typeof p.colFilters === "object") {
+      const cf = p.colFilters as Record<string, string>;
+      setColFilters(cf);
+      setColFiltersCommitted(cf);
+      lsSet(LS_COL_FILT, cf);
+    } else {
+      setColFilters({});
+      setColFiltersCommitted({});
+      lsSet(LS_COL_FILT, {});
+    }
+    // Hane kutu seçimleri
+    setColClickPos((p.colClickPos && typeof p.colClickPos === "object")
+      ? (p.colClickPos as Record<string, number[]>)
+      : {});
+    // Per-col H/A override
+    setColDigitMode((p.colDigitMode && typeof p.colDigitMode === "object")
+      ? (p.colDigitMode as Record<string, DigitPosMode>)
+      : {});
+    // Global H/A modu
+    if (p.digitPosMode === "contains" || p.digitPosMode === "positional") {
+      setDigitPosMode(p.digitPosMode);
+    }
+    // ◉ panel Kod son hane
+    setAnyKodSuffix(
+      p.anyKodSuffix && typeof p.anyKodSuffix === "object"
+        ? (p.anyKodSuffix as { digits: string; n: number })
+        : null,
+    );
+    // ⇄ çift yönlü satır
+    if (p.bidirFilters && typeof p.bidirFilters === "object") {
+      setBidirFilters(p.bidirFilters as BidirFiltersState);
+    } else {
+      setBidirFilters(BIDIR_INIT);
+    }
+    // Tarih pick widget
+    if (p.tarihPick && typeof p.tarihPick === "object") {
+      setTarihPick(p.tarihPick as { d: string; m: string });
+    } else {
+      setTarihPick({ d: "", m: "" });
+    }
+    // Üst tarih filtreleri
+    if (p.topFilters && typeof p.topFilters === "object") {
+      const tf = p.topFilters as typeof EMPTY_TOP;
+      setFilters(tf);
+      setApplied(tf);
+    } else {
+      setFilters(EMPTY_TOP);
+      setApplied(EMPTY_TOP);
+    }
+    setPage(1);
+    setEslestirmeLabel(null);
+  }, []);
+
   // sütun işlemleri
   function toggleCol(id: string) { setVisibleIds((p) => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
   function toggleGroup(grp: string) {
@@ -1551,6 +1766,8 @@ export default function MatchTable() {
     setColFilters({});
     setColFiltersCommitted({});
     lsSet(LS_COL_FILT, {});
+    // Hane kutu seçimleri sıfırlansın; H/A mod override'ları ayrı bir tercih olduğundan KALSIN.
+    setColClickPos({});
     takimSuggestEvGenRef.current += 1;
     takimSuggestDepGenRef.current += 1;
     personelHakemGenRef.current += 1;
@@ -1582,6 +1799,24 @@ export default function MatchTable() {
     setAnyKodSuffix(null);
     setCodePick(null);
     setEslestirmeLabel(null);
+    // Tarih sütunu altındaki Gün / Ay seçicileri (⊞ Hane) — üst filtrelerle aynı kaynak
+    setTarihPick({ d: "", m: "" });
+    setFilters((f) => ({
+      ...f,
+      tarih_from: "",
+      tarih_to: "",
+      tarih_gun: "",
+      tarih_ay: "",
+      tarih_yil: "",
+    }));
+    setApplied((a) => ({
+      ...a,
+      tarih_from: "",
+      tarih_to: "",
+      tarih_gun: "",
+      tarih_ay: "",
+      tarih_yil: "",
+    }));
     setPage(1);
   }
 
@@ -1629,79 +1864,8 @@ export default function MatchTable() {
             </span>
           )}
         </div>
-        {/* Masaüstü: eski tek satır (kod + Bakiye/düğmeler). Mobil: alt alta; Sütunlar paneli overflow dışında */}
+        {/* Üst araçlar: Bakiye / giriş / Tarama / Sütunlar paneli */}
         <div className="flex min-w-0 flex-col gap-2 px-4 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-2 sm:gap-y-2">
-          <div
-            className="min-w-0 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x sm:overflow-visible sm:pb-0"
-            title="Mobilde kod satırını yatay kaydırabilirsiniz.">
-            <div className="flex w-max flex-nowrap items-center gap-2 sm:w-auto sm:flex-wrap sm:gap-x-2 sm:gap-y-1">
-              <div
-                className="flex shrink-0 items-center gap-1 text-[11px] text-gray-800 whitespace-nowrap"
-                title="Kutuya N rakam yazınca tablo yalnızca seçili kod alanında bu son N haneye sahip satırları gösterir ve oyun kodu hücrelerinde sarı vurgu yapar. Kutu boşken satır bazlı vurgu (filtre yok). Üst MBS (suffix4) filtresi varsa sonek mac_suffix4 üzerinden süzülür.">
-                <label className="flex items-center gap-0.5">
-                  <span className="hidden sm:inline text-gray-700">Kod</span>
-                  <select
-                    value={kodSuffixRefKey}
-                    onChange={(e) => {
-                      setKodSuffixRefKey(e.target.value as KodSuffixRefKey);
-                      setPage(1);
-                    }}
-                    className="max-w-[9rem] bg-white border border-gray-400 rounded px-0.5 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 sm:max-w-none">
-                    {KOD_SUFFIX_REF_OPTIONS.map((o) => (
-                      <option key={o.key} value={o.key}>{o.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-0.5">
-                  <span className="text-gray-700">son</span>
-                  <select
-                    value={kodSuffixN}
-                    onChange={(e) => {
-                      setKodSuffixN(Number(e.target.value) as KodSuffixN);
-                      setPage(1);
-                    }}
-                    className="bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] text-gray-900 focus:outline-none focus:border-blue-500">
-                    {KOD_SUFFIX_LENS.map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
-                </label>
-                <input
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={kodSon4Highlight}
-                  onChange={(e) => {
-                    const d = e.target.value.replace(/\D/g, "").slice(0, kodSuffixN);
-                    setKodSon4Highlight(d);
-                    setPage(1);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setKodSon4Highlight("");
-                      setPage(1);
-                    }
-                  }}
-                  placeholder={kodSuffixN === 3 ? "575" : kodSuffixN === 5 ? "15754" : "5754"}
-                  maxLength={kodSuffixN}
-                  title={`En fazla ${kodSuffixN} rakam. Boş bırakırsanız her satırda «${kodSuffixRefLabel}» son ${kodSuffixN} hane kullanılır.`}
-                  className="w-[5.25rem] bg-white border border-gray-400 rounded px-1 py-0.5 text-[11px] font-mono text-gray-900 focus:outline-none focus:border-blue-500"
-                />
-                {kodSon4Highlight.trim() ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setKodSon4Highlight("");
-                      setPage(1);
-                    }}
-                    className="text-gray-600 hover:text-gray-900 px-0.5"
-                    title="Kutuyu temizle (satıra göre vurgu)">
-                    {"\u2715"}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </div>
-
           <div
             className="relative flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2 sm:ml-auto sm:shrink-0"
             ref={panelRef}>
@@ -1711,10 +1875,25 @@ export default function MatchTable() {
                 <span className="font-semibold text-gray-900">{balance}</span>
               </span>
             )}
+            <AuthBar />
+            <button
+              type="button"
+              onClick={() => setShowSavedFilters(true)}
+              title="Filtrelerim: kaydet / yükle (kullanıcıya özel, sunucuda)"
+              className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
+              💾 Filtrelerim
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTarama(true)}
+              title="Tarama modu: eşleşen maçları sıra sıra büyük kart olarak incele (↑/↓ ile geç)"
+              className="bg-slate-800 hover:bg-slate-700 border border-slate-900 text-white text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
+              🔍 Tarama
+            </button>
             <button
               type="button"
               onClick={clearColumnFiltersOnly}
-              title="Sütun ara kutuları, ⇄ satırı (Ref, Takım, T-ID, Personel), öneri listeleri ve ◉ panel KOD son hane filtresini sıfırlar"
+              title="Sütun ara kutuları, Tarih altı Gün/Ay seçicileri, ⇄ satırı (Ref, Takım, T-ID, Personel), öneri listeleri ve ◉ panel KOD son hane filtresini sıfırlar"
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               Sütunları temizle
             </button>
@@ -1890,9 +2069,9 @@ export default function MatchTable() {
                             bidirFilters: { ...bidirFilters },
                             sortCol,
                             sortDir,
-                            kodSon4: kodSon4Highlight,
-                            kodSuffixN,
-                            kodSuffixRefKey,
+                            kodSon4: "",
+                            kodSuffixN: DEFAULT_KOD_ROW_SUFFIX_N,
+                            kodSuffixRefKey: DEFAULT_KOD_ROW_SUFFIX_REF,
                           };
                           const updated = [preset, ...viewPresets.filter((v) => v.name !== name)];
                           setViewPresets(updated);
@@ -1922,9 +2101,9 @@ export default function MatchTable() {
                           bidirFilters: { ...bidirFilters },
                           sortCol,
                           sortDir,
-                          kodSon4: kodSon4Highlight,
-                          kodSuffixN,
-                          kodSuffixRefKey,
+                          kodSon4: "",
+                          kodSuffixN: DEFAULT_KOD_ROW_SUFFIX_N,
+                          kodSuffixRefKey: DEFAULT_KOD_ROW_SUFFIX_REF,
                         };
                         const updated = [preset, ...viewPresets.filter((v) => v.name !== name)];
                         setViewPresets(updated);
@@ -1964,9 +2143,6 @@ export default function MatchTable() {
                               if (vp.bidirFilters) setBidirFilters(normalizeBidirFromUnknown(vp.bidirFilters));
                               setSortCol(vp.sortCol);
                               setSortDir(vp.sortDir);
-                              setKodSon4Highlight(vp.kodSon4);
-                              setKodSuffixN(vp.kodSuffixN as KodSuffixN);
-                              setKodSuffixRefKey(vp.kodSuffixRefKey as KodSuffixRefKey);
                               setPage(1);
                               setShowColPanel(false);
                             }}
@@ -2054,8 +2230,11 @@ export default function MatchTable() {
 
         {/* ── Çift Yönlü (⇄) Arama Satırı ── */}
         {showBidirRow && (
-          <div className="overflow-x-auto overflow-y-visible overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x min-w-0 border-t border-blue-200 bg-blue-50">
-          <div className="flex flex-nowrap sm:flex-wrap items-center gap-2 px-3 py-1.5 text-xs w-max sm:w-auto min-w-0">
+          <div
+            className="min-w-0 overflow-visible border-t border-blue-200 bg-blue-50"
+            title="Öneri listeleri taşmasın: bu şerit overflow ile kırpılmaz; dar ekranda satırlar alta kayar (flex-wrap).">
+            {/* overflow-x-auto burada öneri dropdown’larını kırpar; kaldırıldı. */}
+          <div className="flex flex-wrap items-center gap-2 px-3 py-1.5 text-xs min-w-0">
             <span className="font-semibold text-blue-700 shrink-0">⇄</span>
 
             {/* ── Referans Maç ── */}
@@ -2102,7 +2281,7 @@ export default function MatchTable() {
                 )}
                 {/* Dropdown */}
                 {refMatch.isOpen && (
-                  <div className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg">
+                  <div className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg">
                     {refMatch.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
                     )}
@@ -2235,7 +2414,7 @@ export default function MatchTable() {
                 )}
                 {takimSuggestEv.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {takimSuggestEv.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2324,7 +2503,7 @@ export default function MatchTable() {
                 )}
                 {takimSuggestDep.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {takimSuggestDep.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2526,7 +2705,7 @@ export default function MatchTable() {
                 )}
                 {personelSuggestHakem.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {personelSuggestHakem.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2622,7 +2801,7 @@ export default function MatchTable() {
                 )}
                 {personelSuggestAntEv.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {personelSuggestAntEv.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2718,7 +2897,7 @@ export default function MatchTable() {
                 )}
                 {personelSuggestAntDep.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {personelSuggestAntDep.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2816,7 +2995,7 @@ export default function MatchTable() {
                 )}
                 {personelSuggestAntHer.open && (
                   <div
-                    className="absolute left-0 top-full mt-0.5 z-50 w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                    className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
                     onMouseDown={(e) => e.preventDefault()}>
                     {personelSuggestAntHer.loading && (
                       <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
@@ -2862,17 +3041,26 @@ export default function MatchTable() {
         onApplyIdList={applyEslestirmeIdList}
       />
 
-      {/* ── TABLO ── (z-0: üstteki header + Sütunlar paneli her zaman üstte) */}
-      <div className="relative z-0 flex-1 min-h-0 overflow-auto">
-        {/* Loading overlay */}
-        {loading && (
-          <div className="absolute inset-0 z-30 flex items-center justify-center bg-gray-200/70 backdrop-blur-[1px]">
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-10 h-10 border-4 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
-              <span className="text-xs text-gray-800">Yükleniyor…</span>
-            </div>
-          </div>
-        )}
+      <SavedFiltersPanel
+        open={showSavedFilters}
+        onClose={() => setShowSavedFilters(false)}
+        captureSnapshot={captureFilterSnapshot}
+        onApplySnapshot={applyFilterSnapshot}
+      />
+
+      <TaramaModu
+        open={showTarama}
+        onClose={() => setShowTarama(false)}
+        matches={matches}
+        total={total}
+        canLoadMore={page < totalPages}
+        loadingMore={loading}
+        onLoadMore={() => setPage((p) => Math.min(p + 1, totalPages))}
+        buildApiParams={buildMatchesApiParams}
+      />
+
+      {/* ── TABLO ── (z-0: üstteki header + Sütunlar paneli her zaman üstte; isolate: yükleme örtüsü thead üstünde) */}
+      <div ref={tableScrollAreaRef} className="relative z-0 isolate flex-1 min-h-0 min-w-0 overflow-auto">
         <table
           className="text-sm border-collapse table-fixed max-w-none"
           style={{ width: tableScrollWidth, minWidth: tableScrollWidth }}
@@ -2885,7 +3073,8 @@ export default function MatchTable() {
               <col key={c.id} style={{ width: colW(c), minWidth: colW(c) }} />
             ))}
           </colgroup>
-          <thead className="sticky top-0 z-10">
+          {/* z-[1]: yalnızca tablo gövdesinin üstünde kalsın; üstteki ⇄ öneri listeleri (z-[200]) ile yarışmasın */}
+          <thead className="sticky top-0 z-[1]">
             <tr>
               <th className="w-4 min-w-4 max-w-4 border-r border-gray-400 bg-gray-200 align-middle py-1" />
               {groupSpans.map((gs, i) => (
@@ -2979,30 +3168,62 @@ export default function MatchTable() {
                   </span>
                 </th>
                 {visibleCols.map((c) => {
-                  const isDigitCol = isDigitClickCol(c);
+                  const isDigitCol = isHaneClickCol(c);
                   const tmpl = digitClickTemplate(c);
                   const selPos: number[] = colClickPos[c.id] ?? [];
                   const isHMode = selPos.length === 0;
+                  /**
+                   * Şablondaki her karakteri incele:
+                   *   ayraç değilse → tıklanabilir hane kutusu
+                   *   ayraçsa      → pasif etiket
+                   */
                   const tmplItems: { ch: string; digitPos: number | null }[] = [];
                   let dIdx = 0;
                   for (const ch of tmpl) {
-                    if (/\d/.test(ch)) { dIdx++; tmplItems.push({ ch, digitPos: dIdx }); }
+                    if (!isHaneSeparator(ch)) { dIdx++; tmplItems.push({ ch, digitPos: dIdx }); }
                     else { tmplItems.push({ ch, digitPos: null }); }
                   }
+                  const colMode = effectiveDigitMode(c.id);
+                  const hasOverride = colDigitMode[c.id] !== undefined;
                   return (
                     <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
                       className="px-0.5 py-0.5 border-r border-gray-300"
                       title={
                         c.id === "tarih"
-                          ? "Tarih: gün/ay süzümü (tarih_arama). Diğer sütunlar: H = tam kod; rakam kutuları = hane jokeri."
-                          : digitPosMode === "contains"
-                            ? "≈ Herhangi yerde: hücreye tıklayınca seçili hane rakamları kodun herhangi bir yerinde aranır (*09*)"
-                            : "= Tam pozisyon: hücreye tıklayınca seçili hane rakamları tam o konumda aranır (?09????)"
+                          ? "Tarih: gün/ay süzümü (tarih_arama). Diğer sütunlar: H = tam değer; hane kutuları = joker."
+                          : `${colMode === "contains" ? "≈ İçerir" : "= Yerinde"} modu${hasOverride ? " (bu sütuna özel)" : ""} — kutudaki ≈/= ile değiştir`
                       }>
                       {c.id === "tarih" ? (
                         renderTarihGunAyPick()
                       ) : isDigitCol ? (
                         <div className="flex items-center gap-px overflow-x-hidden">
+                          {/* Sütun başına H↔A mini override butonu */}
+                          <button type="button"
+                            className={`text-[8px] leading-none px-0.5 py-px rounded border font-bold shrink-0 transition-colors ${
+                              hasOverride
+                                ? (colMode === "contains" ? "bg-amber-500 border-amber-600 text-white" : "bg-purple-600 border-purple-700 text-white")
+                                : "bg-white border-gray-300 text-gray-400 hover:bg-gray-100"
+                            }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 3 durumlu: override-yok → contains → positional → override-yok
+                              setColDigitMode((prev) => {
+                                const cur = prev[c.id];
+                                const next: Record<string, DigitPosMode> = { ...prev };
+                                if (cur === undefined) next[c.id] = "contains";
+                                else if (cur === "contains") next[c.id] = "positional";
+                                else delete next[c.id];
+                                return next;
+                              });
+                            }}
+                            title={
+                              hasOverride
+                                ? `${colMode === "contains" ? "≈ İçerir (bu sütuna özel)" : "= Yerinde (bu sütuna özel)"}. Tıkla: ${colMode === "contains" ? "Yerinde'ye geç" : "Global'e dön"}`
+                                : `Global mod (${digitPosMode === "contains" ? "≈ İçerir" : "= Yerinde"}). Tıkla: bu sütuna özel ≈ İçerir'e geç`
+                            }
+                          >
+                            {colMode === "contains" ? "≈" : "="}
+                          </button>
                           <button type="button"
                             className={`text-[8px] leading-none px-0.5 py-px rounded border font-bold shrink-0 transition-colors ${isHMode ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}
                             onClick={() => setColClickPos((prev) => ({ ...prev, [c.id]: [] }))}
@@ -3115,12 +3336,11 @@ export default function MatchTable() {
                           if (!isDigitCol || isHMode || !showDigitRow) return "ara…";
                           let dI = 0; let ph = "";
                           for (const ch of tmpl) {
-                            if (/\d/.test(ch)) {
+                            if (!isHaneSeparator(ch)) {
                               dI++;
                               ph += selPos.includes(dI) ? (DIGIT_POS_LABEL[dI] ?? "#") : "?";
                             } else { ph += ch; }
                           }
-                          // Baştaki ? dizisini * ile kısalt (ör. "????E" → "*E")
                           ph = ph.replace(/^\?+/, "*");
                           return ph + "…";
                         })()}
@@ -3185,7 +3405,13 @@ export default function MatchTable() {
               sortedRows.map((m, ri) => {
                 let hitIdx = 0;
                 return (
-                  <tr key={String(m.id??ri)} className="border-b border-gray-400 hover:bg-white/40 transition-colors group">
+                  <tr
+                    key={String(m.id ?? ri)}
+                    className={`border-b border-gray-400 transition-colors group ${
+                      rowHasPlayedMs(m)
+                        ? "hover:bg-white/40"
+                        : "bg-gray-400/35 hover:bg-gray-400/50"
+                    }`}>
                     {/* Son hane paneli açıcı — her satırın sol başında */}
                     <td className="w-4 min-w-4 max-w-4 px-0 border-r border-gray-400 text-center align-middle">
                       <button
@@ -3223,7 +3449,7 @@ export default function MatchTable() {
                         cellDigitsEndWith(val, suffixForRow);
                       // ◉ panel KOD son hane: sadece KOD/oyun kodu sütunlarını vurgula (oran sütunları hariç)
                       const isKodCol =
-                        DIGIT_CLICK_COL_IDS.has(c.id) ||
+                        KOD_ID_COL_IDS.has(c.id) ||
                         (c.group === RAW_API_GROUP && (c.key as string).startsWith("KOD"));
                       const rowClickHit =
                         !!anyKodSuffix &&
@@ -3253,8 +3479,8 @@ export default function MatchTable() {
                             // Hane seçici aktifse seçili pozisyonlara göre wildcard pattern üret
                             const positions = colClickPos[c.id] ?? [];
                             const filterVal =
-                              positions.length > 0 && isDigitClickCol(c)
-                                ? buildDigitPosPattern(val, positions, digitPosMode)
+                              positions.length > 0 && isHaneClickCol(c)
+                                ? buildDigitPosPattern(val, positions, effectiveDigitMode(c.id))
                                 : val;
                             const next = { ...colFilters, [c.id]: filterVal };
                             setColFilters(next);
@@ -3363,8 +3589,11 @@ export default function MatchTable() {
         </>
       )}
 
-      {/* ── SAYFALAMA ── */}
-      <div className="relative z-0 flex-none min-w-0 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x border-t border-gray-300 bg-gray-300/60">
+      {/* ── SAYFALAMA ── (veri yüklenirken tıklanmasın — tablo ile tutarlı) */}
+      <div
+        className={`relative z-0 flex-none min-w-0 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch] touch-pan-x border-t border-gray-300 bg-gray-300/60 ${
+          loading ? "pointer-events-none opacity-60" : ""
+        }`}>
       <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
         <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none">
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
@@ -3397,6 +3626,30 @@ export default function MatchTable() {
         </div>
       </div>
       </div>
+
+      {loading &&
+        tableLoadGuardRect &&
+        createPortal(
+          <div
+            className="pointer-events-auto flex items-center justify-center bg-gray-200/90 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.06)] backdrop-blur-[1px]"
+            style={{
+              position: "fixed",
+              top: tableLoadGuardRect.top,
+              left: tableLoadGuardRect.left,
+              width: Math.max(1, tableLoadGuardRect.width),
+              height: Math.max(1, tableLoadGuardRect.height),
+              zIndex: 75,
+            }}
+            aria-busy="true"
+            aria-live="polite"
+            role="status">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-10 h-10 border-4 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+              <span className="text-xs text-gray-800">Yükleniyor…</span>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

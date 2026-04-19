@@ -22,7 +22,7 @@ function flattenRawValue(v: unknown): unknown {
 }
 
 const DB_COLS = [
-  "id","tarih","saat","tarih_tr_gunlu",
+  "id","tarih","saat","saat_arama","tarih_tr_gunlu",
   "lig_kodu","lig_adi","lig_id",
   "alt_lig_adi","alt_lig_id",
   "sezon_adi","sezon_id",
@@ -68,7 +68,8 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   suffix3:  { col: "mac_suffix3",   mode: "ilike" },
   mbs:      { col: "mac_suffix4",   mode: "ilike" },
   // tarih: cf_tarih ayrı işlenir (tarih_arama + * ? joker / virgül-VEYA)
-  saat:     { col: "saat",          mode: "ilike" },
+  // saat: time tipi — ILIKE için sql/add-matches-saat-arama-column.sql (saat_arama)
+  saat:     { col: "saat_arama",    mode: "ilike" },
   kod_ms:   { col: "kod_ms",        mode: "eq" },
   kod_cs:   { col: "kod_cs",        mode: "eq" },
   kod_iy:   { col: "kod_iy",        mode: "eq" },
@@ -111,6 +112,18 @@ function cfPatternToIlikePattern(pattern: string): string {
   return out;
 }
 
+/** ILIKE içinde % ve _ sabit karakter olarak eşleşsin (düz girdi = tam metin). */
+function escapeIlikeExactLiteral(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+/** Üst çubuk / çift yönlü: düz metin tam eşleşme; * ? → ILIKE deseni. */
+function plainOrWildcardIlikePattern(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "";
+  return t.includes("*") || t.includes("?") ? cfPatternToIlikePattern(t) : escapeIlikeExactLiteral(t);
+}
+
 // ─── Genel filtre parser ───────────────────────────────────────────────────
 
 type FilterBranch =
@@ -126,7 +139,8 @@ type FilterBranch =
 
 /**
  * Tek bir parçayı (joker / karşılaştırma / aralık / sade değer) parse eder.
- * defaultWrap: sade değer için "prefix" → val% (kodlar), "contains" → %val% (metin).
+ * Joker yoksa sade değer → tam eşleşme (eq); metin sütunlarında üst katman ilike ile CI tam metin uygular.
+ * defaultWrap: yalnızca * ? içeren desenlerde like vs ilike seçimi (prefix → like, contains → ilike).
  */
 function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "prefix"): FilterBranch {
   const t = p.trim();
@@ -146,14 +160,16 @@ function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "pref
     const pat = cfPatternToIlikePattern(t);
     return { kind: (pat.startsWith("%") || defaultWrap === "contains") ? "ilike" : "like", pat };
   }
-  // Sade değer
-  if (defaultWrap === "prefix")   return { kind: "like", pat: `${t}%` };
-  return { kind: "ilike", pat: `%${t}%` };
+  // Sade değer — tam eşleşme (metin kolonları applyGenericFilter ile ilike kaçışlı uygulanır)
+  return { kind: "eq", val: t };
 }
 
 /** PostgREST or() ifadesi için string. BETWEEN: and(gte,lte) iç grup kullanır. */
-function branchToOrStr(field: string, b: FilterBranch): string {
+function branchToOrStr(field: string, b: FilterBranch, plainEqAsIlike = true): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+  if (plainEqAsIlike && b.kind === "eq") {
+    return `${field}.ilike.${q(escapeIlikeExactLiteral(b.val))}`;
+  }
   switch (b.kind) {
     case "like":    return `${field}.like.${q(b.pat)}`;
     case "ilike":   return `${field}.ilike.${q(b.pat)}`;
@@ -182,17 +198,32 @@ function applyBranchDirect(q: any, field: string, b: FilterBranch): any {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyParsedFilterBranch(
+  query: any,
+  field: string,
+  b: FilterBranch,
+  plainEqAsIlike: boolean
+): any {
+  if (plainEqAsIlike && b.kind === "eq") {
+    return query.ilike(field, escapeIlikeExactLiteral(b.val));
+  }
+  return applyBranchDirect(query, field, b);
+}
+
 /**
  * Genel filtre uygulayıcı: "," → OR, "+" → AND.
  * field: PostgREST sütun ifadesi (ör: "lig_adi", "raw_data->>KODAU45")
- * defaultWrap: joker/op olmayan değer için sarma biçimi
+ * defaultWrap: * ? desenlerinde like / ilike seçimi
+ * plainEqAsIlike: düz eq → kaçışlı ilike (metin tam eşleşme, büyük/küçük harf duyarsız); bigint vb. için false
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyGenericFilter(
   query: any,
   field: string,
   v: string,
-  defaultWrap: "prefix" | "contains" = "prefix"
+  defaultWrap: "prefix" | "contains" = "prefix",
+  plainEqAsIlike = true
 ): any {
   const orParts = splitOrParts(v);
   if (!orParts.length) return query;
@@ -200,7 +231,7 @@ function applyGenericFilter(
   if (orParts.length === 1) {
     // Tek OR → AND zincirleri doğrudan uygula
     for (const ap of splitAndParts(orParts[0]!)) {
-      query = applyBranchDirect(query, field, parseFilterBranch(ap, defaultWrap));
+      query = applyParsedFilterBranch(query, field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
     }
     return query;
   }
@@ -210,10 +241,12 @@ function applyGenericFilter(
   for (const orPart of orParts) {
     const andParts = splitAndParts(orPart);
     if (andParts.length === 1) {
-      segments.push(branchToOrStr(field, parseFilterBranch(andParts[0]!, defaultWrap)));
+      segments.push(branchToOrStr(field, parseFilterBranch(andParts[0]!, defaultWrap), plainEqAsIlike));
     } else {
       // AND grubu or() içinde: and(cond1,cond2,...)
-      const andExprs = andParts.map((ap) => branchToOrStr(field, parseFilterBranch(ap, defaultWrap)));
+      const andExprs = andParts.map((ap) =>
+        branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike)
+      );
       segments.push(`and(${andExprs.join(",")})`);
     }
   }
@@ -264,8 +297,11 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
       return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(col, lo).lte(col, hi) : q;
     }
     if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
-      const n = Number(b.val);
-      return Number.isFinite(n) ? q[b.kind](col, n) : (arama ? q.ilike(arama, `%${b.val}%`) : q);
+      const val = (b as { val: string }).val;
+      const n = Number(val);
+      if (Number.isFinite(n)) return q[b.kind](col, n);
+      if (arama && b.kind === "eq") return q.ilike(arama, escapeIlikeExactLiteral(val));
+      return q;
     }
     return q;
   };
@@ -276,8 +312,17 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
       return arama ? `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"` : "";
     }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
-    const n = Number((b as { val: string }).val);
-    return Number.isFinite(n) ? `${col}.${b.kind}.${n}` : "";
+    if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
+      const val = (b as { val: string }).val;
+      const n = Number(val);
+      if (Number.isFinite(n)) return `${col}.${b.kind}.${n}`;
+      if (arama && b.kind === "eq") {
+        const esc = escapeIlikeExactLiteral(val).replace(/"/g, '""');
+        return `${arama}.ilike."${esc}"`;
+      }
+      return "";
+    }
+    return "";
   };
 
   if (orParts.length === 1) {
@@ -318,16 +363,31 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
       const lo = Number(b.lo), hi = Number(b.hi);
       return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(col, lo).lte(col, hi) : q;
     }
-    const n = Number((b as { val: string }).val);
-    return Number.isFinite(n) ? q[b.kind](col, n) : q.ilike(arama, `%${(b as { val: string }).val}%`);
+    if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
+      const val = (b as { val: string }).val;
+      const n = Number(val);
+      if (Number.isFinite(n)) return q[b.kind](col, n);
+      if (arama && b.kind === "eq") return q.ilike(arama, escapeIlikeExactLiteral(val));
+      return q;
+    }
+    return q;
   };
 
   const branchStr = (p: string): string => {
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") return `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
-    const n = Number((b as { val: string }).val);
-    return Number.isFinite(n) ? `${col}.${b.kind}.${n}` : "";
+    if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
+      const val = (b as { val: string }).val;
+      const n = Number(val);
+      if (Number.isFinite(n)) return `${col}.${b.kind}.${n}`;
+      if (arama && b.kind === "eq") {
+        const esc = escapeIlikeExactLiteral(val).replace(/"/g, '""');
+        return `${arama}.ilike."${esc}"`;
+      }
+      return "";
+    }
+    return "";
   };
 
   // Tüm parçalar saf tam sayı → .in()
@@ -403,7 +463,7 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
 
 /**
  * Ham veri (raw_data) alan filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
- * Sade değer → LIKE 'val%' (ile başlar) → btree text_pattern_ops index kullanır.
+ * Sade değer → tam eşleşme; * ? ile desen araması.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
@@ -413,7 +473,7 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
 
 /**
  * Metin sütun filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
- * Sade değer → ILIKE '%val%' (içerir) → kullanıcı dostu metin arama.
+ * Sade değer → tam eşleşme (büyük/küçük harf duyarsız); * ? ile desen.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
@@ -488,6 +548,193 @@ function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: 
 const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
 const KS_N_OK = new Set([3, 4, 5]);
 
+// ── OKBT sunucu-tarafı filtresi (basit sayısal ifadeler) ─────────────────────
+// Kaynak → max idx (5-haneli: 0..14, Maç ID 7-haneli: 0..19)
+const OKBT_SRC_MAX_IDX: Record<string, number> = {
+  macid: 19,
+  t1i: 14,
+  t2i: 14,
+  kodms: 14,
+  kodiy: 14,
+  kodcs: 14,
+  kodau: 14,
+};
+
+function parseObktbSrcIdx(colId: string): { src: string; idx: number } | null {
+  const m = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(colId);
+  if (!m) return null;
+  const src = m[1]!;
+  const idx = Number(m[2]);
+  const maxIdx = OKBT_SRC_MAX_IDX[src];
+  if (maxIdx === undefined) return null;
+  if (!Number.isInteger(idx) || idx < 0 || idx > maxIdx) return null;
+  return { src, idx };
+}
+
+/**
+ * Basit sayısal OKBT filtre ifadesini [min, max] aralıklarına çevirir.
+ * Desteklenen (OR ',' ile; AND '+', joker, != desteklenmez):
+ *   N, <N, <=N, >N, >=N, N..M, N<->M
+ * Karmaşık / joker ifadeler → null (istemci tarafında çalışır).
+ */
+function parseObktbNumericRanges(raw: string): Array<{ min: number | null; max: number | null }> | null {
+  const v = raw.trim();
+  if (!v) return null;
+  const orParts = splitOrParts(v);
+  if (!orParts.length) return null;
+  const ranges: Array<{ min: number | null; max: number | null }> = [];
+  for (const orPart of orParts) {
+    const t = orPart.trim();
+    if (!t) return null;
+    if (t.includes("+") || t.includes("*") || t.includes("?")) return null;
+    // Aralık: N..M veya N<->M
+    const rm = t.match(/^(-?\d+)\s*(?:\.\.|<->)\s*(-?\d+)$/);
+    if (rm) {
+      const lo = Number(rm[1]);
+      const hi = Number(rm[2]);
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+      ranges.push({ min: Math.min(lo, hi), max: Math.max(lo, hi) });
+      continue;
+    }
+    // Karşılaştırma operatörleri
+    if (t.startsWith(">=")) {
+      const n = Number(t.slice(2).trim());
+      if (!Number.isFinite(n)) return null;
+      ranges.push({ min: n, max: null });
+      continue;
+    }
+    if (t.startsWith("<=")) {
+      const n = Number(t.slice(2).trim());
+      if (!Number.isFinite(n)) return null;
+      ranges.push({ min: null, max: n });
+      continue;
+    }
+    if (t.startsWith("<>")) return null; // != → istemcide
+    if (t.startsWith(">")) {
+      const n = Number(t.slice(1).trim());
+      if (!Number.isFinite(n)) return null;
+      ranges.push({ min: n + 1, max: null });
+      continue;
+    }
+    if (t.startsWith("<")) {
+      const n = Number(t.slice(1).trim());
+      if (!Number.isFinite(n)) return null;
+      ranges.push({ min: null, max: n - 1 });
+      continue;
+    }
+    // Düz sayı → eq
+    if (/^-?\d+$/.test(t)) {
+      const n = Number(t);
+      if (!Number.isFinite(n)) return null;
+      ranges.push({ min: n, max: n });
+      continue;
+    }
+    return null; // parse edilemedi
+  }
+  return ranges.length ? ranges : null;
+}
+
+/**
+ * Tarama modu “maç ara” kutusu: mevcut tüm API filtreleri uygulandıktan sonra,
+ * **tüm eşleşen küme** içinde serbest metin arar (sayfalama öncesi WHERE’e eklenir).
+ *
+ * Her boşlukla ayrılmış kelime için: (birçok metin kolonundan herhangi biri ILIKE %kelime%)
+ * — kelimeler arası AND (hepsi bir yerde geçmeli).
+ *
+ * Kolonlar (kasıtlı dar küme — 17+ ILIKE OR her token’da tam tarama + timeout riski):
+ * takım/lig/personel/gün + kod/id/tarih arama kolonları. Skor ve saat metni çıkarıldı (takım adı araması için gereksiz).
+ * Hız için: sql/add-matches-tarama-trgm-indexes.sql + mümkünse üstte tarih/lig ile küme daraltın.
+ *
+ * Kelimeler: boşlukla AND. "Barcelona - Real Madrid" gibi girişlerde tire / vs ayırıcıları boşluğa çevrilir;
+ * tek başına "-" kelime olarak aranmaz (yoksa hiç sonuç çıkmazdı).
+ *
+ * Birden çok kelime: PostgREST’te her kelime için (tüm metin kolonlarında OR) şartları
+ * birbirine AND ile bağlamak gerekir. Ardışık `.or()` çağrıları yalnızca `or` parametresini
+ * art arda ekler; beklenen (kelime1 OR …) AND (kelime2 OR …) yerine yanlış/tek parça
+ * oluşabildiği için tek `and=(or(...),or(...))` kullanılır.
+ */
+function normalizeTaramaQTokens(raw: string): string[] {
+  const q = raw.trim().slice(0, 200);
+  if (!q) return [];
+  const spaced = q
+    .replace(/[–—]/g, "-")
+    .replace(/\s*-\s*/g, " ")
+    .replace(/\bvs\.?\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const parts = spaced.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    const t = p.replace(/"/g, "").replace(/%/g, "").trim();
+    if (t.length < 2) continue;
+    if (/^[-&:|/\\]+$/.test(t)) continue;
+    out.push(t.slice(0, 80));
+  }
+  return out.slice(0, 12);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyTaramaQuickSearchFilter(query: any, rawQ: string): any {
+  const tokens = normalizeTaramaQTokens(rawQ);
+  if (!tokens.length) return query;
+
+  const directTextCols = [
+    "t1",
+    "t2",
+    "lig_adi",
+    "lig_kodu",
+    "alt_lig_adi",
+    "hakem",
+    "tarih_tr_gunlu",
+    "sezon_adi",
+  ] as const;
+
+  const aramaCols = [
+    "id_arama",
+    "kod_ms_arama",
+    "kod_iy_arama",
+    "kod_cs_arama",
+    "kod_au_arama",
+    "t1i_arama",
+    "t2i_arama",
+    "tarih_arama",
+  ] as const;
+
+  /** Her kelime için: (t1|t2|lig|… ilike) parça listesi — PostgREST `or=(a,b,c)` biçimi. */
+  const partLists: string[][] = [];
+  for (const tok of tokens) {
+    const t = tok.replace(/"/g, "").replace(/%/g, "").slice(0, 80);
+    if (!t) continue;
+    // PostgREST: * = % (URL’de % kaçışı riskini azaltır)
+    const patStar = `*${t.replace(/\*/g, "")}*`;
+    const parts: string[] = [];
+    for (const c of directTextCols) {
+      parts.push(`${c}.ilike.${patStar}`);
+    }
+    for (const c of aramaCols) {
+      parts.push(`${c}.ilike.${patStar}`);
+    }
+    partLists.push(parts);
+  }
+  if (!partLists.length) return query;
+
+  const u = (query as { url?: URL }).url;
+  if (!u?.searchParams) return query;
+
+  if (partLists.length === 1) {
+    u.searchParams.append("or", `(${partLists[0]!.join(",")})`);
+    return query;
+  }
+
+  // and=("or(a,b,c)","or(d,e,f)") — dış and virgülü; iç or(...) virgülleri tırnak içinde kalır
+  const quotedOrGroups = partLists.map((parts) => {
+    const inner = `or(${parts.join(",")})`;
+    return `"${inner.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+  });
+  u.searchParams.append("and", `(${quotedOrGroups.join(",")})`);
+  return query;
+}
+
 export async function GET(req: NextRequest) {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
     return NextResponse.json(
@@ -542,10 +789,13 @@ export async function GET(req: NextRequest) {
    * Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım.
    * Düz İY/MS skoru (ör. 4-2) varken planned toplam SQL COUNT ile uyuşmayabiliyor → exact zorunlu.
    */
+  const taramaQRaw = sp.get("tarama_q")?.trim() ?? "";
+  const taramaQActive = taramaQRaw.length > 0;
+
   const forceExactCount = spRequestsPlainSkorExactCount(sp);
   const countMode = forceExactCount
     ? ("exact" as const)
-    : tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw
+    : tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
       ? ("planned" as const)
       : ("exact" as const);
 
@@ -659,12 +909,20 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  if (sp.get("lig"))        query = query.ilike("lig_adi", `%${sp.get("lig")}%`);
-  if (sp.get("alt_lig"))    query = query.ilike("alt_lig_adi", `%${sp.get("alt_lig")}%`);
+  if (sp.get("lig")) {
+    const pat = plainOrWildcardIlikePattern(sp.get("lig")!);
+    if (pat) query = query.ilike("lig_adi", pat);
+  }
+  if (sp.get("alt_lig")) {
+    const pat = plainOrWildcardIlikePattern(sp.get("alt_lig")!);
+    if (pat) query = query.ilike("alt_lig_adi", pat);
+  }
   if (sp.get("takim")) {
-    const raw = `%${sp.get("takim")}%`;
-    const esc = raw.replace(/"/g, '""');
-    query = query.or(`t1.ilike."${esc}",t2.ilike."${esc}"`);
+    const pat = plainOrWildcardIlikePattern(sp.get("takim")!);
+    if (pat) {
+      const esc = pat.replace(/"/g, '""');
+      query = query.or(`t1.ilike."${esc}",t2.ilike."${esc}"`);
+    }
   }
 
   // ── Çift yönlü (⇄) arama ────────────────────────────────────────────────────
@@ -691,8 +949,7 @@ export async function GET(req: NextRequest) {
       const orParts = splitOrParts(bidirTakimLegacy);
       const orSegments = orParts.flatMap((orPart) => {
         const andParts = splitAndParts(orPart);
-        const buildContainsPat = (p: string) =>
-          p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`;
+        const buildContainsPat = (p: string) => plainOrWildcardIlikePattern(p);
         if (andParts.length === 1) {
           const pat = buildContainsPat(andParts[0]!);
           const esc = pat.replace(/"/g, '""');
@@ -771,8 +1028,7 @@ export async function GET(req: NextRequest) {
     }
     const orParts = splitOrParts(raw);
     if (!orParts.length) return;
-    const makePat = (p: string) =>
-      p.includes("*") || p.includes("?") ? cfPatternToIlikePattern(p) : `%${p}%`;
+    const makePat = (p: string) => plainOrWildcardIlikePattern(p);
     const orSegments = orParts.flatMap((orPart) => {
       const andParts = splitAndParts(orPart);
       if (andParts.length === 1) {
@@ -812,9 +1068,18 @@ export async function GET(req: NextRequest) {
   if (sp.get("sonuc_ms")) {
     query = applyCfSkorColumnFilter(query, "sonuc_ms", sp.get("sonuc_ms")!.trim());
   }
-  if (sp.get("hakem"))     query = query.ilike("hakem", `%${sp.get("hakem")}%`);
-  if (sp.get("suffix4"))   query = query.ilike("mac_suffix4", `%${sp.get("suffix4")}%`);
-  if (sp.get("suffix3"))   query = query.ilike("mac_suffix3", `%${sp.get("suffix3")}%`);
+  if (sp.get("hakem")) {
+    const pat = plainOrWildcardIlikePattern(sp.get("hakem")!);
+    if (pat) query = query.ilike("hakem", pat);
+  }
+  if (sp.get("suffix4")) {
+    const pat = plainOrWildcardIlikePattern(sp.get("suffix4")!);
+    if (pat) query = query.ilike("mac_suffix4", pat);
+  }
+  if (sp.get("suffix3")) {
+    const pat = plainOrWildcardIlikePattern(sp.get("suffix3")!);
+    if (pat) query = query.ilike("mac_suffix3", pat);
+  }
 
   // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
   if (tarihFiltParts.length === 1) {
@@ -856,7 +1121,7 @@ export async function GET(req: NextRequest) {
       } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
         if (def.col === "id") {
-          query = applyGenericFilter(query, def.col, v, "prefix");
+          query = applyGenericFilter(query, def.col, v, "prefix", false);
         } else if (INTEGER_EQ_CF_COLS.has(def.col)) {
           query = applyCfIntegerEqColumnFilter(query, def.col, v);
         } else {
@@ -867,12 +1132,40 @@ export async function GET(req: NextRequest) {
       continue;
     }
     // Çok kaynaklı OKBT: {srcId}_obktb_{idx}
-    // NOT: Tüm OKBT çoklu sütunları ARTIK tamamen client-side filtreleniyor
-    // (isCellValClientCol). Bu blok yalnızca geriye dönük güvenlik içindir:
-    // olası eski bir istemci macid_obktb_* veya *_obktb_* gönderirse DB
-    // fonksiyonuna başvurmak yerine sessizce geçiyoruz (yanlış satır dönmesin).
-    const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(colId);
-    if (multiOkbtM) {
+    // PostgREST computed column filtresi ile doğrudan WHERE'e çeviriyoruz.
+    // - macid (7 haneli): macid7_obktb_{idx}  (sql/add-macid7-obktb-computed-cols.sql)
+    // - t1i / t2i / kodms / kodiy / kodcs / kodau (5 haneli): {src}_obktb_{idx}
+    //   (sql/add-matches-okbt-multi-computed-col-functions.sql)
+    // Basit sayısal ifadeler sunucuda; joker/karmaşık → istemciye bırakılır (skip).
+    const parsedObktb = parseObktbSrcIdx(colId);
+    if (parsedObktb) {
+      const ranges = parseObktbNumericRanges(v);
+      if (!ranges) continue; // karmaşık ifade → istemcide
+      const fnName = parsedObktb.src === "macid"
+        ? `macid7_obktb_${parsedObktb.idx}`
+        : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
+      if (ranges.length === 1) {
+        const r = ranges[0]!;
+        if (r.min !== null && r.max !== null && r.min === r.max) {
+          query = query.eq(fnName, r.min);
+        } else if (r.min !== null && r.max !== null) {
+          query = query.gte(fnName, r.min).lte(fnName, r.max);
+        } else if (r.min !== null) {
+          query = query.gte(fnName, r.min);
+        } else if (r.max !== null) {
+          query = query.lte(fnName, r.max);
+        }
+      } else {
+        // Birden fazla aralık → OR
+        const segments = ranges.map((r) => {
+          if (r.min !== null && r.max !== null && r.min === r.max) return `${fnName}.eq.${r.min}`;
+          if (r.min !== null && r.max !== null) return `and(${fnName}.gte.${r.min},${fnName}.lte.${r.max})`;
+          if (r.min !== null) return `${fnName}.gte.${r.min}`;
+          if (r.max !== null) return `${fnName}.lte.${r.max}`;
+          return "";
+        }).filter(Boolean);
+        if (segments.length) query = query.or(segments.join(","));
+      }
       continue;
     }
 
@@ -896,6 +1189,10 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (taramaQActive) {
+    query = applyTaramaQuickSearchFilter(query, taramaQRaw);
+  }
+
   const { data, count, error } = await query
     .order("tarih", { ascending: false })
     .order("saat",  { ascending: false, nullsFirst: false })
@@ -908,10 +1205,13 @@ export async function GET(req: NextRequest) {
       e.code === "57014" ||
       /statement timeout|canceling statement due to statement timeout/i.test(msg);
     if (statementTimeout) {
+      const taramaHint = taramaQActive
+        ? " Tarama (MAÇ ARA): çok sütunda ILIKE tam tarama ağırdır — sql/add-matches-tarama-trgm-indexes.sql (t1/t2/lig gin_trgm) çalıştırın; mümkünse tarih/lig/sütun ile önce sonuç kümesini daraltın. "
+        : "";
       return NextResponse.json(
         {
           error:
-            "Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql. Ham veri (raw_data) cf_* filtreleri büyük tabloda yavaş olabilir; ilgili JSON alanları için pg_trgm / expression index veya statement_timeout artırın. CONCURRENTLY → *-concurrent.sql (psql, satır satır).",
+            `${taramaHint}Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql. Ham veri (raw_data) cf_* filtreleri büyük tabloda yavaş olabilir; ilgili JSON alanları için pg_trgm / expression index veya Supabase’te statement_timeout artırın. CONCURRENTLY → *-concurrent.sql (psql, satır satır).`,
           detail: msg,
           code: e.code,
         },
@@ -927,6 +1227,21 @@ export async function GET(req: NextRequest) {
         {
           error:
             "tarih_arama kolonu yok veya API şemada görünmüyor. sql/add-tarih-arama.sql (+ gerekirse patch) çalıştırın; Supabase’te tabloyu yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingSaatArama =
+      /saat_arama/i.test(msg) ||
+      (e.code === "42703" && /saat_arama/i.test(msg)) ||
+      /schema cache.*saat_arama|Could not find.*saat_arama/i.test(msg);
+    if (missingSaatArama) {
+      return NextResponse.json(
+        {
+          error:
+            "saat_arama kolonu yok (Saat sütunu time tipi; ILIKE için metin kolonu gerekir). sql/add-matches-saat-arama-column.sql çalıştırın; kod sonek görünümü kullanıyorsanız create-matches-suffix-view.sql ile yenileyin.",
           detail: msg,
           code: e.code,
         },
@@ -1015,6 +1330,20 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Çok kaynaklı OKBT fonksiyonları (kodms_obktb_0 vb.) henüz oluşturulmamış. sql/add-matches-okbt-multi-computed-col-functions.sql dosyasını Supabase SQL Editor'de çalıştırın.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingObktbServerFilter =
+      /get_matches_by_obktb_range|okbt7_basamak_toplam/i.test(msg) &&
+      (e.code === "42883" || /function.*does not exist|Could not find.*function/i.test(msg));
+    if (missingObktbServerFilter) {
+      return NextResponse.json(
+        {
+          error:
+            "OKBT sunucu-taraflı filtre fonksiyonları eksik. sql/add-okbt-digit-sum-server-filter.sql dosyasını Supabase SQL Editor'de çalıştırın (OKBT filtreleri sayfalamayla tutarlı kalsın diye).",
           detail: msg,
           code: e.code,
         },
