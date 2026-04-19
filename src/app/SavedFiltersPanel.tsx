@@ -294,7 +294,13 @@ export function SavedFiltersPanel({
                             Yükle
                           </button>
                           <button
-                            onClick={() => void overwrite(f.id)}
+                            onClick={() => {
+                              const ok = window.confirm(
+                                `"${f.name}" kayıtlı filtresinin üzerine şu an ekrandaki filtreler yazılacak.\n\nDevam etmek istiyor musunuz?`,
+                              );
+                              if (!ok) return;
+                              void overwrite(f.id);
+                            }}
                             className="text-[10px] bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-1"
                             title="Güncel filtreyle üzerine yaz">
                             Üzerine yaz

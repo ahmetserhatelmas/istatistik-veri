@@ -7,10 +7,14 @@
  *   • Oturum yok → "Giriş" butonu → popover'da email input + "Sihirli bağlantı gönder"
  *   • Oturum var → avatar (baş harf) + email truncate + "Çıkış" butonu
  *
- * Magic link: `NEXT_PUBLIC_SITE_URL` (Vercel'de production URL) varsa maildeki
- * yönlendirme her zaman bu domaine gider; yoksa `window.location.origin`.
- * Supabase Dashboard → Auth → URL: Site URL ve Redirect URLs'e aynı domain
- * + `/auth/callback` ekleyin.
+ * Magic link redirect: tarayıcı localhost/127.0.0.1 ise maildeki link her zaman
+ * o anki origin'e döner (prod URL'ye gitmez). Diğer ortamlarda `NEXT_PUBLIC_SITE_URL`
+ * veya `window.location.origin` kullanılır.
+ * Supabase Dashboard → Auth → URL: Redirect URLs'e `http://localhost:3000/auth/callback`
+ * (portunuza göre) + prod `/auth/callback` ekleyin.
+ *
+ * Geliştirme: `LOCAL_DEV_PASSWORD_EMAIL` için şifre alanı — Supabase Dashboard'da
+ * bu kullanıcıya Email+Password şifresi tanımlanmalı (sihirli bağlantıya gerek yok).
  *
  * Popover `createPortal(document.body)` + yüksek z-index: tablo sticky başlık
  * ve yükleme örtüsünün (z-75) üstünde kalır.
@@ -21,6 +25,9 @@ import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
 
 type Status = "idle" | "sending" | "sent" | "error";
+
+/** Yerelde şifre ile giriş (sadece `next dev`); Supabase'te bu e-postaya şifre verin. */
+const LOCAL_DEV_PASSWORD_EMAIL = "ahmetserhatelmas@gmail.com";
 
 /** Maildeki redirect: önce production origin; yanlış localhost build'ini canlı sitede yok say. */
 function canonicalSiteOrigin(): string {
@@ -41,11 +48,21 @@ function canonicalSiteOrigin(): string {
   return win;
 }
 
+/** OTP mailindeki `emailRedirectTo`: localhost'ta asla prod origin kullanma. */
+function magicLinkRedirectOrigin(): string {
+  if (typeof window !== "undefined") {
+    const o = window.location.origin;
+    if (/localhost|127\.0\.0\.1/i.test(o)) return o;
+  }
+  return canonicalSiteOrigin();
+}
+
 export function AuthBar() {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
+  const [devPassword, setDevPassword] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -110,7 +127,7 @@ export function AuthBar() {
     }
     setStatus("sending");
     setMsg(null);
-    const origin = canonicalSiteOrigin();
+    const origin = magicLinkRedirectOrigin();
     const { error } = await supabase.auth.signInWithOtp({
       email: e,
       options: { emailRedirectTo: `${origin}/auth/callback` },
@@ -123,6 +140,30 @@ export function AuthBar() {
       setMsg("Bağlantıyı postana gönderdik. Maildeki linke tıkla.");
     }
   }, [email]);
+
+  const signInWithPasswordLocal = useCallback(async () => {
+    if (process.env.NODE_ENV !== "development") return;
+    const e = email.trim().toLowerCase();
+    if (e !== LOCAL_DEV_PASSWORD_EMAIL) return;
+    const p = devPassword;
+    if (!p) {
+      setStatus("error");
+      setMsg("Şifre girin.");
+      return;
+    }
+    setStatus("sending");
+    setMsg(null);
+    const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
+    if (error) {
+      setStatus("error");
+      setMsg(error.message);
+    } else {
+      setOpen(false);
+      setDevPassword("");
+      setStatus("idle");
+      setMsg(null);
+    }
+  }, [email, devPassword]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -185,6 +226,33 @@ export function AuthBar() {
                 className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
                 {status === "sending" ? "Gönderiliyor…" : status === "sent" ? "Gönderildi" : "Bağlantı gönder"}
               </button>
+              {process.env.NODE_ENV === "development" &&
+                email.trim().toLowerCase() === LOCAL_DEV_PASSWORD_EMAIL && (
+                  <div className="mt-2 pt-2 border-t border-amber-200 space-y-1.5">
+                    <div className="text-[10px] text-amber-900 leading-snug">
+                      Yerel: bu hesap için şifre ile gir (Supabase’te kullanıcıya şifre tanımlı olmalı).
+                    </div>
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={devPassword}
+                      onChange={(ev) => setDevPassword(ev.target.value)}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter") void signInWithPasswordLocal();
+                      }}
+                      placeholder="Şifre"
+                      disabled={status === "sending"}
+                      className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void signInWithPasswordLocal()}
+                      disabled={status === "sending"}
+                      className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
+                      {status === "sending" ? "Giriş…" : "Şifre ile gir"}
+                    </button>
+                  </div>
+                )}
               {msg && (
                 <div
                   className={`mt-2 text-[10px] rounded px-2 py-1 ${
@@ -232,7 +300,12 @@ export function AuthBar() {
       <button
         ref={triggerRef}
         type="button"
-        onClick={() => { setOpen((v) => !v); setStatus("idle"); setMsg(null); }}
+        onClick={() => {
+          setOpen((v) => !v);
+          setStatus("idle");
+          setMsg(null);
+          setDevPassword("");
+        }}
         className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1 rounded font-medium">
         Giriş
       </button>
