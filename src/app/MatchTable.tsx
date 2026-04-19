@@ -37,12 +37,30 @@ interface ApiResponse {
 
 type PickerMatchRow = {
   id: number;
+  tarih?: string | null;
   saat_arama?: string | null;
   saat?: string | null;
+  lig_adi?: string | null;
+  lig_kodu?: string | null;
   t1?: string | null;
   t2?: string | null;
   kod_ms?: number | null;
 };
+
+function normalizePickerRowTarihIso(raw: unknown): string {
+  if (raw == null) return "";
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return "";
+}
+
+function formatSaatCfFromPickerRow(row: PickerMatchRow): string {
+  const a = typeof row.saat_arama === "string" ? row.saat_arama.trim() : "";
+  if (a) return a;
+  const t = row.saat;
+  if (typeof t === "string" && t.length >= 5) return t.slice(0, 5);
+  return "";
+}
 
 function formatPickerOptionLabel(row: PickerMatchRow): string {
   const sa =
@@ -1122,6 +1140,8 @@ export default function MatchTable() {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(0);
   const [pickerPartial, setPickerPartial] = useState(false);
+  /** Liste maçı seçilince tarih / saat / üst lig kutularına yaz (OM tarzı referans) */
+  const [refAutoFillFromPicker, setRefAutoFillFromPicker] = useState(true);
 
   // 🔍 Tarama Modu — sıra sıra maç inceleme
   const [showTarama, setShowTarama] = useState(false);
@@ -1594,21 +1614,61 @@ export default function MatchTable() {
     setPickerIndex((prev) => (prev === idx ? prev : idx));
   }, [focusMatchId, pickerRows]);
 
+  const applyReferenceFieldsFromPickerRow = useCallback(
+    (row: PickerMatchRow) => {
+      if (!refAutoFillFromPicker) return;
+      const iso = normalizePickerRowTarihIso(row.tarih);
+      const sa = formatSaatCfFromPickerRow(row);
+      const ligStr =
+        typeof row.lig_adi === "string" ? row.lig_adi.trim() : "";
+
+      setFilters((f) => ({
+        ...f,
+        ...(iso
+          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
+          : {}),
+        ...(ligStr ? { lig: ligStr } : {}),
+      }));
+      setApplied((a) => ({
+        ...a,
+        ...(iso
+          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
+          : {}),
+        ...(ligStr ? { lig: ligStr } : {}),
+      }));
+      if (iso) setTarihPick({ d: "", m: "" });
+
+      if (sa) {
+        setColFilters((cf) => ({ ...cf, saat: sa }));
+        setColFiltersCommitted((c) => {
+          const next = { ...c, saat: sa };
+          lsSet(LS_COL_FILT, next);
+          return next;
+        });
+      }
+    },
+    [refAutoFillFromPicker],
+  );
+
   const goPickerPrev = useCallback(() => {
     if (pickerRows.length === 0) return;
     const ni = (pickerIndex - 1 + pickerRows.length) % pickerRows.length;
+    const row = pickerRows[ni]!;
+    applyReferenceFieldsFromPickerRow(row);
     setPickerIndex(ni);
-    setFocusMatchId(String(pickerRows[ni]!.id));
+    setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerIndex]);
+  }, [pickerRows, pickerIndex, applyReferenceFieldsFromPickerRow]);
 
   const goPickerNext = useCallback(() => {
     if (pickerRows.length === 0) return;
     const ni = (pickerIndex + 1) % pickerRows.length;
+    const row = pickerRows[ni]!;
+    applyReferenceFieldsFromPickerRow(row);
     setPickerIndex(ni);
-    setFocusMatchId(String(pickerRows[ni]!.id));
+    setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerIndex]);
+  }, [pickerRows, pickerIndex, applyReferenceFieldsFromPickerRow]);
 
   // veri çek
   const fetchMatches = useCallback(async () => {
@@ -3186,15 +3246,28 @@ export default function MatchTable() {
             <span className="text-amber-700">Bu filtreye uyan oynanmamış maç yok (veya 500 üstü — daraltın).</span>
           ) : (
             <>
+              <label
+                className="flex items-center gap-1 shrink-0 cursor-pointer select-none text-slate-600"
+                title="Açıkken: seçilen maçın günü (tarih_from/to), saati (Saat sütunu) ve lig adı (üst Lig) otomatik yazılır. Kapatırsan yalnızca maç odak (cf_id) kalır.">
+                <input
+                  type="checkbox"
+                  className="rounded border-slate-400"
+                  checked={refAutoFillFromPicker}
+                  onChange={(e) => setRefAutoFillFromPicker(e.target.checked)}
+                />
+                <span>Maça göre doldur</span>
+              </label>
               <select
                 className="min-w-0 max-w-[min(48rem,88vw)] flex-1 truncate text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
                 value={pickerIndex}
-                title="Maç seç — tablo aynı kayıtlı filtre + bu maç (cf_id) ile yenilenir"
+                title="Maç seç — tablo kayıtlı filtre + bu maç (cf_id); işaretliyse tarih/saat/lig de maça göre güncellenir"
                 onChange={(e) => {
                   const i = Number(e.target.value);
                   if (!Number.isFinite(i) || !pickerRows[i]) return;
+                  const row = pickerRows[i]!;
+                  applyReferenceFieldsFromPickerRow(row);
                   setPickerIndex(i);
-                  setFocusMatchId(String(pickerRows[i]!.id));
+                  setFocusMatchId(String(row.id));
                   setPage(1);
                 }}
               >

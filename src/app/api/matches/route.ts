@@ -46,6 +46,8 @@ const PICK_STUB_COLS = [
   "tarih",
   "saat",
   "saat_arama",
+  "lig_adi",
+  "lig_kodu",
   "t1",
   "t2",
   "kod_ms",
