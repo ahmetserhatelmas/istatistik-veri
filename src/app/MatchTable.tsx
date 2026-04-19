@@ -31,6 +31,27 @@ interface ApiResponse {
   error?: string;
   detail?: string;
   code?: string;
+  /** pick=stb yanıtı: limit dolu mu (daha fazla oynanmamış maç olabilir) */
+  pickerPartial?: boolean;
+}
+
+type PickerMatchRow = {
+  id: number;
+  saat_arama?: string | null;
+  saat?: string | null;
+  t1?: string | null;
+  t2?: string | null;
+  kod_ms?: number | null;
+};
+
+function formatPickerOptionLabel(row: PickerMatchRow): string {
+  const sa =
+    (typeof row.saat_arama === "string" && row.saat_arama.trim()) ||
+    (typeof row.saat === "string" ? row.saat.slice(0, 5) : "") ||
+    "—";
+  const t1 = (typeof row.t1 === "string" && row.t1.trim()) || "?";
+  const t2 = (typeof row.t2 === "string" && row.t2.trim()) || "?";
+  return `${sa} — ${row.id} — ${t1} & ${t2}`;
 }
 
 function formatLastSyncTr(iso: string | null): string {
@@ -1093,6 +1114,14 @@ export default function MatchTable() {
 
   // 💾 Filtrelerim (server-side, user-specific)
   const [showSavedFilters, setShowSavedFilters] = useState(false);
+  /** Çekmece kaydı uygulanınca dolar — oynanmamış maç seçici şeridi */
+  const [loadedSavedFilterName, setLoadedSavedFilterName] = useState<string | null>(null);
+  /** Kayıtlı filtreye ek olarak tek maça odak (cf_id); picker listesi buna göre daralmaz */
+  const [focusMatchId, setFocusMatchId] = useState<string | null>(null);
+  const [pickerRows, setPickerRows] = useState<PickerMatchRow[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerIndex, setPickerIndex] = useState(0);
+  const [pickerPartial, setPickerPartial] = useState(false);
 
   // 🔍 Tarama Modu — sıra sıra maç inceleme
   const [showTarama, setShowTarama] = useState(false);
@@ -1439,48 +1468,147 @@ export default function MatchTable() {
    * `/api/matches` için page/limit hariç tüm sorgu parametreleri.
    * Tarama modu “tüm veride ara” bu parametrelere `tarama_q` + sayfa ekleyerek çağırır.
    */
-  const buildMatchesApiParams = useCallback((): URLSearchParams => {
-    const p = new URLSearchParams();
-    // bidir_* önce: çok cf_ ile uzun URL’de proxy kesintisi riskini azaltır
-    const te = bidirFilters.takim.ev.committed.trim();
-    const td = bidirFilters.takim.dep.committed.trim();
-    if (te) p.set("bidir_takim_ev", te);
-    if (td) p.set("bidir_takim_dep", td);
-    const tie = bidirFilters.takimid.ev.committed.trim();
-    const tid = bidirFilters.takimid.dep.committed.trim();
-    if (tie) p.set("bidir_takimid_ev", tie);
-    if (tid) p.set("bidir_takimid_dep", tid);
-    const ph = bidirFilters.personel.hakem.committed.trim();
-    const pEv = bidirFilters.personel.antEv.committed.trim();
-    const pDep = bidirFilters.personel.antDep.committed.trim();
-    const pHer = bidirFilters.personel.antHer.committed.trim();
-    if (ph) p.set("bidir_hakem", ph);
-    if (pEv) p.set("bidir_ant_ev", pEv);
-    if (pDep) p.set("bidir_ant_dep", pDep);
-    if (pHer) p.set("bidir_ant", pHer);
-    Object.entries(applied).forEach(([k, v]) => { if (v.trim()) p.set(k, v.trim()); });
-    Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
-      if (v.trim()) p.set(`cf_${id}`, v.trim());
-    });
-    // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
-    if (anyKodSuffix) {
-      p.set("ks_any_suffix", anyKodSuffix.digits);
-      p.set("ks_any_n", String(anyKodSuffix.n));
+  const buildMatchesApiParams = useCallback(
+    (opts?: { forPicker?: boolean }): URLSearchParams => {
+      const p = new URLSearchParams();
+      // bidir_* önce: çok cf_ ile uzun URL’de proxy kesintisi riskini azaltır
+      const te = bidirFilters.takim.ev.committed.trim();
+      const td = bidirFilters.takim.dep.committed.trim();
+      if (te) p.set("bidir_takim_ev", te);
+      if (td) p.set("bidir_takim_dep", td);
+      const tie = bidirFilters.takimid.ev.committed.trim();
+      const tid = bidirFilters.takimid.dep.committed.trim();
+      if (tie) p.set("bidir_takimid_ev", tie);
+      if (tid) p.set("bidir_takimid_dep", tid);
+      const ph = bidirFilters.personel.hakem.committed.trim();
+      const pEv = bidirFilters.personel.antEv.committed.trim();
+      const pDep = bidirFilters.personel.antDep.committed.trim();
+      const pHer = bidirFilters.personel.antHer.committed.trim();
+      if (ph) p.set("bidir_hakem", ph);
+      if (pEv) p.set("bidir_ant_ev", pEv);
+      if (pDep) p.set("bidir_ant_dep", pDep);
+      if (pHer) p.set("bidir_ant", pHer);
+      Object.entries(applied).forEach(([k, v]) => {
+        if (v.trim()) p.set(k, v.trim());
+      });
+      const fid = focusMatchId?.trim();
+      Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
+        if (!v.trim()) return;
+        if (id === "id" && fid && !opts?.forPicker) return;
+        p.set(`cf_${id}`, v.trim());
+      });
+      if (!opts?.forPicker && fid) p.set("cf_id", fid);
+      // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
+      if (anyKodSuffix) {
+        p.set("ks_any_suffix", anyKodSuffix.digits);
+        p.set("ks_any_n", String(anyKodSuffix.n));
+      }
+      return p;
+    },
+    [
+      applied,
+      dbColFiltersApplied,
+      focusMatchId,
+      bidirFilters.takim.ev.committed,
+      bidirFilters.takim.dep.committed,
+      bidirFilters.takimid.ev.committed,
+      bidirFilters.takimid.dep.committed,
+      bidirFilters.personel.hakem.committed,
+      bidirFilters.personel.antEv.committed,
+      bidirFilters.personel.antDep.committed,
+      bidirFilters.personel.antHer.committed,
+      anyKodSuffix,
+    ],
+  );
+
+  const pickerFilterKey = useMemo(
+    () =>
+      JSON.stringify({
+        applied,
+        db: dbColFiltersApplied,
+        te: bidirFilters.takim.ev.committed,
+        td: bidirFilters.takim.dep.committed,
+        tie: bidirFilters.takimid.ev.committed,
+        tid: bidirFilters.takimid.dep.committed,
+        ph: bidirFilters.personel.hakem.committed,
+        pEv: bidirFilters.personel.antEv.committed,
+        pDep: bidirFilters.personel.antDep.committed,
+        pHer: bidirFilters.personel.antHer.committed,
+        ks: anyKodSuffix,
+      }),
+    [
+      applied,
+      dbColFiltersApplied,
+      bidirFilters.takim.ev.committed,
+      bidirFilters.takim.dep.committed,
+      bidirFilters.takimid.ev.committed,
+      bidirFilters.takimid.dep.committed,
+      bidirFilters.personel.hakem.committed,
+      bidirFilters.personel.antEv.committed,
+      bidirFilters.personel.antDep.committed,
+      bidirFilters.personel.antHer.committed,
+      anyKodSuffix,
+    ],
+  );
+
+  useEffect(() => {
+    if (!loadedSavedFilterName) {
+      setPickerRows([]);
+      setPickerPartial(false);
+      return;
     }
-    return p;
-  }, [
-    applied,
-    dbColFiltersApplied,
-    bidirFilters.takim.ev.committed,
-    bidirFilters.takim.dep.committed,
-    bidirFilters.takimid.ev.committed,
-    bidirFilters.takimid.dep.committed,
-    bidirFilters.personel.hakem.committed,
-    bidirFilters.personel.antEv.committed,
-    bidirFilters.personel.antDep.committed,
-    bidirFilters.personel.antHer.committed,
-    anyKodSuffix,
-  ]);
+    let cancelled = false;
+    setPickerLoading(true);
+    const p = buildMatchesApiParams({ forPicker: true });
+    p.set("oynanmamis", "1");
+    p.set("pick", "stb");
+    p.set("limit", "500");
+    p.set("page", "1");
+    fetch(`/api/matches?${p.toString()}`)
+      .then((r) => r.json())
+      .then((j: ApiResponse) => {
+        if (cancelled) return;
+        const rows = (j.data ?? []) as PickerMatchRow[];
+        setPickerRows(rows);
+        setPickerPartial(Boolean(j.pickerPartial));
+        setPickerIndex(0);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPickerRows([]);
+          setPickerPartial(false);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPickerLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadedSavedFilterName, pickerFilterKey, buildMatchesApiParams]);
+
+  useEffect(() => {
+    if (!focusMatchId || pickerRows.length === 0) return;
+    const idx = pickerRows.findIndex((r) => String(r.id) === focusMatchId);
+    if (idx < 0) return;
+    setPickerIndex((prev) => (prev === idx ? prev : idx));
+  }, [focusMatchId, pickerRows]);
+
+  const goPickerPrev = useCallback(() => {
+    if (pickerRows.length === 0) return;
+    const ni = (pickerIndex - 1 + pickerRows.length) % pickerRows.length;
+    setPickerIndex(ni);
+    setFocusMatchId(String(pickerRows[ni]!.id));
+    setPage(1);
+  }, [pickerRows, pickerIndex]);
+
+  const goPickerNext = useCallback(() => {
+    if (pickerRows.length === 0) return;
+    const ni = (pickerIndex + 1) % pickerRows.length;
+    setPickerIndex(ni);
+    setFocusMatchId(String(pickerRows[ni]!.id));
+    setPage(1);
+  }, [pickerRows, pickerIndex]);
 
   // veri çek
   const fetchMatches = useCallback(async () => {
@@ -3033,6 +3161,85 @@ export default function MatchTable() {
 
       </header>
 
+      {loadedSavedFilterName && (
+        <div className="shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-slate-200 bg-slate-100 text-[11px] text-slate-800">
+          <span className="text-slate-500 shrink-0">Kayıtlı filtre:</span>
+          <span className="font-semibold truncate max-w-[12rem]" title={loadedSavedFilterName}>
+            {loadedSavedFilterName}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 px-1 py-0 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-600"
+            title="Şeridi kapat (filtreler aynı kalır)"
+            onClick={() => {
+              setLoadedSavedFilterName(null);
+              setFocusMatchId(null);
+            }}
+          >
+            ✕
+          </button>
+          <span className="text-slate-300 shrink-0">|</span>
+          <span className="text-slate-500 shrink-0">Oynanmamış maçlar</span>
+          {pickerLoading ? (
+            <span className="text-slate-400 italic">yükleniyor…</span>
+          ) : pickerRows.length === 0 ? (
+            <span className="text-amber-700">Bu filtreye uyan oynanmamış maç yok (veya 500 üstü — daraltın).</span>
+          ) : (
+            <>
+              <select
+                className="min-w-0 max-w-[min(48rem,88vw)] flex-1 truncate text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
+                value={pickerIndex}
+                title="Maç seç — tablo aynı kayıtlı filtre + bu maç (cf_id) ile yenilenir"
+                onChange={(e) => {
+                  const i = Number(e.target.value);
+                  if (!Number.isFinite(i) || !pickerRows[i]) return;
+                  setPickerIndex(i);
+                  setFocusMatchId(String(pickerRows[i]!.id));
+                  setPage(1);
+                }}
+              >
+                {pickerRows.map((r, i) => (
+                  <option key={r.id} value={i}>
+                    {formatPickerOptionLabel(r)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="shrink-0 px-1.5 py-0 rounded border border-slate-300 bg-white hover:bg-slate-50"
+                aria-label="Önceki maç"
+                onClick={goPickerPrev}
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                className="shrink-0 px-1.5 py-0 rounded border border-slate-300 bg-white hover:bg-slate-50"
+                aria-label="Sonraki maç"
+                onClick={goPickerNext}
+              >
+                ▶
+              </button>
+              {focusMatchId && (
+                <button
+                  type="button"
+                  className="shrink-0 px-1.5 py-0 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
+                  title="Maç odak filtresini kaldır (kayıtlı filtre kalır)"
+                  onClick={() => setFocusMatchId(null)}
+                >
+                  Tümü
+                </button>
+              )}
+              {pickerPartial && (
+                <span className="text-amber-800 text-[10px] shrink-0" title="En fazla 500 satır listelenir">
+                  (ilk 500)
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* ── Eşleştirme Paneli (modal) ── */}
       <EslestirmePaneli
         open={showEslestirme}
@@ -3045,7 +3252,11 @@ export default function MatchTable() {
         open={showSavedFilters}
         onClose={() => setShowSavedFilters(false)}
         captureSnapshot={captureFilterSnapshot}
-        onApplySnapshot={applyFilterSnapshot}
+        onApplySnapshot={(payload, name) => {
+          applyFilterSnapshot(payload, name);
+          setLoadedSavedFilterName(name);
+          setFocusMatchId(null);
+        }}
       />
 
       <TaramaModu

@@ -40,6 +40,18 @@ const DB_COLS = [
   ...OKBT_BASAMAK_LABELS.map((_, i) => `obktb_${i}`),
 ];
 
+/** pick=stb: hafif satır — kayıtlı filtre + oynanmamış maç seçici listesi (raw_data yok). */
+const PICK_STUB_COLS = [
+  "id",
+  "tarih",
+  "saat",
+  "saat_arama",
+  "t1",
+  "t2",
+  "kod_ms",
+  "sonuc_ms",
+];
+
 function parseObktbFilterIndex(colId: string): number | null {
   const m = /^obktb_(\d+)$/.exec(colId);
   if (!m) return null;
@@ -754,8 +766,11 @@ export async function GET(req: NextRequest) {
   }
 
   const sp = req.nextUrl.searchParams;
-  const page  = Math.max(1, Number(sp.get("page")  || 1));
-  const limit = Math.min(100, Math.max(1, Number(sp.get("limit") || 100)));
+  const pickStub = sp.get("pick") === "stb";
+  const oynanmamisOnly = sp.get("oynanmamis") === "1";
+  const page = Math.max(1, Number(sp.get("page") || 1));
+  const maxLimit = pickStub ? 500 : 100;
+  const limit = Math.min(maxLimit, Math.max(1, Number(sp.get("limit") || 100)));
   const offset = (page - 1) * limit;
 
   const cfTarihRaw = sp.get("cf_tarih")?.trim() ?? "";
@@ -806,7 +821,7 @@ export async function GET(req: NextRequest) {
     spRequestsPlainSkorExactCount(sp) || spRequestsSaatExactCount(sp);
   const countMode = forceExactCount
     ? ("exact" as const)
-    : tarihFiltParts.length > 0 || useKsView || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
+    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
       ? ("planned" as const)
       : ("exact" as const);
 
@@ -863,10 +878,11 @@ export async function GET(req: NextRequest) {
     preFilteredIds = combined;
   }
 
-  const fromTable = useKsView ? "matches_with_suffix_cols" : "matches";
-  let query = supabase
-    .from(fromTable)
-    .select(DB_COLS.join(","), { count: countMode });
+  const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
+  const selectCols = pickStub ? PICK_STUB_COLS : DB_COLS;
+  let query = pickStub
+    ? supabase.from(fromTable).select(selectCols.join(","))
+    : supabase.from(fromTable).select(selectCols.join(","), { count: countMode });
 
   // Sıfır eşleşme → hemen boş dön
   if (preFilteredIds !== null && preFilteredIds.length === 0) {
@@ -1189,7 +1205,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  if (useKsView && ksSuffixNum !== null) {
+  if (useKsView && !pickStub && ksSuffixNum !== null) {
     query = query.eq(`sfx_${ksRef}_${ksN}`, ksSuffixNum);
   }
 
@@ -1202,13 +1218,22 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  if (taramaQActive) {
+  if (taramaQActive && !pickStub) {
     query = applyTaramaQuickSearchFilter(query, taramaQRaw);
   }
 
+  if (oynanmamisOnly) {
+    const enDash = "\u2013";
+    query = query.or(`sonuc_ms.is.null,sonuc_ms.eq.-,sonuc_ms.eq.${enDash}`);
+  }
+
+  const orderTarihAsc = pickStub;
   const { data, count, error } = await query
-    .order("tarih", { ascending: false })
-    .order("saat",  { ascending: false, nullsFirst: false })
+    .order("tarih", { ascending: orderTarihAsc })
+    .order("saat", {
+      ascending: orderTarihAsc,
+      nullsFirst: orderTarihAsc,
+    })
     .range(offset, offset + limit - 1);
 
   if (error) {
@@ -1382,7 +1407,9 @@ export async function GET(req: NextRequest) {
   // ve sonraki sayfa olamaz (offset=0, satır yok) → total'i 0 olarak döndür ki
   // UI'de "yaklaşık X maç" yanılsaması olmasın.
   let total = count ?? 0;
-  if (rows.length === 0 && page === 1) {
+  if (pickStub) {
+    total = rows.length;
+  } else if (rows.length === 0 && page === 1) {
     total = 0;
   } else if (countMode === "planned") {
     // planned tahmin << gerçek olduğunda (özellikle son sayfa dışında) en azından
@@ -1390,11 +1417,13 @@ export async function GET(req: NextRequest) {
     const minTotal = (page - 1) * limit + rows.length;
     if (total < minTotal) total = minTotal;
   }
+  const totalPages = pickStub ? 1 : Math.ceil(total / limit);
   return NextResponse.json({
     data: rows,
     page,
     limit,
     total,
-    totalPages: Math.ceil(total / limit),
+    totalPages,
+    ...(pickStub ? { pickerPartial: rows.length >= limit } : {}),
   });
 }
