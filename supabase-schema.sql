@@ -1,4 +1,4 @@
--- Oran Merkezi İddaa Veri Platformu — Supabase Şeması
+-- Oranexcel — İddaa veri platformu (Supabase şeması)
 -- ~997 alan JSONB + sık filtrelenen alanlar ayrı sütun
 
 CREATE TABLE IF NOT EXISTS matches (

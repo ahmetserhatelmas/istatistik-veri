@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Oran Merkezi — İddaa Veri Platformu",
+  title: "Oranexcel — İddaa veri ve filtreleme",
   description: "İddaa oran analizi, filtreleme ve tümdengelim aracı",
 };
 

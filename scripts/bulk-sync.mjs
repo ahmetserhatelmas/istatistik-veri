@@ -262,7 +262,7 @@ async function main() {
   console.log(`========================================\n`);
 
   const startBal = await getBalance();
-  console.log(`Oran Merkezi bakiye (başlangıç): ${startBal.toLocaleString("tr-TR")}`);
+  console.log(`API bakiye (başlangıç): ${startBal.toLocaleString("tr-TR")}`);
   if (startBal <= 0) {
     console.error(
       "\nHATA: Bakiye 0. MacIdListesi çalışır ama iDdenMacDatasi (detay) yazmaz.\n" +

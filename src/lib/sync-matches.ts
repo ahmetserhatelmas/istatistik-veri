@@ -136,7 +136,7 @@ export async function runMatchesDateRangeSync(
 
 /**
  * UTC takvim “bugünü” merkez alır: geçmiş (bugün dahil) + ileri günler.
- * Oran Merkezi’nde görünen ileri tarihli maçlar MacIdListesi’nde maç tarihine göre döner;
+ * Harici oran API’sinde görünen ileri tarihli maçlar MacIdListesi’nde maç tarihine göre döner;
  * sadece geçmişe bakmak bu ID’leri hiç sorgulamaz.
  */
 export function rollingUtcWindow(
