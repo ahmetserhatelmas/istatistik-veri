@@ -117,8 +117,22 @@ function toFilterNum(s: string): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/** Kopyala-yapış / mobil klavye: tam genişlik veya ≤≥ işaretleri `<` / `<=` olarak yorumlansın. */
+function normalizeFilterAtom(atom: string): string {
+  let t = atom.trim().replace(/^\uFEFF+/, "");
+  if (t.startsWith("\u2264")) return "<=" + t.slice(1);
+  if (t.startsWith("\u2265")) return ">=" + t.slice(1);
+  if (t.startsWith("\uFF1C\uFF1D")) return "<=" + t.slice(2);
+  if (t.startsWith("\uFF1E\uFF1D")) return ">=" + t.slice(2);
+  if (t.startsWith("\uFF1C")) return "<" + t.slice(1);
+  if (t.startsWith("\uFF1E")) return ">" + t.slice(1);
+  if (t.startsWith("\uFE64")) return "<" + t.slice(1);
+  if (t.startsWith("\uFE65")) return ">" + t.slice(1);
+  return t;
+}
+
 function evalClientFilterAtom(cellVal: string, atom: string): boolean {
-  const t = atom.trim();
+  const t = normalizeFilterAtom(atom);
   if (!t) return true;
   if (t.startsWith(">=")) {
     const r = toFilterNum(t.slice(2));
@@ -284,15 +298,39 @@ function colFiltersRecordHasAnyTrimmed(cf: Record<string, string>): boolean {
   return Object.values(cf).some((v) => String(v ?? "").trim());
 }
 
+/** LS / birleşik state anahtarlarında uç boşluk olursa ColDef eşleşmez; değer `number` ise `.trim` patlar. */
+function normalizedColFilterEntries(filters: Record<string, string>): [string, string][] {
+  const out: [string, string][] = [];
+  for (const [rawId, rawV] of Object.entries(filters)) {
+    const id = String(rawId).trim();
+    const v = String(rawV ?? "").trim();
+    if (!id || !v) continue;
+    out.push([id, v]);
+  }
+  return out;
+}
+
+/** Filtre satırı: ColDef merged’da yoksa ALL_COLS veya *_obktb_* için sentetik ColDef (cellVal yalnız id’ye bakar). */
+function resolveColDefForFilter(colId: string, cols: ColDef[]): ColDef | undefined {
+  const hit = cols.find((c) => c.id === colId);
+  if (hit) return hit;
+  const fromAll = ALL_COLS.find((c) => c.id === colId);
+  if (fromAll) return fromAll;
+  if (/^[a-z][a-z0-9]*_obktb_\d+$/.test(colId)) {
+    return { id: colId, label: "", key: "", group: "", width: 60 };
+  }
+  return undefined;
+}
+
 function applyColFilters(rows: Match[], filters: Record<string, string>, cols: ColDef[]): Match[] {
-  const active = Object.entries(filters).filter(([, v]) => v.trim());
+  const active = normalizedColFilterEntries(filters);
   if (!active.length) return rows;
   return rows.filter((row) =>
     active.every(([colId, pat]) => {
-      const col = cols.find((c) => c.id === colId);
+      const col = resolveColDefForFilter(colId, cols);
       if (!col) return true;
       const val = cellVal(row, col);
-      return evalClientColFilter(val, pat.trim());
+      return evalClientColFilter(val, pat);
     })
   );
 }
@@ -1433,16 +1471,13 @@ export default function MatchTable() {
 
   // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
   // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
-  const rawColFilters = useMemo(
-    () =>
-      Object.fromEntries(
-        Object.entries(colFiltersEffective).filter(
-          ([id, v]) =>
-            (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) && String(v ?? "").trim()
-        )
-      ),
-    [colFiltersEffective]
-  );
+  const rawColFilters = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const [id, v] of normalizedColFilterEntries(colFiltersEffective)) {
+      if (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) m[id] = v;
+    }
+    return m;
+  }, [colFiltersEffective]);
   const filteredRows = useMemo(
     () => applyColFilters(matches, rawColFilters, mergedCols),
     [matches, rawColFilters, mergedCols]
@@ -1473,8 +1508,7 @@ export default function MatchTable() {
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
-      Object.entries(colFiltersCommitted).filter(([id, v]) => {
-        if (!v.trim()) return false;
+      normalizedColFilterEntries(colFiltersCommitted).filter(([id]) => {
         if (CF_CLIENT_ONLY_COL_IDS.has(id)) return false;
         if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // mbs/suffix3/suffix4
         return true; // *_obktb_* dahil — server push dener

@@ -819,8 +819,19 @@ export async function GET(req: NextRequest) {
   const taramaQRaw = sp.get("tarama_q")?.trim() ?? "";
   const taramaQActive = taramaQRaw.length > 0;
 
+  /** OKBT basamak filtresi (cf_*_obktb_*) seçici → planned count sayfa-satır düzeyine düşer.
+   *  Filtreliyken gerçek toplamı göstermek için exact zorla (performans pratikte sorun değil: idx var). */
+  const hasObktbCfParam = (() => {
+    for (const k of sp.keys()) {
+      if (!k.startsWith("cf_")) continue;
+      const colId = k.slice(3);
+      if (/^[a-z][a-z0-9]*_obktb_\d+$/.test(colId) && (sp.get(k) ?? "").trim()) return true;
+    }
+    return false;
+  })();
+
   const forceExactCount =
-    spRequestsPlainSkorExactCount(sp) || spRequestsSaatExactCount(sp);
+    spRequestsPlainSkorExactCount(sp) || spRequestsSaatExactCount(sp) || hasObktbCfParam;
   const countMode = forceExactCount
     ? ("exact" as const)
     : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
