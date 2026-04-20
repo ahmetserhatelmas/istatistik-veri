@@ -278,6 +278,12 @@ function colPanelChipClass(_colId: string, on: boolean): string {
     : "border bg-white border-gray-300 text-gray-800 hover:bg-gray-100";
 }
 
+/** `cols`: tam sütun kataloğu (örn. `mergedCols`). Yalnız `visibleCols` verilirse,
+ *  gizlenmiş ama LS’te kalan *_obktb_* / client-only filtreler sessizce atlanır (<22 işlemez). */
+function colFiltersRecordHasAnyTrimmed(cf: Record<string, string>): boolean {
+  return Object.values(cf).some((v) => String(v ?? "").trim());
+}
+
 function applyColFilters(rows: Match[], filters: Record<string, string>, cols: ColDef[]): Match[] {
   const active = Object.entries(filters).filter(([, v]) => v.trim());
   if (!active.length) return rows;
@@ -1418,14 +1424,29 @@ export default function MatchTable() {
     [visibleCols, colW]
   );
 
+  /** Input (`colFilters`) anlık; API/commit (`colFiltersCommitted`) 400ms gecikmeli.
+   *  İstemci süzümü yalnız committed’e bakarsa ekranda `<22` varken tablo hâlâ süzülmemiş görünür. */
+  const colFiltersEffective = useMemo(
+    () => ({ ...colFiltersCommitted, ...colFilters }),
+    [colFiltersCommitted, colFilters]
+  );
+
   // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
   // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
-  const rawColFilters = Object.fromEntries(
-    Object.entries(colFiltersCommitted).filter(
-      ([id]) => CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)
-    )
+  const rawColFilters = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(colFiltersEffective).filter(
+          ([id, v]) =>
+            (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) && String(v ?? "").trim()
+        )
+      ),
+    [colFiltersEffective]
   );
-  const filteredRows = applyColFilters(matches, rawColFilters, visibleCols);
+  const filteredRows = useMemo(
+    () => applyColFilters(matches, rawColFilters, mergedCols),
+    [matches, rawColFilters, mergedCols]
+  );
 
   // ── Sıralama ──────────────────────────────────────────────────────────────
   const [sortCol, setSortCol] = useState<string | null>(null);
@@ -2092,7 +2113,7 @@ export default function MatchTable() {
           {loading && (
             <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />
           )}
-          {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && !loading && (
+          {(colFiltersRecordHasAnyTrimmed(colFiltersEffective) || globalKodSuffix) && !loading && (
             <span className="text-amber-600"> · {kodSuffixFilteredRows.length} eşleşti</span>
           )}
           {globalKodSuffix && !loading && (
@@ -2123,6 +2144,12 @@ export default function MatchTable() {
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               💾 Filtrelerim
             </button>
+            <a
+              href="/akilli-filtre"
+              title="Akıllı Filtre: kayıtlı filtre + tek gün maç seçimiyle tüm zamanlarda eşleşenleri bul"
+              className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
+              🧠 Akıllı Filtre
+            </a>
             <button
               type="button"
               onClick={() => setShowTarama(true)}
@@ -3940,7 +3967,7 @@ export default function MatchTable() {
       <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
         <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none">
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
-          {(Object.values(colFiltersCommitted).some(Boolean) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
+          {(colFiltersRecordHasAnyTrimmed(colFiltersEffective) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
           {anyKodSuffix && (
             <span className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
               ● KOD son {anyKodSuffix.n} = {anyKodSuffix.digits}
