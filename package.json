@@ -9,7 +9,8 @@
     "lint": "eslint",
     "sync:now": "node scripts/manual-sync.mjs",
     "sync:forward": "node scripts/forward-sync.mjs",
-    "sync:forward:60": "node scripts/forward-sync.mjs 60"
+    "sync:forward:60": "node scripts/forward-sync.mjs 60",
+    "auth:set-password": "node scripts/set-user-password.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.0",

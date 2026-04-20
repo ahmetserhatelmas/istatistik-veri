@@ -57,6 +57,28 @@ function magicLinkRedirectOrigin(): string {
   return canonicalSiteOrigin();
 }
 
+/** Supabase Auth hatalarını kullanıcıya anlaşılır + yapılabilir şekilde göster. */
+function formatAuthErrorForUser(raw: string): string {
+  const m = raw.trim().toLowerCase();
+  if (
+    m.includes("rate limit") ||
+    m.includes("too many requests") ||
+    m.includes("over_email") ||
+    m.includes("over_request") ||
+    m === "429" ||
+    raw.includes("429")
+  ) {
+    return [
+      "E-posta veya OTP isteği Supabase tarafında sınırlandı (çok sık deneme veya proje kotası).",
+      "Ne yapabilirsiniz: bir süre bekleyin; geliştirmede aynı hesap için alttan «Şifre ile gir» kullanın (ek posta göndermez).",
+      "Kotayı yükseltmek: Supabase Dashboard → projeniz → Authentication → Rate Limits (OTP / e-posta gönderim limitleri).",
+      "Yerleşik e-posta ile saatlik gönderim düşük olabilir; özel SMTP tanımlayınca e-posta tarafı genelde esnetilir.",
+      "Ayrıntı: https://supabase.com/docs/guides/auth/rate-limits",
+    ].join(" ");
+  }
+  return raw.trim() || "Bilinmeyen hata.";
+}
+
 export function AuthBar() {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
@@ -134,7 +156,10 @@ export function AuthBar() {
     });
     if (error) {
       setStatus("error");
-      setMsg(error.message);
+      const code = "code" in error && typeof (error as { code?: string }).code === "string"
+        ? (error as { code: string }).code
+        : "";
+      setMsg(formatAuthErrorForUser([error.message, code].filter(Boolean).join(" ")));
     } else {
       setStatus("sent");
       setMsg("Bağlantıyı postana gönderdik. Maildeki linke tıkla.");
@@ -156,7 +181,10 @@ export function AuthBar() {
     const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
     if (error) {
       setStatus("error");
-      setMsg(error.message);
+      const code = "code" in error && typeof (error as { code?: string }).code === "string"
+        ? (error as { code: string }).code
+        : "";
+      setMsg(formatAuthErrorForUser([error.message, code].filter(Boolean).join(" ")));
     } else {
       setOpen(false);
       setDevPassword("");
@@ -182,7 +210,7 @@ export function AuthBar() {
           onClick={() => setOpen(false)}
         />
         <div
-          className="fixed z-[210] w-72 rounded border border-gray-300 bg-white p-3 shadow-2xl"
+          className="fixed z-[210] w-[min(22rem,calc(100vw-1rem))] rounded border border-gray-300 bg-white p-3 shadow-2xl"
           style={{ top: popoverPos.top, right: popoverPos.right }}
           role="dialog"
           aria-modal="true"
@@ -255,9 +283,9 @@ export function AuthBar() {
                 )}
               {msg && (
                 <div
-                  className={`mt-2 text-[10px] rounded px-2 py-1 ${
+                  className={`mt-2 text-[10px] rounded px-2 py-1 text-left leading-snug ${
                     status === "error"
-                      ? "bg-red-50 text-red-700 border border-red-200"
+                      ? "bg-red-50 text-red-700 border border-red-200 max-h-44 overflow-y-auto"
                       : "bg-emerald-50 text-emerald-700 border border-emerald-200"
                   }`}>
                   {msg}

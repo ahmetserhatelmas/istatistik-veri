@@ -12,6 +12,7 @@ import {
   type ColDef,
 } from "@/lib/columns";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
+import { supabase } from "@/lib/supabase/client";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -717,6 +718,19 @@ const EMPTY_TOP = {
   suffix3: "",
 };
 
+type TopFilterKey = keyof typeof EMPTY_TOP;
+
+/**
+ * cf_* sütun filtresi silinince aynı anlamı taşıyan üst şerit `applied`/`filters` alanı da boşalsın.
+ * Örn. «Maça göre doldur» yalnızca `applied.lig` doldurur; sütun `lig_adi` kutusu boş olsa API `lig=` ile kalır.
+ */
+const CF_COLUMN_ID_TO_TOP_FILTER_KEY: Partial<Record<string, TopFilterKey>> = {
+  lig_adi: "lig",
+  hakem: "hakem",
+  sonuc_iy: "sonuc_iy",
+  sonuc_ms: "sonuc_ms",
+};
+
 /** Tarih sütunu altı: gün / ay — API `tarih_gun` / `tarih_ay` (tarih_arama; yıl seçici yok). */
 const TARIH_PICK_GUN = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, "0"));
 const TARIH_PICK_AY = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, "0"));
@@ -1010,6 +1024,14 @@ export default function MatchTable() {
     setPage(1);
   }
 
+  /** Sütun cf_* temizlenince üst şeritteki aynı anlamlı alanı da sil (ör. `lig` ↔ lig_adi). */
+  function clearMirroredTopFilterForCfColumn(colId: string) {
+    const topKey = CF_COLUMN_ID_TO_TOP_FILTER_KEY[colId];
+    if (!topKey) return;
+    setFilters((f) => ({ ...f, [topKey]: "" }));
+    setApplied((a) => ({ ...a, [topKey]: "" }));
+  }
+
   // Yazarken otomatik ara — 400ms debounce (Enter beklenmez)
   useEffect(() => {
     const t = setTimeout(() => commitColFilters(colFilters), 400);
@@ -1138,7 +1160,8 @@ export default function MatchTable() {
   const [focusMatchId, setFocusMatchId] = useState<string | null>(null);
   const [pickerRows, setPickerRows] = useState<PickerMatchRow[]>([]);
   const [pickerLoading, setPickerLoading] = useState(false);
-  const [pickerIndex, setPickerIndex] = useState(0);
+  /** null = henüz maç seçilmedi (— Maç seç —); böylece ilk maça tıklanınca da onChange çalışır. */
+  const [pickerSelectedIndex, setPickerSelectedIndex] = useState<number | null>(null);
   const [pickerPartial, setPickerPartial] = useState(false);
   /** Liste maçı seçilince tarih / saat / üst lig kutularına yaz (OM tarzı referans) */
   const [refAutoFillFromPicker, setRefAutoFillFromPicker] = useState(true);
@@ -1575,6 +1598,7 @@ export default function MatchTable() {
     if (!loadedSavedFilterName) {
       setPickerRows([]);
       setPickerPartial(false);
+      setPickerSelectedIndex(null);
       return;
     }
     let cancelled = false;
@@ -1591,7 +1615,8 @@ export default function MatchTable() {
         const rows = (j.data ?? []) as PickerMatchRow[];
         setPickerRows(rows);
         setPickerPartial(Boolean(j.pickerPartial));
-        setPickerIndex(0);
+        // pickerFilterKey maç seçilince de değişebilir (Maça göre doldur); burada
+        // odak sıfırlanmasın — aksi halde liste yenilenince hep "— Maç seç —"e döner.
       })
       .catch(() => {
         if (!cancelled) {
@@ -1608,10 +1633,21 @@ export default function MatchTable() {
   }, [loadedSavedFilterName, pickerFilterKey, buildMatchesApiParams]);
 
   useEffect(() => {
-    if (!focusMatchId || pickerRows.length === 0) return;
+    if (pickerRows.length === 0) {
+      setPickerSelectedIndex(null);
+      return;
+    }
+    if (!focusMatchId) {
+      setPickerSelectedIndex(null);
+      return;
+    }
     const idx = pickerRows.findIndex((r) => String(r.id) === focusMatchId);
-    if (idx < 0) return;
-    setPickerIndex((prev) => (prev === idx ? prev : idx));
+    if (idx < 0) {
+      setPickerSelectedIndex(null);
+      setFocusMatchId(null);
+      return;
+    }
+    setPickerSelectedIndex((prev) => (prev === idx ? prev : idx));
   }, [focusMatchId, pickerRows]);
 
   const applyReferenceFieldsFromPickerRow = useCallback(
@@ -1652,23 +1688,32 @@ export default function MatchTable() {
 
   const goPickerPrev = useCallback(() => {
     if (pickerRows.length === 0) return;
-    const ni = (pickerIndex - 1 + pickerRows.length) % pickerRows.length;
+    const from = pickerSelectedIndex != null ? pickerSelectedIndex : 0;
+    const ni = (from - 1 + pickerRows.length) % pickerRows.length;
     const row = pickerRows[ni]!;
     applyReferenceFieldsFromPickerRow(row);
-    setPickerIndex(ni);
+    setPickerSelectedIndex(ni);
     setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerIndex, applyReferenceFieldsFromPickerRow]);
+  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow]);
 
   const goPickerNext = useCallback(() => {
     if (pickerRows.length === 0) return;
-    const ni = (pickerIndex + 1) % pickerRows.length;
+    const from = pickerSelectedIndex != null ? pickerSelectedIndex : -1;
+    const ni = (from + 1) % pickerRows.length;
     const row = pickerRows[ni]!;
     applyReferenceFieldsFromPickerRow(row);
-    setPickerIndex(ni);
+    setPickerSelectedIndex(ni);
     setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerIndex, applyReferenceFieldsFromPickerRow]);
+  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow]);
+
+  /** Maç odak (cf_id) kapat; açılır liste — Maç seç — konumuna döner. */
+  const clearPickerMatchFocus = useCallback(() => {
+    setFocusMatchId(null);
+    setPickerSelectedIndex(null);
+    setPage(1);
+  }, []);
 
   // veri çek
   const fetchMatches = useCallback(async () => {
@@ -1949,13 +1994,18 @@ export default function MatchTable() {
     lsSet(LS_PRESETS, updated);
   }
 
-  /** Sütun filtreleri + ⇄ satırı (Ref, Takım, T-ID, Personel) ve öneri açılır listeleri sıfırlar */
-  function clearColumnFiltersOnly() {
+  /**
+   * Liste sorgusunu “ilk açılış” gibi yapar: üst şerit (Lig, Takım, Tarih, …), tüm sütun
+   * cf_* / debounce, ⇄, ◉ son hane, maç odak (cf_id), kayıtlı filtre şeridi, sıralama,
+   * skor kutusu, tarama paneli. Sütun görünürlüğü / genişlik aynı kalır.
+   */
+  const resetAllListFiltersToDefault = useCallback(() => {
     setColFilters({});
     setColFiltersCommitted({});
     lsSet(LS_COL_FILT, {});
-    // Hane kutu seçimleri sıfırlansın; H/A mod override'ları ayrı bir tercih olduğundan KALSIN.
     setColClickPos({});
+    setDigitPosMode("contains");
+    setColDigitMode({});
     takimSuggestEvGenRef.current += 1;
     takimSuggestDepGenRef.current += 1;
     personelHakemGenRef.current += 1;
@@ -1987,26 +2037,28 @@ export default function MatchTable() {
     setAnyKodSuffix(null);
     setCodePick(null);
     setEslestirmeLabel(null);
-    // Tarih sütunu altındaki Gün / Ay seçicileri (⊞ Hane) — üst filtrelerle aynı kaynak
     setTarihPick({ d: "", m: "" });
-    setFilters((f) => ({
-      ...f,
-      tarih_from: "",
-      tarih_to: "",
-      tarih_gun: "",
-      tarih_ay: "",
-      tarih_yil: "",
-    }));
-    setApplied((a) => ({
-      ...a,
-      tarih_from: "",
-      tarih_to: "",
-      tarih_gun: "",
-      tarih_ay: "",
-      tarih_yil: "",
-    }));
+    const top = { ...EMPTY_TOP };
+    setFilters(top);
+    setApplied(top);
+    lsSet(LS_TOP_FILT, top);
+    setFocusMatchId(null);
+    setLoadedSavedFilterName(null);
+    setSortCol(null);
+    setSortDir("asc");
+    setShowScoreBox(false);
+    setScoreIy("");
+    setScoreMs("");
+    setShowTarama(false);
     setPage(1);
-  }
+  }, []);
+
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") resetAllListFiltersToDefault();
+    });
+    return () => subscription.unsubscribe();
+  }, [resetAllListFiltersToDefault]);
 
   const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
@@ -2080,8 +2132,8 @@ export default function MatchTable() {
             </button>
             <button
               type="button"
-              onClick={clearColumnFiltersOnly}
-              title="Sütun ara kutuları, Tarih altı Gün/Ay seçicileri, ⇄ satırı (Ref, Takım, T-ID, Personel), öneri listeleri ve ◉ panel KOD son hane filtresini sıfırlar"
+              onClick={resetAllListFiltersToDefault}
+              title="Üst şerit (Lig, Takım, Tarih, skor, MBS…), tüm sütun aramaları, ⇄ satırı, maç odak / kayıtlı filtre şeridi, sıralama, skor kutusu ve tarama modunu sıfırlar; tablo tam listeyi yeniden çeker."
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               Sütunları temizle
             </button>
@@ -3230,10 +3282,9 @@ export default function MatchTable() {
           <button
             type="button"
             className="shrink-0 px-1 py-0 rounded border border-slate-300 bg-white hover:bg-slate-50 text-slate-600"
-            title="Şeridi kapat (filtreler aynı kalır)"
+            title="Kayıtlı filtre şeridini kapat ve tüm liste filtrelerini sıfırla (üst şerit, sütun aramaları, maç odak vb.)"
             onClick={() => {
-              setLoadedSavedFilterName(null);
-              setFocusMatchId(null);
+              resetAllListFiltersToDefault();
             }}
           >
             ✕
@@ -3259,20 +3310,26 @@ export default function MatchTable() {
               </label>
               <select
                 className="min-w-0 max-w-[min(48rem,88vw)] flex-1 truncate text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
-                value={pickerIndex}
-                title="Maç seç — tablo kayıtlı filtre + bu maç (cf_id); işaretliyse tarih/saat/lig de maça göre güncellenir"
+                value={pickerSelectedIndex === null ? "" : String(pickerSelectedIndex)}
+                title="Önce — Maç seç —; sonra bir maç seçince tablo o maça odaklanır (cf_id). İşaretliyse tarih/saat/lig maça göre dolar."
                 onChange={(e) => {
-                  const i = Number(e.target.value);
+                  const raw = e.target.value;
+                  if (raw === "") {
+                    clearPickerMatchFocus();
+                    return;
+                  }
+                  const i = Number(raw);
                   if (!Number.isFinite(i) || !pickerRows[i]) return;
                   const row = pickerRows[i]!;
                   applyReferenceFieldsFromPickerRow(row);
-                  setPickerIndex(i);
+                  setPickerSelectedIndex(i);
                   setFocusMatchId(String(row.id));
                   setPage(1);
                 }}
               >
+                <option value="">— Maç seç —</option>
                 {pickerRows.map((r, i) => (
-                  <option key={r.id} value={i}>
+                  <option key={r.id} value={String(i)}>
                     {formatPickerOptionLabel(r)}
                   </option>
                 ))}
@@ -3293,14 +3350,14 @@ export default function MatchTable() {
               >
                 ▶
               </button>
-              {focusMatchId && (
+              {(focusMatchId != null || pickerSelectedIndex != null) && (
                 <button
                   type="button"
                   className="shrink-0 px-1.5 py-0 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
-                  title="Maç odak filtresini kaldır (kayıtlı filtre kalır)"
-                  onClick={() => setFocusMatchId(null)}
+                  title="Maç odaklamayı kapat; yalnızca kayıtlı filtre + liste (cf_id yok). Açılır liste — Maç seç — konumuna döner."
+                  onClick={() => clearPickerMatchFocus()}
                 >
-                  Tümü
+                  Filtreye dön
                 </button>
               )}
               {pickerPartial && (
@@ -3595,6 +3652,7 @@ export default function MatchTable() {
                             const next = { ...colFilters, [c.id]: "" };
                             setColFilters(next);
                             commitColFilters(next);
+                            clearMirroredTopFilterForCfColumn(c.id);
                             if (c.id === "tarih") {
                               setTarihPick({ d: "", m: "" });
                               setFilters((f) => ({
@@ -3648,6 +3706,7 @@ export default function MatchTable() {
                             const next = { ...colFilters, [c.id]: "" };
                             setColFilters(next);
                             commitColFilters(next);
+                            clearMirroredTopFilterForCfColumn(c.id);
                             setColClickPos((prev) => ({ ...prev, [c.id]: [] }));
                             if (c.id === "tarih") {
                               setTarihPick({ d: "", m: "" });

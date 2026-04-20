@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
+import { summarizeSavedFilterPayload } from "@/lib/saved-filter-summary";
 
 export interface SavedFilter {
   id: string;
@@ -23,6 +24,22 @@ export interface SavedFilter {
   payload: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+function SavedFilterSummary({ payload }: { payload: Record<string, unknown> }) {
+  const lines = summarizeSavedFilterPayload(payload, { maxColEntries: 20, maxLineChars: 80 });
+  const full = lines.join("\n");
+  return (
+    <div
+      className="text-[9px] text-slate-600 leading-snug mt-1 space-y-0.5 max-h-[5rem] overflow-y-auto pr-0.5 border-t border-slate-100/80 pt-1"
+      title={full}>
+      {lines.map((line, i) => (
+        <div key={i} className="break-words">
+          {line}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 interface SavedFiltersPanelProps {
@@ -283,6 +300,7 @@ export function SavedFiltersPanel({
                               <div className="text-[10px] text-gray-500">
                                 son güncelleme: {new Date(f.updated_at).toLocaleString("tr-TR")}
                               </div>
+                              <SavedFilterSummary payload={f.payload} />
                             </>
                           )}
                         </div>
