@@ -39,3 +39,10 @@ COMMENT ON COLUMN public.matches.msx_n IS 'MSX oranı (sayı); metin süzümü m
 COMMENT ON COLUMN public.matches.ms2_n IS 'MS2 oranı (sayı); metin süzümü ms2, karşılaştırma cf_* için ms2_n.';
 
 ANALYZE public.matches;
+
+-- cf_ms* + cf_saat birlikte sık kullanılıyorsa planlayıcıya yardım (SQL Editor’de bir kez)
+CREATE INDEX IF NOT EXISTS idx_matches_ms1_n ON public.matches (ms1_n) WHERE ms1_n IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_matches_msx_n ON public.matches (msx_n) WHERE msx_n IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_matches_ms2_n ON public.matches (ms2_n) WHERE ms2_n IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_matches_saat_arama_ms2_n ON public.matches (saat_arama, ms2_n)
+  WHERE ms2_n IS NOT NULL AND saat_arama IS NOT NULL;

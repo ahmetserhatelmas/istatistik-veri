@@ -495,6 +495,32 @@ function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
 }
 
+/**
+ * Saat sütunu: düz `HH:MM` (joker/OR/AND yok) → `saat_arama.eq` (btree indeks, hızlı COUNT).
+ * Aksi halde eski ILIKE yolu (joker, virgül-VEYA, +-VE).
+ */
+function normalizeCfSaatHhMmToken(t: string): string | null {
+  const s = t.trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(mi) || mi < 0 || mi > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyCfSaatColumnFilter(query: any, raw: string): any {
+  const v = raw.trim();
+  if (!v) return query;
+  if (v.includes("*") || v.includes("?") || v.includes(",") || v.includes("+")) {
+    return applyCfTextColumnIlikeFilter(query, "saat_arama", v);
+  }
+  const norm = normalizeCfSaatHhMmToken(v);
+  if (norm) return query.eq("saat_arama", norm);
+  return applyCfTextColumnIlikeFilter(query, "saat_arama", v);
+}
+
 /** Maç sonucu oranları: metin ms*; sayısal cf_* → GENERATED ms*_n (sql/add-matches-ms-odds-numeric-generated-cols.sql). */
 const MS_ODDS_NUMERIC_COL: Record<"ms1" | "msx" | "ms2", string> = {
   ms1: "ms1_n",
@@ -1368,6 +1394,10 @@ export async function GET(req: NextRequest) {
     const colId = paramKey.slice(3);
     if (colId === "tarih") continue;
     const v = val.trim();
+    if (colId === "saat") {
+      query = applyCfSaatColumnFilter(query, v);
+      continue;
+    }
     const msCol = MS_ODDS_DB_COL[colId];
     if (msCol) {
       query = applyMsOddsCfFilter(query, msCol, v);
@@ -1489,7 +1519,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            `${taramaHint}Sorgu zaman aşımı. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Maç Sonucu 1/X/2: add-matches-ms-odds-trgm-indexes.sql. Ham veri (raw_data) cf_* filtreleri büyük tabloda yavaş olabilir; ilgili JSON alanları için pg_trgm / expression index veya Supabase’te statement_timeout artırın. CONCURRENTLY → *-concurrent.sql (psql, satır satır).`,
+            `${taramaHint}Sorgu zaman aşımı. Saat: düz HH:MM artık saat_arama.eq + indeks (sql/add-matches-saat-arama-index.sql). MS karşılaştırma: ms*_n + add-matches-ms-odds-numeric-generated-cols.sql indeksleri. Kod sonek: create-matches-suffix-view.sql + add-matches-suffix-expression-indexes. Ham veri cf_*: pg_trgm / expression index; gerekirse Supabase statement_timeout. CONCURRENTLY → *-concurrent.sql (psql).`,
           detail: msg,
           code: e.code,
         },
