@@ -443,9 +443,6 @@ export const CF_CLIENT_ONLY_COL_IDS: Set<string> = new Set(
   ALL_COLS.filter((c) => c.key.startsWith("__") && !c.key.startsWith("__okbtm_")).map((c) => c.id)
 );
 
-/** Maç sonucu 1/X/2 oranları: `<` `>` aralığı sunucuda metin+cast ile kırılabiliyor; süzüm cellVal ile istemcide. */
-export const CF_MS_ODDS_CLIENT_FILTER_IDS = new Set(["ms1", "msx", "ms2"]);
-
 /** Grup ismine göre renk */
 export const GROUP_COLORS: Record<string, string> = {
   "Tarih":                  "bg-slate-300",

@@ -495,9 +495,15 @@ function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
 }
 
-/** Maç sonucu oranları (ms1/msx/ms2): DB’de metin; < > aralığı sayısal olmalı → cast.numeric. */
+/** Maç sonucu oranları: metin ms*; sayısal cf_* → GENERATED ms*_n (sql/add-matches-ms-odds-numeric-generated-cols.sql). */
+const MS_ODDS_NUMERIC_COL: Record<"ms1" | "msx" | "ms2", string> = {
+  ms1: "ms1_n",
+  msx: "msx_n",
+  ms2: "ms2_n",
+};
+
 function msOddsNumericField(col: "ms1" | "msx" | "ms2"): string {
-  return `${col}.cast.numeric`;
+  return MS_ODDS_NUMERIC_COL[col];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -542,7 +548,7 @@ function branchToOrStrMsOdds(numField: string, textField: string, b: FilterBranc
   return "";
 }
 
-/** ms1 / msx / ms2 sütun cf_* — joker metin + sayısal karşılaştırma (cast.numeric). */
+/** ms1 / msx / ms2 sütun cf_* — joker metin + sayısal karşılaştırma (ms*_n). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyMsOddsCfFilter(query: any, col: "ms1" | "msx" | "ms2", v: string): any {
   const textField = col;

@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import {
   ALL_COLS,
   CF_CLIENT_ONLY_COL_IDS,
-  CF_MS_ODDS_CLIENT_FILTER_IDS,
   OKBT_MULTI_SOURCE_MAP,
   DEFAULT_VISIBLE,
   GROUP_COLORS,
@@ -1554,18 +1553,12 @@ export default function MatchTable() {
     [colFiltersCommitted, colFilters]
   );
 
-  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + ms1/msx/ms2 + hesaplamalı sütunlar
+  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
   // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
   const rawColFilters = useMemo(() => {
     const m: Record<string, string> = {};
     for (const [id, v] of normalizedColFilterEntries(colFiltersEffective)) {
-      if (
-        CF_CLIENT_ONLY_COL_IDS.has(id) ||
-        CF_MS_ODDS_CLIENT_FILTER_IDS.has(id) ||
-        isCellValClientCol(id)
-      ) {
-        m[id] = v;
-      }
+      if (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) m[id] = v;
     }
     return m;
   }, [colFiltersEffective]);
@@ -1601,7 +1594,6 @@ export default function MatchTable() {
     const dbPart = Object.fromEntries(
       normalizedColFilterEntries(colFiltersCommitted).filter(([id]) => {
         if (CF_CLIENT_ONLY_COL_IDS.has(id)) return false;
-        if (CF_MS_ODDS_CLIENT_FILTER_IDS.has(id)) return false;
         if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // mbs/suffix3/suffix4
         return true; // *_obktb_* dahil — server push dener
       })
@@ -1908,8 +1900,8 @@ export default function MatchTable() {
       if (syncRes.ok) {
         const s = (await syncRes.json()) as { lastSyncAt?: string | null };
         if (matchesFetchGenRef.current === myGen) {
-          setLastSyncAt(s.lastSyncAt ?? null);
-        }
+        setLastSyncAt(s.lastSyncAt ?? null);
+      }
       }
     } catch {
       if (matchesFetchGenRef.current === myGen) {
@@ -2254,15 +2246,15 @@ export default function MatchTable() {
               · <span className="tabular-nums text-gray-800">{sortedRows.length}</span> bu sayfada
             </span>
           )}
-          {lastSyncAt && (
-            <span className="text-gray-700">
-              {" "}
-              · son veri çekimi:{" "}
-              <span className="text-gray-800 tabular-nums" title="Europe/Istanbul">
-                {formatLastSyncTr(lastSyncAt)}
+            {lastSyncAt && (
+              <span className="text-gray-700">
+                {" "}
+                · son veri çekimi:{" "}
+                <span className="text-gray-800 tabular-nums" title="Europe/Istanbul">
+                  {formatLastSyncTr(lastSyncAt)}
+                </span>
               </span>
-            </span>
-          )}
+            )}
           {loading && (
             <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />
           )}
@@ -2275,7 +2267,7 @@ export default function MatchTable() {
                   <span className="text-amber-700/90 font-normal" title="Yalnızca bu sayfadaki satırlar (son sonek istemci süzümü)">
                     {" "}
                     (bu sayfa)
-                  </span>
+          </span>
                 </>
               ) : (
                 <>
@@ -2749,7 +2741,7 @@ export default function MatchTable() {
               {refMatch.selected && (() => {
                 const rawVal = String(refMatch.selected[refMatch.field] ?? "").replace(/\D/g, "");
                 if (!rawVal) return null;
-                return (
+            return (
                   <div className="flex items-center gap-0.5">
                     <span className="text-gray-500 text-[10px]">Hane:</span>
                     {rawVal.split("").map((ch, i) => {
@@ -2769,13 +2761,13 @@ export default function MatchTable() {
                           }}
                           className={`w-[18px] h-[18px] text-[9px] flex items-center justify-center rounded border font-bold transition ${isSel ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}>
                           {DIGIT_POS_LABEL[pos] ?? pos}
-                        </button>
-                      );
-                    })}
+              </button>
+            );
+          })}
                     <span className="text-[10px] font-mono text-blue-700 ml-1">
                       = {buildRefPattern(refMatch.selected, refMatch.field, refMatch.positions)}
                     </span>
-                  </div>
+        </div>
                 );
               })()}
 
@@ -2884,8 +2876,8 @@ export default function MatchTable() {
                           <span className="text-gray-800">{name}</span>
                         </button>
                       ))}
-                  </div>
-                )}
+          </div>
+        )}
               </div>
               <div
                 className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
@@ -3666,13 +3658,13 @@ export default function MatchTable() {
                       type="button"
                       title={c.label}
                       className="flex min-w-0 flex-1 items-start gap-0.5 text-left font-semibold text-gray-900 hover:bg-gray-400/40 rounded px-0.5 -mx-0.5 cursor-pointer text-[11px] leading-snug"
-                      onClick={() => handleSort(c.id)}
+                  onClick={() => handleSort(c.id)}
                     >
                       <span className="whitespace-normal break-words hyphens-auto text-center w-full">{c.label}</span>
                       {sortCol === c.id ? (
                         <span className="text-blue-700 text-[9px] shrink-0 leading-none mt-0.5">
                           {sortDir === "asc" ? " \u25B2" : " \u25BC"}
-                        </span>
+                  </span>
                       ) : (
                         <span className="text-gray-400 text-[9px] opacity-0 group-hover:opacity-100 shrink-0 leading-none mt-0.5">
                           {" \u21C5"}
@@ -3818,15 +3810,15 @@ export default function MatchTable() {
                   tarihPickActive;
                 return (
                   <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
-                    className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
+                  className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
                     <div className="flex min-w-0 items-center gap-0.5">
                       <div className="flex items-center gap-0.5 min-w-0 w-full">
-                      <input
-                        id={`cf-input-${c.id}`}
-                        value={colFilters[c.id] ?? ""}
-                        onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
+                  <input
+                    id={`cf-input-${c.id}`}
+                    value={colFilters[c.id] ?? ""}
+                    onChange={(e) => setColFilters((f) => ({ ...f, [c.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
                             // Enter: debounce'u atlayıp anında uygula
                             const raw = (e.target as HTMLInputElement).value;
                             const next = { ...colFilters, [c.id]: raw };
@@ -3849,11 +3841,11 @@ export default function MatchTable() {
                                 tarih_yil: "",
                               }));
                             }
-                            commitColFilters(next);
-                          } else if (e.key === "Escape") {
-                            const next = { ...colFilters, [c.id]: "" };
-                            setColFilters(next);
-                            commitColFilters(next);
+                        commitColFilters(next);
+                      } else if (e.key === "Escape") {
+                        const next = { ...colFilters, [c.id]: "" };
+                        setColFilters(next);
+                        commitColFilters(next);
                             clearMirroredTopFilterForCfColumn(c.id);
                             if (c.id === "tarih") {
                               setTarihPick({ d: "", m: "" });
@@ -3894,9 +3886,9 @@ export default function MatchTable() {
                             : "Esc → temizle | *5?6*: wildcard | 4.9,3.2: VEYA | 4.9+3.2: VE"
                         }
                         className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[11px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
-                          colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
-                        }`}
-                      />
+                      colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
+                    }`}
+                  />
                       {showClearCol && (
                         <button
                           type="button"
@@ -3936,7 +3928,7 @@ export default function MatchTable() {
                       )}
                       </div>
                     </div>
-                  </th>
+                </th>
                 );
               })}
             </tr>
@@ -4136,8 +4128,8 @@ export default function MatchTable() {
         }`}>
       <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
         <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none flex flex-col gap-1.5 items-start">
-          <span>
-            Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
+        <span>
+          Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
             {!loading && (
               <>
                 {" "}
@@ -4146,7 +4138,7 @@ export default function MatchTable() {
             )}
             {globalKodSuffix &&
               ` · sonek süzümü: ${kodSuffixFilteredRows.length}`}
-          </span>
+        </span>
           <span
             className="inline-flex flex-wrap items-center gap-1 rounded border border-amber-300/90 bg-amber-50/95 px-1.5 py-1 text-[10px] text-gray-800"
             title="raw_data içindeki tüm KOD* alanlarında son N hane; rakam sayısı N ile aynı olmalı (örn. son 4 → 7119). Tüm maçlar taranır; çok büyük tabloda sorgu yavaşlayabilir.">
