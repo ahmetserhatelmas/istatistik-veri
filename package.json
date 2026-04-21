@@ -10,6 +10,7 @@
     "sync:now": "node scripts/manual-sync.mjs",
     "sync:forward": "node scripts/forward-sync.mjs",
     "sync:forward:60": "node scripts/forward-sync.mjs 60",
+    "backfill:kod-suffix": "node scripts/backfill-match-raw-kod-suffix.mjs",
     "auth:set-password": "node scripts/set-user-password.mjs"
   },
   "dependencies": {

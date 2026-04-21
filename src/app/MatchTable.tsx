@@ -20,9 +20,42 @@ import { TaramaModu } from "./TaramaModu";
 
 type Match = Record<string, unknown>;
 
+/** ◉ panel + KOD son elle: raw_data’daki KOD* alanlarında son N hane (API ks_any_*). */
+type AnyKodSuffixState = { digits: string; n: number };
+
+function formatAnyKodSuffixLabel(s: AnyKodSuffixState): string {
+  return `KOD* son ${s.n} = ${s.digits}`;
+}
+
 /** Sağ-tık → son hane filtresi paneli */
 type CodePickEntry = { key: string; colId: string; value: number };
 type CodePickPanel = { entries: CodePickEntry[]; x: number; y: number } | null;
+
+/** Üst düzey + bir seviye iç içe nesne — get_matches_by_raw_kod_suffix ile aynı kapsam. */
+function collectKodCodePickEntries(rd: Record<string, unknown>): CodePickEntry[] {
+  const entries: CodePickEntry[] = [];
+  const seen = new Set<string>();
+  const push = (k: string, v: unknown) => {
+    if (!k.startsWith("KOD")) return;
+    const raw = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+    if (!Number.isFinite(raw)) return;
+    if (seen.has(k)) return;
+    seen.add(k);
+    const intVal = Math.abs(Math.round(raw));
+    entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
+  };
+  for (const [k, v] of Object.entries(rd)) {
+    push(k, v);
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        push(k2, v2);
+      }
+    }
+  }
+  entries.sort((a, b) => a.key.localeCompare(b.key));
+  return entries;
+}
+
 interface ApiResponse {
   data?: Match[];
   page?: number;
@@ -30,6 +63,7 @@ interface ApiResponse {
   total?: number;
   totalPages?: number;
   error?: string;
+  /** Sunucu birleşik hata; eski alan adı */
   detail?: string;
   code?: string;
   /** pick=stb yanıtı: limit dolu mu (daha fazla oynanmamış maç olabilir) */
@@ -344,6 +378,22 @@ const RAW_API_GROUP = "Ham veri (API)";
 // ── Hane seçici (digit-position click) ───────────────────────────────────────
 /** Spesifik oyun kodu / maç ID sütunları (KOD son hane vurgusu vb. için). */
 const KOD_ID_COL_IDS = new Set(["id","kod_ms","kod_iy","kod_cs","kod_au"]);
+
+const KOD_CF_IDS_SUPPRESSED_WHEN_KS_ANY = new Set(["kod_ms", "kod_iy", "kod_cs", "kod_au"]);
+
+/**
+ * `ks_any_*` (◉ / KOD son elle) açıkken API’ye gönderilmez: ham `raw_KOD*` ve tablo
+ * `kod_*` sütun filtreleri ile birlikte VE uygulanınca (ör. sütunda KODIYMS=55719, panelde
+ * KODAU son 5=55709) kesişim boş kalabiliyordu. Global KOD sonek seçilince bu cf’ler atlanır.
+ */
+function shouldSuppressCfWhenKsAny(colId: string): boolean {
+  if (KOD_CF_IDS_SUPPRESSED_WHEN_KS_ANY.has(colId)) return true;
+  if (colId.startsWith("raw_")) {
+    const jsonKey = colId.slice(4);
+    return /^kod/i.test(jsonKey);
+  }
+  return false;
+}
 
 /**
  * Adam'ın isteği: "isimler de hane sayılsın, neden sayılmasın" → Hane artık
@@ -714,6 +764,11 @@ type KodSuffixRefKey = "id" | "kod_ms" | "kod_iy" | "kod_cs" | "kod_au";
 const DEFAULT_KOD_ROW_SUFFIX_N: KodSuffixN = 4;
 const DEFAULT_KOD_ROW_SUFFIX_REF: KodSuffixRefKey = "id";
 
+/** ◉ Son hane paneli özel N; `route.ts` içindeki `KS_N_OK` ile aynı aralıkta tutulmalı. */
+const KS_PANEL_CODE_PICK_N_MIN = 2;
+const KS_PANEL_CODE_PICK_N_MAX = 10;
+const KS_PANEL_CODE_PICK_BASE_NS = [3, 4, 5] as const;
+
 function lsGet<T>(key: string, fb: T): T {
   try { const r = localStorage.getItem(key); return r ? JSON.parse(r) as T : fb; }
   catch { return fb; }
@@ -1055,9 +1110,14 @@ export default function MatchTable() {
 
   // Son hane filtresi paneli (çift-tık)
   const [codePick, setCodePick] = useState<CodePickPanel>(null);
+  const [codePickCustomNDraft, setCodePickCustomNDraft] = useState("");
+  const [codePickCustomN, setCodePickCustomN] = useState<number | null>(null);
   // Çift-tık ile seçilen son-hane vurgusu (filtrelemez, sadece sarı)
-  /** Panel'den seçilen KOD son hane filtresi — herhangi bir KOD sütunu eşleşen satırları gösterir */
-  const [anyKodSuffix, setAnyKodSuffix] = useState<{ digits: string; n: number } | null>(null);
+  /** Panel / KOD son elle: raw_data KOD* alanlarında son N hane eşleşen maçları gösterir */
+  const [anyKodSuffix, setAnyKodSuffix] = useState<AnyKodSuffixState | null>(null);
+  /** Sayfalama şeridi: satırda arama yapmadan son N hane (raw_data KOD*). */
+  const [manualKsN, setManualKsN] = useState("3");
+  const [manualKsDigits, setManualKsDigits] = useState("");
 
   const kodSuffixN = DEFAULT_KOD_ROW_SUFFIX_N;
   const kodSuffixRefKey = DEFAULT_KOD_ROW_SUFFIX_REF;
@@ -1592,6 +1652,7 @@ export default function MatchTable() {
       const fid = focusMatchId?.trim();
       Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
         if (!v.trim()) return;
+        if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
         if (id === "id" && fid && !opts?.forPicker) return;
         p.set(`cf_${id}`, v.trim());
       });
@@ -1618,6 +1679,15 @@ export default function MatchTable() {
       anyKodSuffix,
     ],
   );
+
+  const applyManualKodSuffixFilter = useCallback(() => {
+    const n = Number(String(manualKsN).trim());
+    const digits = manualKsDigits.replace(/\D/g, "");
+    if (!Number.isInteger(n) || n < KS_PANEL_CODE_PICK_N_MIN || n > KS_PANEL_CODE_PICK_N_MAX) return;
+    if (digits.length !== n || !/^\d+$/.test(digits)) return;
+    setAnyKodSuffix({ n, digits });
+    setPage(1);
+  }, [manualKsN, manualKsDigits]);
 
   const pickerFilterKey = useMemo(
     () =>
@@ -1786,12 +1856,9 @@ export default function MatchTable() {
       const json: ApiResponse = await res.json();
       if (matchesFetchGenRef.current !== myGen) return;
       if (!res.ok) {
-        const hint =
-          json.error ||
-          json.detail ||
-          (typeof json === "object" && json && "message" in json
-            ? String((json as { message?: string }).message)
-            : "");
+        const hint = [json.error, json.detail, json.code ? `(${json.code})` : ""]
+          .filter((x) => typeof x === "string" && x.trim().length > 0)
+          .join(" — ");
         setFetchError(hint.trim() || `Sunucu hatası (${res.status})`);
         setMatches([]);
         setTotal(0);
@@ -1989,12 +2056,21 @@ export default function MatchTable() {
     if (p.digitPosMode === "contains" || p.digitPosMode === "positional") {
       setDigitPosMode(p.digitPosMode);
     }
-    // ◉ panel Kod son hane
-    setAnyKodSuffix(
-      p.anyKodSuffix && typeof p.anyKodSuffix === "object"
-        ? (p.anyKodSuffix as { digits: string; n: number })
-        : null,
-    );
+    // ◉ panel / KOD son elle
+    if (p.anyKodSuffix && typeof p.anyKodSuffix === "object") {
+      const o = p.anyKodSuffix as { digits?: unknown; n?: unknown };
+      const digits = String(o.digits ?? "").replace(/\D/g, "");
+      const n = Number(o.n);
+      const ok =
+        /^\d+$/.test(digits) &&
+        digits.length === n &&
+        Number.isInteger(n) &&
+        n >= KS_PANEL_CODE_PICK_N_MIN &&
+        n <= KS_PANEL_CODE_PICK_N_MAX;
+      setAnyKodSuffix(ok ? { digits, n } : null);
+    } else {
+      setAnyKodSuffix(null);
+    }
     // ⇄ çift yönlü satır
     if (p.bidirFilters && typeof p.bidirFilters === "object") {
       setBidirFilters(p.bidirFilters as BidirFiltersState);
@@ -2091,6 +2167,8 @@ export default function MatchTable() {
     setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
     setAnyKodSuffix(null);
     setCodePick(null);
+    setCodePickCustomNDraft("");
+    setCodePickCustomN(null);
     setEslestirmeLabel(null);
     setTarihPick({ d: "", m: "" });
     const top = { ...EMPTY_TOP };
@@ -2115,9 +2193,27 @@ export default function MatchTable() {
     return () => subscription.unsubscribe();
   }, [resetAllListFiltersToDefault]);
 
+  useEffect(() => {
+    if (!codePick) {
+      setCodePickCustomNDraft("");
+      setCodePickCustomN(null);
+    }
+  }, [codePick]);
+
+  const codePickSuffixColumns = useMemo(
+    () =>
+      Array.from(
+        new Set([...KS_PANEL_CODE_PICK_BASE_NS, ...(codePickCustomN != null ? [codePickCustomN] : [])]),
+      ).sort((a, b) => a - b),
+    [codePickCustomN],
+  );
+
   const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
-  const codePickPanelW = Math.min(380, viewportW - 16);
+  const codePickPanelW = Math.min(
+    Math.min(520, 200 + codePickSuffixColumns.length * 56),
+    viewportW - 16,
+  );
   const codePickPanelH = Math.min(440, viewportH - 24);
 
   return (
@@ -2135,6 +2231,12 @@ export default function MatchTable() {
         {/* Üst bilgi: mobilde satır kırılır; kontroller ayrı şeritte yatay kaydırılır */}
         <div className="px-4 pt-2 pb-1 text-xs text-gray-700 leading-snug break-words">
           <span className="tabular-nums">{total.toLocaleString("tr-TR")} maç</span>
+          {!loading && (
+            <span className="text-gray-600" title="Bu sayfada tabloda listelenen satır sayısı">
+              {" "}
+              · <span className="tabular-nums text-gray-800">{sortedRows.length}</span> bu sayfada
+            </span>
+          )}
           {lastSyncAt && (
             <span className="text-gray-700">
               {" "}
@@ -2148,7 +2250,29 @@ export default function MatchTable() {
             <span className="ml-1.5 inline-block w-3 h-3 border-2 border-gray-500 border-t-blue-400 rounded-full animate-spin align-middle" />
           )}
           {(colFiltersRecordHasAnyTrimmed(colFiltersEffective) || globalKodSuffix) && !loading && (
-            <span className="text-amber-600"> · {kodSuffixFilteredRows.length} eşleşti</span>
+            <span className="text-amber-600">
+              {globalKodSuffix ? (
+                <>
+                  {" "}
+                  · {kodSuffixFilteredRows.length} eşleşti
+                  <span className="text-amber-700/90 font-normal" title="Yalnızca bu sayfadaki satırlar (son sonek istemci süzümü)">
+                    {" "}
+                    (bu sayfa)
+                  </span>
+                </>
+              ) : (
+                <>
+                  {" "}
+                  · {total.toLocaleString("tr-TR")} sonuç
+                  <span
+                    className="text-amber-700/90 font-normal"
+                    title="Sunucu filtresiyle eşleşen toplam kayıt (sayfalar arası)">
+                    {" "}
+                    (tümü)
+                  </span>
+                </>
+              )}
+            </span>
           )}
           {globalKodSuffix && !loading && (
             <span
@@ -3824,17 +3948,7 @@ export default function MatchTable() {
                         onClick={(e) => {
                           e.stopPropagation();
                           const rd = m.raw_data as Record<string, unknown> | null;
-                          const entries: CodePickEntry[] = [];
-                          if (rd) {
-                            for (const [k, v] of Object.entries(rd)) {
-                              if (!k.startsWith("KOD")) continue;
-                              const raw = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-                              if (!Number.isFinite(raw)) continue;
-                              const intVal = Math.abs(Math.round(raw));
-                              entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
-                            }
-                            entries.sort((a, b) => a.key.localeCompare(b.key));
-                          }
+                          const entries = rd ? collectKodCodePickEntries(rd) : [];
                           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           setCodePick({ entries, x: rect.right + 4, y: rect.top });
                         }}
@@ -3859,8 +3973,9 @@ export default function MatchTable() {
                         !!anyKodSuffix &&
                         isKodCol &&
                         (() => {
+                          const ks = anyKodSuffix;
                           const d = val.replace(/\D/g, "");
-                          return d.length >= anyKodSuffix.n && d.endsWith(anyKodSuffix.digits);
+                          return d.length >= ks.n && d.endsWith(ks.digits);
                         })();
                       let cls: string;
                       if (kodSonHit || rowClickHit) {
@@ -3928,20 +4043,67 @@ export default function MatchTable() {
             </div>
             {/* Aktif filtre göstergesi */}
             {anyKodSuffix && (
-              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-50 border-b text-[10px] text-yellow-800">
+              <div
+                className="flex items-center gap-2 px-2 py-1 bg-yellow-50 border-b text-[10px] text-yellow-800"
+                title="Ham KOD* / kod_ms… sütun filtreleri bu modda API’ye eklenmez; yalnızca buradaki son N hane uygulanır.">
                 <span className="font-semibold">Filtre aktif:</span>
-                <span className="font-mono bg-yellow-200 px-1 rounded">son {anyKodSuffix.n} = {anyKodSuffix.digits}</span>
+                <span className="font-mono bg-yellow-200 px-1 rounded">{formatAnyKodSuffixLabel(anyKodSuffix)}</span>
                 <button className="ml-auto text-yellow-600 hover:text-red-600 font-semibold" onClick={() => { setAnyKodSuffix(null); setPage(1); setCodePick(null); }}>Temizle</button>
               </div>
             )}
+            {/* Özel son N (2–10); API ks_any_n ile aynı aralık */}
+            <div className="flex flex-wrap items-center gap-1.5 px-2 py-1 border-b border-gray-200 bg-white text-[10px] text-gray-700">
+              <span className="shrink-0 text-gray-500">Özel son N</span>
+              <input
+                type="number"
+                min={KS_PANEL_CODE_PICK_N_MIN}
+                max={KS_PANEL_CODE_PICK_N_MAX}
+                inputMode="numeric"
+                placeholder={`${KS_PANEL_CODE_PICK_N_MIN}–${KS_PANEL_CODE_PICK_N_MAX}`}
+                value={codePickCustomNDraft}
+                onChange={(e) => setCodePickCustomNDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  const v = Number(codePickCustomNDraft.trim());
+                  if (!Number.isInteger(v) || v < KS_PANEL_CODE_PICK_N_MIN || v > KS_PANEL_CODE_PICK_N_MAX) return;
+                  setCodePickCustomN(v);
+                }}
+                className="w-11 border border-gray-300 rounded px-1 py-px text-[11px] text-right tabular-nums"
+              />
+              <button
+                type="button"
+                className="shrink-0 rounded border border-gray-300 bg-gray-50 px-1.5 py-px hover:bg-gray-100"
+                onClick={() => {
+                  const v = Number(codePickCustomNDraft.trim());
+                  if (!Number.isInteger(v) || v < KS_PANEL_CODE_PICK_N_MIN || v > KS_PANEL_CODE_PICK_N_MAX) return;
+                  setCodePickCustomN(v);
+                }}
+              >
+                Ekle
+              </button>
+              {codePickCustomN != null && (
+                <button
+                  type="button"
+                  className="shrink-0 text-sky-600 hover:text-sky-800"
+                  onClick={() => setCodePickCustomN(null)}
+                >
+                  Özel sütunu kaldır
+                </button>
+              )}
+            </div>
             {/* Başlık satırı — grid ile hizalı; mobilde kod adı kırılır */}
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(4.25rem,auto)_auto] gap-x-1.5 items-center px-2 py-1 bg-gray-50 border-b text-[11px] text-gray-500 font-medium">
               <span className="min-w-0">Kod</span>
               <span className="text-right tabular-nums shrink-0">Değer</span>
-              <div className="flex gap-0.5 justify-end shrink-0">
-                <span className="w-[2.75rem] text-center">son 3</span>
-                <span className="w-[2.75rem] text-center">son 4</span>
-                <span className="w-[2.85rem] text-center">son 5</span>
+              <div className="flex flex-wrap gap-0.5 justify-end shrink-0">
+                {codePickSuffixColumns.map((n) => (
+                  <span
+                    key={n}
+                    className={`w-[2.65rem] text-center shrink-0 ${codePickCustomN === n ? "text-purple-700 font-semibold" : ""}`}
+                  >
+                    son {n}
+                  </span>
+                ))}
               </div>
             </div>
             {/* Kod listesi */}
@@ -3949,30 +4111,30 @@ export default function MatchTable() {
               {codePick.entries.length === 0 && (
                 <div className="px-3 py-4 text-center text-gray-400 text-[11px]">Bu satırda KOD verisi bulunamadı.</div>
               )}
-              {codePick.entries.map(({ key, value }) => {
-                const s3 = value % 1000;
-                const s4 = value % 10000;
-                const s5 = value % 100000;
-                return (
+              {codePick.entries.map(({ key, value }) => (
                   <div
                     key={key}
                     className="grid grid-cols-[minmax(0,1fr)_minmax(4.25rem,auto)_auto] gap-x-1.5 items-center px-2 py-1 border-b border-gray-100 hover:bg-yellow-50">
                     <span className="font-mono font-semibold min-w-0 text-gray-800 text-xs break-all leading-snug">{key}</span>
                     <span className="font-mono text-gray-600 text-xs text-right tabular-nums shrink-0">{value}</span>
-                    <div className="flex gap-0.5 justify-end shrink-0">
-                      {([3, 4, 5] as const).map((n) => {
-                        const suffix = n === 3 ? s3 : n === 4 ? s4 : s5;
-                        const tooShort = value < Math.pow(10, n - 1);
-                        if (tooShort) return <span key={n} className="w-[2.75rem]" />;
-                        const isActive = anyKodSuffix?.digits === String(suffix) && anyKodSuffix?.n === n;
+                    <div className="flex flex-wrap gap-0.5 justify-end shrink-0">
+                      {codePickSuffixColumns.map((n) => {
+                        const pow = 10 ** n;
+                        const suffix = value % pow;
+                        const tooShort = value < 10 ** (n - 1);
+                        if (tooShort) return <span key={n} className="w-[2.65rem]" />;
+                        const isActive =
+                          anyKodSuffix?.digits === String(suffix) && anyKodSuffix?.n === n;
                         return (
                           <button
                             key={n}
-                            title={`Tüm DB'de herhangi bir KOD sütununun son ${n} hanesi = ${suffix} olan satırları filtrele`}
-                            className={`w-[2.75rem] min-h-[28px] px-0.5 py-0.5 rounded font-mono text-[11px] transition-colors ${
+                            title={`Tüm DB'de raw_data KOD* alanlarında son ${n} hane = ${suffix} olan maçları filtrele`}
+                            className={`w-[2.65rem] min-h-[28px] px-0.5 py-0.5 rounded font-mono text-[11px] transition-colors ${
                               isActive
                                 ? "bg-yellow-400 text-yellow-900 font-bold"
-                                : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
+                                : codePickCustomN === n
+                                  ? "bg-purple-100 hover:bg-purple-200 text-purple-900"
+                                  : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
                             }`}
                             onClick={() => {
                               setAnyKodSuffix(isActive ? null : { digits: String(suffix), n });
@@ -3986,8 +4148,7 @@ export default function MatchTable() {
                       })}
                     </div>
                   </div>
-                );
-              })}
+                ))}
             </div>
           </div>
         </>
@@ -3999,13 +4160,68 @@ export default function MatchTable() {
           loading ? "pointer-events-none opacity-60" : ""
         }`}>
       <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
-        <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none">
-          Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
-          {(colFiltersRecordHasAnyTrimmed(colFiltersEffective) || globalKodSuffix) && ` · filtreli: ${kodSuffixFilteredRows.length}`}
+        <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none flex flex-col gap-1.5 items-start">
+          <span>
+            Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
+            {!loading && (
+              <>
+                {" "}
+                · <span className="tabular-nums">{sortedRows.length}</span> bu sayfada
+              </>
+            )}
+            {globalKodSuffix &&
+              ` · sonek süzümü: ${kodSuffixFilteredRows.length}`}
+          </span>
+          <span
+            className="inline-flex flex-wrap items-center gap-1 rounded border border-amber-300/90 bg-amber-50/95 px-1.5 py-1 text-[10px] text-gray-800"
+            title="raw_data içindeki tüm KOD* alanlarında son N hane; rakam sayısı N ile aynı olmalı (örn. son 4 → 7119). Tüm maçlar taranır; çok büyük tabloda sorgu yavaşlayabilir.">
+            <span className="font-semibold text-amber-900 shrink-0">KOD son elle</span>
+            <span className="text-gray-500 shrink-0">son</span>
+            <input
+              type="number"
+              min={KS_PANEL_CODE_PICK_N_MIN}
+              max={KS_PANEL_CODE_PICK_N_MAX}
+              inputMode="numeric"
+              value={manualKsN}
+              onChange={(e) => setManualKsN(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyManualKodSuffixFilter();
+              }}
+              className="w-9 rounded border border-gray-300 bg-white px-0.5 py-px text-right tabular-nums text-[10px]"
+            />
+            <span className="text-gray-500 shrink-0">=</span>
+            <input
+              value={manualKsDigits}
+              onChange={(e) => setManualKsDigits(e.target.value.replace(/\D/g, ""))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyManualKodSuffixFilter();
+              }}
+              placeholder="123…"
+              className="w-[4.5rem] rounded border border-gray-300 bg-white px-0.5 py-px font-mono text-[10px]"
+            />
+            <button
+              type="button"
+              className="shrink-0 rounded border border-amber-600 bg-amber-200 px-1.5 py-px font-semibold text-amber-950 hover:bg-amber-300"
+              onClick={applyManualKodSuffixFilter}
+            >
+              Süz
+            </button>
+          </span>
           {anyKodSuffix && (
-            <span className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold">
-              ● KOD son {anyKodSuffix.n} = {anyKodSuffix.digits}
-              <button className="hover:text-red-600 ml-0.5" title="Filtreyi temizle" onClick={() => { setAnyKodSuffix(null); setPage(1); }}>✕</button>
+            <span
+              className="ml-2 inline-flex items-center gap-1 bg-yellow-200 text-yellow-900 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+              title="Aktifken ham KOD* ve kod_ms/iy/cs/au sütun filtreleri sunucuya gitmez; çelişkili VE ile boş liste önlenir.">
+              ● {formatAnyKodSuffixLabel(anyKodSuffix)}
+              <button
+                className="hover:text-red-600 ml-0.5"
+                title="Filtreyi temizle"
+                onClick={() => {
+                  setAnyKodSuffix(null);
+                  setPage(1);
+                }}
+              >
+                ✕
+              </button>
             </span>
           )}
           {eslestirmeLabel && (

@@ -135,7 +135,10 @@ export function summarizeSavedFilterPayload(
     const o = any as { digits?: unknown; n?: unknown };
     const dig = trimStr(o.digits);
     const n = trimStr(o.n);
-    if (dig) lines.push(truncate(`◉ KOD son hane: ${dig}${n ? ` (${n} hane)` : ""}`, maxCh));
+    if (dig) {
+      const bit = n ? `KOD* son ${n} = ${dig}` : `KOD*: ${dig}`;
+      lines.push(truncate(`◉ ${bit}`, maxCh));
+    }
   }
 
   const dpm = trimStr(p.digitPosMode);

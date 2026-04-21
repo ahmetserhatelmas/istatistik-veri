@@ -13,7 +13,8 @@ import {
 } from "@/lib/tarih-pattern";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
-export const maxDuration = 60;
+/** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
+export const maxDuration = 300;
 
 function flattenRawValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
@@ -538,6 +539,58 @@ function spRequestsSaatExactCount(sp: URLSearchParams): boolean {
 }
 
 /**
+ * cf_tarih dışında herhangi bir cf_* parametresi varken planned sayım,
+ * istatistik tahminine yakın kalabiliyor (örn. cf_t1=Midtjylland → gerçek 161 satır
+ * varken ~263 gösterimi, boş 3. sayfa). Sayfalama doğru olsun diye exact count.
+ * Yalnız cf_tarih iken planned kalır (geniş tarama + ağır COUNT riski).
+ */
+function spRequestsCfOtherThanTarih(sp: URLSearchParams): boolean {
+  for (const [k, v] of sp.entries()) {
+    if (!k.startsWith("cf_") || !String(v ?? "").trim()) continue;
+    if (k === "cf_tarih") continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * cf_tarih dışındaki URL parametreleriyle küçük sonuç kümesi beklenirken planned sayım
+ * (ör. cf_tarih + bidir_takim_ev, veya yalnız üst `takim=` / `ks_any_*`) toplamı şişirir.
+ * cf_tarih tek başına burada yok — o durumda planned kalmaya devam eder.
+ */
+function spHasNarrowingListFilter(sp: URLSearchParams): boolean {
+  const keys = [
+    "bidir_takim_ev",
+    "bidir_takim_dep",
+    "bidir_takim",
+    "bidir_takimid_ev",
+    "bidir_takimid_dep",
+    "bidir_takimid",
+    "bidir_hakem",
+    "bidir_ant_ev",
+    "bidir_ant_dep",
+    "bidir_ant",
+    "bidir_personel",
+    "takim",
+    "lig",
+    "alt_lig",
+    "hakem",
+    "sonuc_iy",
+    "sonuc_ms",
+    "suffix3",
+    "suffix4",
+    "tarama_q",
+    "ks_any_suffix",
+    "oynanmamis",
+  ];
+  for (const k of keys) {
+    if (String(sp.get(k) ?? "").trim()) return true;
+  }
+  if (String(sp.get("ks_ref") ?? "").trim() && String(sp.get("ks_suffix") ?? "").trim()) return true;
+  return false;
+}
+
+/**
  * İY / MS sütun filtresi: düz "4-2" girdisi → tam eşleşme (.eq), SQL'deki
  * TRIM(sonuc_ms) = '4-2' ile aynı sonuç (hücrede ekstra boşluk yoksa).
  * Virgülle birden fazla skor → OR ile tam eşleşmeler. Joker / metin araması → eski ILIKE.
@@ -570,7 +623,8 @@ function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: 
 
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
 const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
-const KS_N_OK = new Set([3, 4, 5]);
+/** KOD son N hane (◉ panel + ks_any_*); SQL `POWER(10, p_n)` ile uyumlu üst sınır. */
+const KS_N_OK = new Set([2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
 // ── OKBT sunucu-tarafı filtresi (basit sayısal ifadeler) ─────────────────────
 // Kaynak → max idx (5-haneli: 0..14, Maç ID 7-haneli: 0..19)
@@ -759,6 +813,42 @@ function applyTaramaQuickSearchFilter(query: any, rawQ: string): any {
   return query;
 }
 
+/**
+ * KOD sonek RPC taramasını daraltmak için üst bar / widget tarih sınırları (ISO yyyy-mm-dd).
+ * Tarih yoksa null → RPC tüm tabloyu tarar (büyük tabloda zaman aşımı riski).
+ */
+function ksAnyRpcTarihBounds(sp: URLSearchParams): { p_tarih_from: string | null; p_tarih_to: string | null } {
+  const pad = (raw: string, max: number): string => {
+    const n = Number(raw.trim());
+    if (!Number.isFinite(n) || n < 1 || n > max) return "";
+    return String(n).padStart(2, "0");
+  };
+  const tgRaw = sp.get("tarih_gun")?.trim() ?? "";
+  const taRaw = sp.get("tarih_ay")?.trim() ?? "";
+  const tyRaw = sp.get("tarih_yil")?.trim() ?? "";
+  if (tgRaw && taRaw && /^\d{4}$/.test(tyRaw)) {
+    const g = pad(tgRaw, 31);
+    const a = pad(taRaw, 12);
+    const y = tyRaw;
+    if (g && a && y) {
+      const di = Number(g);
+      const mi = Number(a);
+      const yi = Number(y);
+      const last = new Date(yi, mi, 0).getDate();
+      const day = Math.min(di, last);
+      const iso = `${y}-${String(mi).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      return { p_tarih_from: iso, p_tarih_to: iso };
+    }
+  }
+
+  const tarihFrom = sp.get("tarih_from")?.trim() || "";
+  const tarihTo = sp.get("tarih_to")?.trim() || "";
+  if (tarihFrom && tarihTo) return { p_tarih_from: tarihFrom, p_tarih_to: tarihTo };
+  if (tarihFrom) return { p_tarih_from: tarihFrom, p_tarih_to: tarihFrom };
+  if (tarihTo) return { p_tarih_from: null, p_tarih_to: tarihTo };
+  return { p_tarih_from: null, p_tarih_to: null };
+}
+
 export async function GET(req: NextRequest) {
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
     return NextResponse.json(
@@ -831,7 +921,11 @@ export async function GET(req: NextRequest) {
   })();
 
   const forceExactCount =
-    spRequestsPlainSkorExactCount(sp) || spRequestsSaatExactCount(sp) || hasObktbCfParam;
+    spRequestsPlainSkorExactCount(sp) ||
+    spRequestsSaatExactCount(sp) ||
+    hasObktbCfParam ||
+    spRequestsCfOtherThanTarih(sp) ||
+    spHasNarrowingListFilter(sp);
   const countMode = forceExactCount
     ? ("exact" as const)
     : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
@@ -841,18 +935,48 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
 
-  // ks_any_suffix: herhangi bir KOD sütununun son N hanesi eşleşen maçlar
+  const ksAnyTarih = ksAnyRpcTarihBounds(sp);
+
+  // ks_any_suffix: raw_data içindeki tüm KOD* anahtarlarında son N hane (get_matches_by_raw_kod_suffix)
   if (
     /^\d+$/.test(ksAnySuffixRaw) &&
-    ksAnySuffixRaw.length > 0 &&
+    ksAnySuffixRaw.length === ksAnyN &&
     KS_N_OK.has(ksAnyN)
   ) {
-    const suffixNum = Number(ksAnySuffixRaw);
-    const { data: idData } = await supabase.rpc("get_matches_by_kod_suffix", {
-      p_suffix: suffixNum,
-      p_n: ksAnyN,
-    });
-    ksAnyFilterIds = (idData as number[] | null) ?? [];
+    const suffixNum = parseInt(ksAnySuffixRaw, 10);
+    if (Number.isFinite(suffixNum) && suffixNum >= 0 && suffixNum < 10 ** ksAnyN) {
+      const rpcArgs: Record<string, unknown> = {
+        p_suffix: suffixNum,
+        p_n: ksAnyN,
+      };
+      if (ksAnyTarih.p_tarih_from) rpcArgs.p_tarih_from = ksAnyTarih.p_tarih_from;
+      if (ksAnyTarih.p_tarih_to) rpcArgs.p_tarih_to = ksAnyTarih.p_tarih_to;
+
+      const { data: idData, error: ksAnyRpcError } = await supabase.rpc(
+        "get_matches_by_raw_kod_suffix",
+        rpcArgs
+      );
+      if (ksAnyRpcError) {
+        const parts = [
+          ksAnyRpcError.message,
+          ksAnyRpcError.details,
+          ksAnyRpcError.hint,
+        ].filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+        const timeoutExtra =
+          ksAnyRpcError.code === "57014"
+            ? " KOD sonek artık indeksli tabloya dayanır: sql/create-get-matches-by-raw-kod-suffix-fn.sql + sql/backfill-match-raw-kod-suffix.sql çalıştırıldı mı? Eski jsonb_each sürümünde kaldıysanız veya backfill bitmediyse zaman aşımı görülebilir."
+            : "";
+        return NextResponse.json(
+          {
+            error: `get_matches_by_raw_kod_suffix: ${ksAnyRpcError.message}${timeoutExtra}`,
+            detail: parts.slice(1).join(" | ") || undefined,
+            code: ksAnyRpcError.code,
+          },
+          { status: 503 }
+        );
+      }
+      ksAnyFilterIds = (idData as number[] | null) ?? [];
+    }
   }
 
   // ── Ham veri leading-wildcard ön-filtre ──────────────────────────────────────
@@ -1308,6 +1432,21 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Kod sonek araması için görünüm eksik. Supabase SQL Editor’de sql/create-matches-suffix-view.sql dosyasını çalıştırın.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingRawKodSuffixFn =
+      !!ksAnySuffixRaw &&
+      (/get_matches_by_raw_kod_suffix/i.test(msg) ||
+        (e.code === "42883" && /get_matches_by_raw_kod_suffix/i.test(msg)));
+    if (missingRawKodSuffixFn) {
+      return NextResponse.json(
+        {
+          error:
+            "KOD son hane (raw_data KOD*) filtresi için fonksiyon eksik. sql/create-get-matches-by-raw-kod-suffix-fn.sql dosyasını Supabase SQL Editor’de çalıştırın.",
           detail: msg,
           code: e.code,
         },
