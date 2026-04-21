@@ -765,8 +765,8 @@ const DEFAULT_KOD_ROW_SUFFIX_N: KodSuffixN = 4;
 const DEFAULT_KOD_ROW_SUFFIX_REF: KodSuffixRefKey = "id";
 
 /** ◉ Son hane paneli özel N; `route.ts` içindeki `KS_N_OK` ile aynı aralıkta tutulmalı. */
-const KS_PANEL_CODE_PICK_N_MIN = 2;
-const KS_PANEL_CODE_PICK_N_MAX = 10;
+const KS_PANEL_CODE_PICK_N_MIN = 3;
+const KS_PANEL_CODE_PICK_N_MAX = 5;
 const KS_PANEL_CODE_PICK_BASE_NS = [3, 4, 5] as const;
 
 function lsGet<T>(key: string, fb: T): T {
@@ -1110,12 +1110,10 @@ export default function MatchTable() {
 
   // Son hane filtresi paneli (çift-tık)
   const [codePick, setCodePick] = useState<CodePickPanel>(null);
-  const [codePickCustomNDraft, setCodePickCustomNDraft] = useState("");
-  const [codePickCustomN, setCodePickCustomN] = useState<number | null>(null);
   // Çift-tık ile seçilen son-hane vurgusu (filtrelemez, sadece sarı)
   /** Panel / KOD son elle: raw_data KOD* alanlarında son N hane eşleşen maçları gösterir */
   const [anyKodSuffix, setAnyKodSuffix] = useState<AnyKodSuffixState | null>(null);
-  /** Sayfalama şeridi: satırda arama yapmadan son N hane (raw_data KOD*). */
+  /** Sayfalama şeridi: satırdan bağımsız KOD* son N filtre girişi. */
   const [manualKsN, setManualKsN] = useState("3");
   const [manualKsDigits, setManualKsDigits] = useState("");
 
@@ -1680,15 +1678,6 @@ export default function MatchTable() {
     ],
   );
 
-  const applyManualKodSuffixFilter = useCallback(() => {
-    const n = Number(String(manualKsN).trim());
-    const digits = manualKsDigits.replace(/\D/g, "");
-    if (!Number.isInteger(n) || n < KS_PANEL_CODE_PICK_N_MIN || n > KS_PANEL_CODE_PICK_N_MAX) return;
-    if (digits.length !== n || !/^\d+$/.test(digits)) return;
-    setAnyKodSuffix({ n, digits });
-    setPage(1);
-  }, [manualKsN, manualKsDigits]);
-
   const pickerFilterKey = useMemo(
     () =>
       JSON.stringify({
@@ -1718,6 +1707,15 @@ export default function MatchTable() {
       anyKodSuffix,
     ],
   );
+
+  const applyManualKodSuffixFilter = useCallback(() => {
+    const n = Number(String(manualKsN).trim());
+    const digits = manualKsDigits.replace(/\D/g, "");
+    if (!Number.isInteger(n) || n < KS_PANEL_CODE_PICK_N_MIN || n > KS_PANEL_CODE_PICK_N_MAX) return;
+    if (digits.length !== n || !/^\d+$/.test(digits)) return;
+    setAnyKodSuffix({ n, digits });
+    setPage(1);
+  }, [manualKsN, manualKsDigits]);
 
   useEffect(() => {
     if (!loadedSavedFilterName) {
@@ -2193,20 +2191,7 @@ export default function MatchTable() {
     return () => subscription.unsubscribe();
   }, [resetAllListFiltersToDefault]);
 
-  useEffect(() => {
-    if (!codePick) {
-      setCodePickCustomNDraft("");
-      setCodePickCustomN(null);
-    }
-  }, [codePick]);
-
-  const codePickSuffixColumns = useMemo(
-    () =>
-      Array.from(
-        new Set([...KS_PANEL_CODE_PICK_BASE_NS, ...(codePickCustomN != null ? [codePickCustomN] : [])]),
-      ).sort((a, b) => a - b),
-    [codePickCustomN],
-  );
+  const codePickSuffixColumns = KS_PANEL_CODE_PICK_BASE_NS;
 
   const viewportW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const viewportH = typeof window !== "undefined" ? window.innerHeight : 800;
@@ -4051,46 +4036,6 @@ export default function MatchTable() {
                 <button className="ml-auto text-yellow-600 hover:text-red-600 font-semibold" onClick={() => { setAnyKodSuffix(null); setPage(1); setCodePick(null); }}>Temizle</button>
               </div>
             )}
-            {/* Özel son N (2–10); API ks_any_n ile aynı aralık */}
-            <div className="flex flex-wrap items-center gap-1.5 px-2 py-1 border-b border-gray-200 bg-white text-[10px] text-gray-700">
-              <span className="shrink-0 text-gray-500">Özel son N</span>
-              <input
-                type="number"
-                min={KS_PANEL_CODE_PICK_N_MIN}
-                max={KS_PANEL_CODE_PICK_N_MAX}
-                inputMode="numeric"
-                placeholder={`${KS_PANEL_CODE_PICK_N_MIN}–${KS_PANEL_CODE_PICK_N_MAX}`}
-                value={codePickCustomNDraft}
-                onChange={(e) => setCodePickCustomNDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter") return;
-                  const v = Number(codePickCustomNDraft.trim());
-                  if (!Number.isInteger(v) || v < KS_PANEL_CODE_PICK_N_MIN || v > KS_PANEL_CODE_PICK_N_MAX) return;
-                  setCodePickCustomN(v);
-                }}
-                className="w-11 border border-gray-300 rounded px-1 py-px text-[11px] text-right tabular-nums"
-              />
-              <button
-                type="button"
-                className="shrink-0 rounded border border-gray-300 bg-gray-50 px-1.5 py-px hover:bg-gray-100"
-                onClick={() => {
-                  const v = Number(codePickCustomNDraft.trim());
-                  if (!Number.isInteger(v) || v < KS_PANEL_CODE_PICK_N_MIN || v > KS_PANEL_CODE_PICK_N_MAX) return;
-                  setCodePickCustomN(v);
-                }}
-              >
-                Ekle
-              </button>
-              {codePickCustomN != null && (
-                <button
-                  type="button"
-                  className="shrink-0 text-sky-600 hover:text-sky-800"
-                  onClick={() => setCodePickCustomN(null)}
-                >
-                  Özel sütunu kaldır
-                </button>
-              )}
-            </div>
             {/* Başlık satırı — grid ile hizalı; mobilde kod adı kırılır */}
             <div className="grid grid-cols-[minmax(0,1fr)_minmax(4.25rem,auto)_auto] gap-x-1.5 items-center px-2 py-1 bg-gray-50 border-b text-[11px] text-gray-500 font-medium">
               <span className="min-w-0">Kod</span>
@@ -4099,7 +4044,7 @@ export default function MatchTable() {
                 {codePickSuffixColumns.map((n) => (
                   <span
                     key={n}
-                    className={`w-[2.65rem] text-center shrink-0 ${codePickCustomN === n ? "text-purple-700 font-semibold" : ""}`}
+                    className="w-[2.65rem] text-center shrink-0"
                   >
                     son {n}
                   </span>
@@ -4132,9 +4077,7 @@ export default function MatchTable() {
                             className={`w-[2.65rem] min-h-[28px] px-0.5 py-0.5 rounded font-mono text-[11px] transition-colors ${
                               isActive
                                 ? "bg-yellow-400 text-yellow-900 font-bold"
-                                : codePickCustomN === n
-                                  ? "bg-purple-100 hover:bg-purple-200 text-purple-900"
-                                  : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
+                                : "bg-yellow-100 hover:bg-yellow-400 hover:text-yellow-900 text-yellow-800"
                             }`}
                             onClick={() => {
                               setAnyKodSuffix(isActive ? null : { digits: String(suffix), n });

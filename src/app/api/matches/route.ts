@@ -624,7 +624,7 @@ function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: 
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */
 const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
 /** KOD son N hane (◉ panel + ks_any_*); SQL `POWER(10, p_n)` ile uyumlu üst sınır. */
-const KS_N_OK = new Set([2, 3, 4, 5, 6, 7, 8, 9, 10]);
+const KS_N_OK = new Set([3, 4, 5]);
 
 // ── OKBT sunucu-tarafı filtresi (basit sayısal ifadeler) ─────────────────────
 // Kaynak → max idx (5-haneli: 0..14, Maç ID 7-haneli: 0..19)
