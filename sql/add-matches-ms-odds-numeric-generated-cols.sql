@@ -1,8 +1,17 @@
--- Maç sonucu 1 / X / 2 oranları (metin) için güvenli sayı kolonları — cf_ms1 / cf_msx / cf_ms2
--- ile < > aralığı ve PostgREST count doğru çalışır (geçersiz / boş / "-" → NULL).
+-- Maç sonucu 1 / X / 2 → ms1_n / msx_n / ms2_n (cf_ms* sayısal süzüm + indeks).
 --
--- 1) Bu dosyayı Supabase SQL Editor’de çalıştırın.
--- 2) Ardından sql/create-matches-suffix-view.sql dosyasını tekrar çalıştırın (m.* ile yeni kolonlar görünüme düşsün).
+-- ÖNEMLİ: Tablo çok büyükse GENERATED STORED tek seferde tüm satırları hesaplar →
+-- Supabase SQL Editor “upstream timeout” verir. O durumda:
+--   → sql/add-matches-ms-odds-numeric-cols-batched.sql (parçalı UPDATE + tetik)
+--
+-- Bu dosyayı yalnızca küçük tabloda veya psql / uzun statement_timeout ile deneyin.
+-- Aşağıda oturum süresini kapatmayı deneriz (proje limiti yine de kesebilir).
+
+SET statement_timeout = '0';
+SET lock_timeout = '30min';
+
+-- 1) Aşağıyı çalıştırın (veya batched dosyayı kullanın).
+-- 2) sql/create-matches-suffix-view.sql yenileyin.
 
 ALTER TABLE public.matches
   ADD COLUMN IF NOT EXISTS ms1_n double precision
@@ -40,9 +49,4 @@ COMMENT ON COLUMN public.matches.ms2_n IS 'MS2 oranı (sayı); metin süzümü m
 
 ANALYZE public.matches;
 
--- cf_ms* + cf_saat birlikte sık kullanılıyorsa planlayıcıya yardım (SQL Editor’de bir kez)
-CREATE INDEX IF NOT EXISTS idx_matches_ms1_n ON public.matches (ms1_n) WHERE ms1_n IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_matches_msx_n ON public.matches (msx_n) WHERE msx_n IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_matches_ms2_n ON public.matches (ms2_n) WHERE ms2_n IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_matches_saat_arama_ms2_n ON public.matches (saat_arama, ms2_n)
-  WHERE ms2_n IS NOT NULL AND saat_arama IS NOT NULL;
+-- İndeksler: sql/add-matches-ms-odds-numeric-cols-indexes.sql
