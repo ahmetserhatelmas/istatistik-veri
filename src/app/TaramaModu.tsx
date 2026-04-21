@@ -414,7 +414,7 @@ function DetailCard({ match }: { match: Match }) {
   const kodIy = str(match.kod_iy);
   const kodCs = str(match.kod_cs);
   const kodAu = str(match.kod_au);
-  const mbs = str(match.mbs);
+  const mbs = str(match.MB ?? match.mac_suffix4 ?? match.mbs);
   const hakem = str(match.hakem);
 
   return (

@@ -58,6 +58,49 @@ function suffixOf(code, n) {
   return s.length >= n ? s.slice(-n) : s;
 }
 
+function readMbFromOranObj(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const norm = (k) => String(k).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const coerce = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    if (/^[1-3]$/.test(s)) return s;
+    const n = Number(String(s).replace(",", "."));
+    if (Number.isInteger(n) && n >= 1 && n <= 3) return String(n);
+    return null;
+  };
+  const scan = (o) => {
+    for (const [k, v] of Object.entries(o)) {
+      const nk = norm(k);
+      if (nk === "MB" || nk === "MBS") {
+        const t = coerce(v);
+        if (t) return t;
+      }
+      const ku = String(k).toUpperCase();
+      if (ku.includes("MBS") && !ku.includes("KOD")) {
+        const t = coerce(v);
+        if (t) return t;
+      }
+    }
+    return null;
+  };
+  let t = scan(obj);
+  if (t) return t;
+  for (const v of Object.values(obj)) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    t = scan(v);
+    if (t) return t;
+  }
+  return null;
+}
+
+/** MBS rakamı (1–3) veya yoksa maç kodu son 4 hane (`mac_suffix4` kolonu). */
+function macSuffix4FromOran(obj, id) {
+  const mb = readMbFromOranObj(obj);
+  return mb != null ? mb : suffixOf(id, 4);
+}
+
 function parseMatch(obj) {
   const id = Number(obj.ID);
   return {
@@ -99,7 +142,7 @@ function parseMatch(obj) {
     kod_cs: obj.KODCS ? Number(obj.KODCS) : null,
     kod_iy: obj.KODIY ? Number(obj.KODIY) : null,
     kod_au: obj.KODAU ? Number(obj.KODAU) : null,
-    mac_suffix4: suffixOf(id, 4),
+    mac_suffix4: macSuffix4FromOran(obj, id),
     mac_suffix3: suffixOf(id, 3),
     mac_suffix2: suffixOf(id, 2),
     sport_turu: SPORT,

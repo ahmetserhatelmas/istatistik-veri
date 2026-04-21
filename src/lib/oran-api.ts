@@ -58,6 +58,61 @@ function suffixOf(code: string | number, n: number): string {
   return s.length >= n ? s.slice(-n) : s;
 }
 
+function isPlainOranObj(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+function normalizeOranKey(k: string): string {
+  return k.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function coerceMbsDigit(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^[1-3]$/.test(s)) return s;
+  const n = Number(s.replace(",", "."));
+  if (Number.isInteger(n) && n >= 1 && n <= 3) return String(n);
+  return null;
+}
+
+/**
+ * Oran ham cevabında MBS (1–3): `MB` / `MBS` veya anahtarında `MBS` geçen alanlar; bir seviye iç nesne taranır.
+ * Tabloda gösterim için — `mac_suffix4` (son 4 hane) ile karıştırılmaz.
+ */
+export function readMbsFromOranRecord(root: Record<string, unknown>): string {
+  const scan = (o: Record<string, unknown>): string | null => {
+    for (const [k, v] of Object.entries(o)) {
+      const nk = normalizeOranKey(k);
+      if (nk === "MB" || nk === "MBS") {
+        const t = coerceMbsDigit(v);
+        if (t) return t;
+      }
+      const ku = k.toUpperCase();
+      if (ku.includes("MBS") && !ku.includes("KOD")) {
+        const t = coerceMbsDigit(v);
+        if (t) return t;
+      }
+    }
+    return null;
+  };
+  const a = scan(root);
+  if (a) return a;
+  for (const v of Object.values(root)) {
+    if (!isPlainOranObj(v)) continue;
+    const b = scan(v);
+    if (b) return b;
+  }
+  return "";
+}
+
+/** DB `mac_suffix4`: gerçek MBS rakamı veya yoksa maç kodu son 4 hane (filtre / geriye dönük). */
+function macSuffix4FromApi(obj: Record<string, unknown>, id: number): string {
+  const mb = readMbsFromOranRecord(obj);
+  if (mb) return mb;
+  return suffixOf(id, 4);
+}
+
 interface MatchRow {
   id: number;
   tarih: string;
@@ -146,7 +201,7 @@ function parseMatch(obj: Record<string, unknown>, bookmaker: number, sport: stri
     kod_cs: obj.KODCS ? Number(obj.KODCS) : null,
     kod_iy: obj.KODIY ? Number(obj.KODIY) : null,
     kod_au: obj.KODAU ? Number(obj.KODAU) : null,
-    mac_suffix4: suffixOf(id, 4),
+    mac_suffix4: macSuffix4FromApi(obj, id),
     mac_suffix3: suffixOf(id, 3),
     mac_suffix2: suffixOf(id, 2),
     sport_turu: sport,

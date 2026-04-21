@@ -495,6 +495,103 @@ function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
 }
 
+/** Maç sonucu oranları (ms1/msx/ms2): DB’de metin; < > aralığı sayısal olmalı → cast.numeric. */
+function msOddsNumericField(col: "ms1" | "msx" | "ms2"): string {
+  return `${col}.cast.numeric`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyMsOddsNumericComparison(q: any, numField: string, b: FilterBranch): any {
+  if (b.kind === "between") {
+    const lo = Number(String(b.lo).replace(",", "."));
+    const hi = Number(String(b.hi).replace(",", "."));
+    return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(numField, lo).lte(numField, hi) : q;
+  }
+  if (b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
+    const n = Number(String(b.val).replace(",", "."));
+    if (!Number.isFinite(n)) return q;
+    if (b.kind === "gt") return q.gt(numField, n);
+    if (b.kind === "gte") return q.gte(numField, n);
+    if (b.kind === "lt") return q.lt(numField, n);
+    return q.lte(numField, n);
+  }
+  if (b.kind === "eq" || b.kind === "neq") {
+    const n = Number(String(b.val).replace(",", "."));
+    if (!Number.isFinite(n)) return q;
+    return b.kind === "eq" ? q.eq(numField, n) : q.neq(numField, n);
+  }
+  return q;
+}
+
+function branchToOrStrMsOdds(numField: string, textField: string, b: FilterBranch): string {
+  const qstr = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+  if (b.kind === "like" || b.kind === "ilike") {
+    return `${textField}.${b.kind}.${qstr(b.pat)}`;
+  }
+  if (b.kind === "between") {
+    const lo = Number(String(b.lo).replace(",", "."));
+    const hi = Number(String(b.hi).replace(",", "."));
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return "";
+    return `and(${numField}.gte.${lo},${numField}.lte.${hi})`;
+  }
+  if (b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte" || b.kind === "eq" || b.kind === "neq") {
+    const n = Number(String(b.val).replace(",", "."));
+    if (!Number.isFinite(n)) return "";
+    return `${numField}.${b.kind}.${n}`;
+  }
+  return "";
+}
+
+/** ms1 / msx / ms2 sütun cf_* — joker metin + sayısal karşılaştırma (cast.numeric). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyMsOddsCfFilter(query: any, col: "ms1" | "msx" | "ms2", v: string): any {
+  const textField = col;
+  const numField = msOddsNumericField(col);
+  const orParts = splitOrParts(v.trim());
+  if (!orParts.length) return query;
+
+  const applyOne = (q: any, p: string): any => {
+    const b = parseFilterBranch(p.trim(), "contains");
+    if (b.kind === "like" || b.kind === "ilike") {
+      return applyParsedFilterBranch(q, textField, b, true);
+    }
+    if (
+      b.kind === "between" ||
+      b.kind === "gt" ||
+      b.kind === "gte" ||
+      b.kind === "lt" ||
+      b.kind === "lte" ||
+      b.kind === "eq" ||
+      b.kind === "neq"
+    ) {
+      if (b.kind === "eq" || b.kind === "neq") {
+        const n = Number(String(b.val).replace(",", "."));
+        if (!Number.isFinite(n)) return applyParsedFilterBranch(q, textField, b, true);
+      }
+      return applyMsOddsNumericComparison(q, numField, b);
+    }
+    return q;
+  };
+
+  if (orParts.length === 1) {
+    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
+    return query;
+  }
+
+  const segments = orParts.map((orPart) => {
+    const ands = splitAndParts(orPart);
+    if (ands.length === 1) {
+      return branchToOrStrMsOdds(numField, textField, parseFilterBranch(ands[0]!, "contains"));
+    }
+    const exprs = ands
+      .map((ap) => branchToOrStrMsOdds(numField, textField, parseFilterBranch(ap, "contains")))
+      .filter(Boolean);
+    return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
+  }).filter(Boolean);
+
+  return segments.length ? query.or(segments.join(",")) : query;
+}
+
 
 /** Düz skor "0-0" … "12-3" — joker yok; içerir araması 14-2, 4-20 gibi yanlış pozitif üretir. */
 const PLAIN_SKOR_TOKEN_RE = /^\d+-\d+$/;
@@ -1267,7 +1364,7 @@ export async function GET(req: NextRequest) {
     const v = val.trim();
     const msCol = MS_ODDS_DB_COL[colId];
     if (msCol) {
-      query = applyCfTextColumnIlikeFilter(query, msCol, v);
+      query = applyMsOddsCfFilter(query, msCol, v);
       continue;
     }
     const def = DB_COL_MAP[colId];

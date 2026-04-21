@@ -5,12 +5,14 @@ import { createPortal } from "react-dom";
 import {
   ALL_COLS,
   CF_CLIENT_ONLY_COL_IDS,
+  CF_MS_ODDS_CLIENT_FILTER_IDS,
   OKBT_MULTI_SOURCE_MAP,
   DEFAULT_VISIBLE,
   GROUP_COLORS,
   mergeAllCols,
   type ColDef,
 } from "@/lib/columns";
+import { readMbsFromOranRecord } from "@/lib/oran-api";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
 import { supabase } from "@/lib/supabase/client";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
@@ -231,6 +233,17 @@ function digitSum(val: unknown): string {
   return String(s.split("").reduce((acc, d) => acc + Number(d), 0));
 }
 
+/** MBS (1–3): düzleştirilmiş satır + `raw_data` üzerinden Oran alan taraması. */
+function readMbsFromRow(row: Match): string {
+  const top = readMbsFromOranRecord(row as unknown as Record<string, unknown>);
+  if (top) return top;
+  const rd = row["raw_data"];
+  if (rd && typeof rd === "object" && !Array.isArray(rd)) {
+    return readMbsFromOranRecord(rd as Record<string, unknown>);
+  }
+  return "";
+}
+
 /** Oran hücreleri: her zaman iki ondalık (1.2 → 1.20, 1 → 1.00). Sayı değilse olduğu gibi. */
 function formatOddsDecimal2(raw: unknown): string {
   const s = String(raw ?? "").trim();
@@ -242,9 +255,23 @@ function formatOddsDecimal2(raw: unknown): string {
 
 function cellVal(row: Match, col: ColDef): string {
   // Hesaplanan (computed) sütunlar
-  if (col.id === "mbs")     return digitSum(row["id"]);       // MKT = maç kodu basamak toplamı
+  // MKT = maç kodu basamak toplamı (0–63); hane satırında A/B iki kutu için 2 hane sabitlenir
+  if (col.id === "mbs") {
+    const s = digitSum(row["id"]);
+    if (!s) return "";
+    const n = Number(s);
+    if (!Number.isFinite(n)) return s;
+    return String(Math.max(0, Math.min(99, n))).padStart(2, "0");
+  }
   if (col.id === "suffix3") return digitSum(row["kod_ms"]);   // MsMKT = MS kodu basamak toplamı
-  if (col.id === "suffix4") return digitSum(row["id"]);       // MBS standalone = aynı değer
+  // MBS = Oran `MB` / `MBS` (1–3). `mac_suffix4` çoğunlukla son 4 maç kodu hanesi — MBS diye gösterilmez.
+  if (col.id === "suffix4") {
+    const mb = readMbsFromRow(row);
+    if (mb) return mb;
+    const colMac = String(row["mac_suffix4"] ?? "").trim();
+    if (/^[1-3]$/.test(colMac)) return colMac;
+    return "";
+  }
   // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → client-side hesap (rowKey'den)
   const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(col.id);
   if (multiOkbtM) {
@@ -434,9 +461,9 @@ function digitClickTemplate(col: ColDef): string {
   if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "#####"; // 5 haneli oyun kodu
   if (col.id === "sonuc_iy" || col.id === "sonuc_ms") return "#-#";           // skor: X-Y
   if (col.id === "saat") return "##:##";                // 20:00
-  if (col.id === "mbs") return "#";                     // MBS: tek basamaklı
+  if (col.id === "mbs") return "##";                    // MKT: iki basamak (H / A / B)
   if (col.id === "suffix3") return "##";                // 2 haneli digit-sum
-  if (col.id === "suffix4") return "##";                // 2 haneli digit-sum
+  if (col.id === "suffix4") return "#";                 // MBS: genelde tek rakam (1–3)
   // Oran grupları: "#.##"
   if (ODDS_GROUPS.has(col.group)) return "#.##";
   // OKBT multi sütunları: 2 haneli toplam
@@ -1527,12 +1554,18 @@ export default function MatchTable() {
     [colFiltersCommitted, colFilters]
   );
 
-  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
+  // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + ms1/msx/ms2 + hesaplamalı sütunlar
   // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
   const rawColFilters = useMemo(() => {
     const m: Record<string, string> = {};
     for (const [id, v] of normalizedColFilterEntries(colFiltersEffective)) {
-      if (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) m[id] = v;
+      if (
+        CF_CLIENT_ONLY_COL_IDS.has(id) ||
+        CF_MS_ODDS_CLIENT_FILTER_IDS.has(id) ||
+        isCellValClientCol(id)
+      ) {
+        m[id] = v;
+      }
     }
     return m;
   }, [colFiltersEffective]);
@@ -1568,6 +1601,7 @@ export default function MatchTable() {
     const dbPart = Object.fromEntries(
       normalizedColFilterEntries(colFiltersCommitted).filter(([id]) => {
         if (CF_CLIENT_ONLY_COL_IDS.has(id)) return false;
+        if (CF_MS_ODDS_CLIENT_FILTER_IDS.has(id)) return false;
         if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // mbs/suffix3/suffix4
         return true; // *_obktb_* dahil — server push dener
       })
@@ -2165,8 +2199,6 @@ export default function MatchTable() {
     setPersonelSuggestAntHer(TAKIM_SUGGEST_INIT);
     setAnyKodSuffix(null);
     setCodePick(null);
-    setCodePickCustomNDraft("");
-    setCodePickCustomN(null);
     setEslestirmeLabel(null);
     setTarihPick({ d: "", m: "" });
     const top = { ...EMPTY_TOP };
