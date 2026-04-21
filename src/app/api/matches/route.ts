@@ -1645,6 +1645,21 @@ export async function GET(req: NextRequest) {
         { status: 503 }
       );
     }
+    const missingMsOddsNumeric =
+      e.code === "42703" &&
+      /\bms[12x]_n\b/i.test(msg) &&
+      /column .* does not exist|Perhaps you meant/i.test(msg);
+    if (missingMsOddsNumeric) {
+      return NextResponse.json(
+        {
+          error:
+            "Maç sonucu oran karşılaştırması için ms1_n / msx_n / ms2_n kolonları yok. Supabase’te (Vercel’in bağlandığı proje) sql/add-matches-ms-odds-numeric-cols-batched.sql + backfill, ardından sql/add-matches-ms-odds-numeric-cols-indexes.sql; görünüm varsa create-matches-suffix-view.sql ile yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
     const missingMultiOkbt =
       /_(obktb|obkt)_\d+/i.test(msg) &&
       (e.code === "42883" || /function.*does not exist|Could not find.*function/i.test(msg));

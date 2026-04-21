@@ -2225,6 +2225,9 @@ export default function MatchTable() {
   );
   const codePickPanelH = Math.min(440, viewportH - 24);
 
+  /** Sunucu bu sayfada döndürdüğü satırların bir kısmı MBS/MsMKT/MBS sonek veya OKBT istemci süzümüyle elenir. */
+  const clientPageRowGap = !loading && matches.length > 0 && matches.length !== sortedRows.length;
+
   return (
     <div className="flex flex-col h-screen bg-gray-200 text-gray-900 overflow-hidden">
 
@@ -2239,7 +2242,15 @@ export default function MatchTable() {
         )}
         {/* Üst bilgi: mobilde satır kırılır; kontroller ayrı şeritte yatay kaydırılır */}
         <div className="px-4 pt-2 pb-1 text-xs text-gray-700 leading-snug break-words">
-          <span className="tabular-nums">{total.toLocaleString("tr-TR")} maç</span>
+          <span
+            className="tabular-nums"
+            title={
+              clientPageRowGap
+                ? "Toplam, sunucu filtreleri + sayfalama ile uyumlu kayıt sayısıdır. Tabloda daha az satır görünüyorsa MBS / MsMKT / MBS sonek veya OKBT sütunları istemcide ek süzülür."
+                : undefined
+            }>
+            {total.toLocaleString("tr-TR")} maç
+          </span>
           {!loading && (
             <span className="text-gray-600" title="Bu sayfada tabloda listelenen satır sayısı">
               {" "}
@@ -2275,9 +2286,13 @@ export default function MatchTable() {
                   · {total.toLocaleString("tr-TR")} sonuç
                   <span
                     className="text-amber-700/90 font-normal"
-                    title="Sunucu filtresiyle eşleşen toplam kayıt (sayfalar arası)">
+                    title={
+                      clientPageRowGap
+                        ? "Sunucu toplamı; bu sayfada tabloda daha az satır görünüyorsa MBS / MsMKT / MBS sonek veya OKBT istemci süzümü satır eliyor."
+                        : "Sunucu filtresiyle eşleşen toplam kayıt (sayfalar arası)"
+                    }>
                     {" "}
-                    (tümü)
+                    {clientPageRowGap ? "(sunucu · tablo ayrı süzülüyor)" : "(tümü)"}
                   </span>
                 </>
               )}
@@ -4128,7 +4143,12 @@ export default function MatchTable() {
         }`}>
       <div className="flex flex-nowrap sm:flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-gray-900 w-max min-w-full sm:w-auto">
         <span className="shrink-0 min-w-0 max-w-[min(100%,85vw)] sm:max-w-none flex flex-col gap-1.5 items-start">
-        <span>
+        <span
+          title={
+            clientPageRowGap
+              ? "Üstteki maç sayısı sunucu toplamıdır; bu sayfada tabloda daha az satır varsa istemci süzümü (MBS / sonek / OKBT) devrededir."
+              : undefined
+          }>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
             {!loading && (
               <>
