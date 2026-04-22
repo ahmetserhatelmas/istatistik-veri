@@ -21,20 +21,21 @@ type Status = "idle" | "sending" | "sent" | "error";
 /** Supabase Auth hatalarını kullanıcıya anlaşılır + yapılabilir şekilde göster. */
 function formatAuthErrorForUser(raw: string): string {
   const m = raw.trim().toLowerCase();
-  if (
+  const looksRateLimited =
     m.includes("rate limit") ||
+    m.includes("rate_limit") ||
+    m.includes("email rate limit") ||
     m.includes("too many requests") ||
     m.includes("over_email") ||
     m.includes("over_request") ||
     m === "429" ||
-    raw.includes("429")
-  ) {
+    raw.includes("429");
+  if (looksRateLimited) {
     return [
-      "E-posta veya OTP isteği Supabase tarafında sınırlandı (çok sık deneme veya proje kotası).",
-      "Ne yapabilirsiniz: bir süre bekleyin; geliştirmede aynı hesap için alttan «Şifre ile gir» kullanın (ek posta göndermez).",
-      "Kotayı yükseltmek: Supabase Dashboard → projeniz → Authentication → Rate Limits (OTP / e-posta gönderim limitleri).",
-      "Yerleşik e-posta ile saatlik gönderim düşük olabilir; özel SMTP tanımlayınca e-posta tarafı genelde esnetilir.",
-      "Ayrıntı: https://supabase.com/docs/guides/auth/rate-limits",
+      "Çok sık deneme: Supabase giriş / e-posta gönderim limiti aşıldı. Bir süre bekleyip tekrar dene.",
+      "Sıfırlama maili istemeden sadece şifre ile giriş yap (ek posta göndermez).",
+      "Limit: Supabase Dashboard → Authentication → Rate Limits; kalıcı çözüm için özel SMTP.",
+      "https://supabase.com/docs/guides/auth/rate-limits",
     ].join(" ");
   }
   return raw.trim() || "Bilinmeyen hata.";
@@ -236,7 +237,7 @@ export function AuthBar() {
           onClick={() => setOpen(false)}
         />
         <div
-          className="fixed z-[210] w-[min(22rem,calc(100vw-1rem))] rounded border border-gray-300 bg-white p-3 shadow-2xl"
+          className="fixed z-[210] w-[min(22rem,calc(100vw-1rem))] rounded border border-gray-300 bg-white p-3 text-gray-900 shadow-2xl [color-scheme:light]"
           style={{ top: popoverPos.top, right: popoverPos.right }}
           role="dialog"
           aria-modal="true"
@@ -293,7 +294,8 @@ export function AuthBar() {
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
                 placeholder="ornek@eposta.com"
-                className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400 mb-2"
+                className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
+                style={{ WebkitTextFillColor: "#111827" }}
                 disabled={status === "sending"}
               />
               <input
@@ -303,7 +305,8 @@ export function AuthBar() {
                 onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
                 placeholder="Şifre (en az 8 karakter)"
-                className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400 mb-2"
+                className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
+                style={{ WebkitTextFillColor: "#111827" }}
                 disabled={status === "sending"}
               />
               <button
