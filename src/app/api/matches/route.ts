@@ -12,6 +12,7 @@ import {
   tarihPartToIlike,
 } from "@/lib/tarih-pattern";
 import { expandOkbtWildcardFilter } from "@/lib/okbt-wildcard-server-expand";
+import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
@@ -744,34 +745,54 @@ function spHasNarrowingListFilter(sp: URLSearchParams): boolean {
 }
 
 /**
- * İY / MS sütun filtresi: düz "4-2" girdisi → tam eşleşme (.eq), SQL'deki
- * TRIM(sonuc_ms) = '4-2' ile aynı sonuç (hücrede ekstra boşluk yoksa).
- * Virgülle birden fazla skor → OR ile tam eşleşmeler. Joker / metin araması → eski ILIKE.
+ * İY / MS sütun filtresi:
+ * - düz "4-2" → tam eşleşme
+ * - virgül-OR: "2-1,_" → "2-1" veya boş
+ * - sonuna "_" / boşluk / "._" gibi sonekler gelirse boş hücreleri de dahil et
+ *   (null, "", "-", "–")
  */
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: string): any {
-  const v = raw.trim();
+  const v = String(raw ?? "").trim();
+  const emptyExpr = `${col}.is.null,${col}.eq."",${col}.eq."-",${col}.eq."–"`;
   if (!v) return query;
+  if (v === "_") {
+    return query.or(emptyExpr);
+  }
   const orParts = splitOrParts(v);
   if (!orParts.length) return query;
 
   const segments: string[] = [];
+  let wantsBlankAny = false;
   for (const orPart of orParts) {
     const andParts = splitAndParts(orPart);
     if (andParts.length !== 1) {
-      return applyCfTextColumnIlikeFilter(query, col, raw);
+      return applyCfTextColumnIlikeFilter(query, col, v);
     }
-    const token = andParts[0]!.trim();
-    if (!isPlainSkorToken(token)) {
-      return applyCfTextColumnIlikeFilter(query, col, raw);
+    const tokenRaw = andParts[0]!.trim();
+    if (tokenRaw === "_" || tokenRaw === " _" || tokenRaw === "_ ") {
+      wantsBlankAny = true;
+      continue;
     }
-    const q = token.replace(/"/g, '""');
+    const { core, includeBlank } = parsePlainSkorTokenWithBlankSuffix(tokenRaw);
+    if (includeBlank) wantsBlankAny = true;
+
+    if (!core && includeBlank) {
+      wantsBlankAny = true;
+      continue;
+    }
+    if (!isPlainSkorToken(core)) {
+      return applyCfTextColumnIlikeFilter(query, col, v);
+    }
+    const q = core.replace(/"/g, '""');
     segments.push(`${col}.eq."${q}"`);
   }
-  if (segments.length === 1) {
-    return query.eq(col, splitAndParts(orParts[0]!)[0]!.trim());
+  if (segments.length === 1 && !wantsBlankAny) {
+    return query.eq(col, parsePlainSkorTokenWithBlankSuffix(splitAndParts(orParts[0]!)[0]!.trim()).core);
   }
-  return query.or(segments.join(","));
+  const expr = wantsBlankAny ? (segments.length ? `${segments.join(",")},${emptyExpr}` : emptyExpr) : segments.join(",");
+  return query.or(expr);
 }
 
 /** Üst bar kod kutusu: tüm DB’de son N hane (matches_with_suffix_cols görünümü gerekir). */

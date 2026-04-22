@@ -4,17 +4,8 @@
  * AuthBar — header'a yerleşen kompakt oturum widget'ı.
  *
  * Davranış:
- *   • Oturum yok → "Giriş" butonu → popover'da email input + "Sihirli bağlantı gönder"
+ *   • Oturum yok → "Giriş" butonu → popover'da email+şifre ile giriş / kayıt ol
  *   • Oturum var → avatar (baş harf) + email truncate + "Çıkış" butonu
- *
- * Magic link redirect: tarayıcı localhost/127.0.0.1 ise maildeki link her zaman
- * o anki origin'e döner (prod URL'ye gitmez). Diğer ortamlarda `NEXT_PUBLIC_SITE_URL`
- * veya `window.location.origin` kullanılır.
- * Supabase Dashboard → Auth → URL: Redirect URLs'e `http://localhost:3000/auth/callback`
- * (portunuza göre) + prod `/auth/callback` ekleyin.
- *
- * Geliştirme: `LOCAL_DEV_PASSWORD_EMAIL` için şifre alanı — Supabase Dashboard'da
- * bu kullanıcıya Email+Password şifresi tanımlanmalı (sihirli bağlantıya gerek yok).
  *
  * Popover `createPortal(document.body)` + yüksek z-index: tablo sticky başlık
  * ve yükleme örtüsünün (z-75) üstünde kalır.
@@ -23,39 +14,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
+import { ADMIN_EMAIL } from "@/lib/auth/access";
 
 type Status = "idle" | "sending" | "sent" | "error";
-
-/** Yerelde şifre ile giriş (sadece `next dev`); Supabase'te bu e-postaya şifre verin. */
-const LOCAL_DEV_PASSWORD_EMAIL = "ahmetserhatelmas@gmail.com";
-
-/** Maildeki redirect: önce production origin; yanlış localhost build'ini canlı sitede yok say. */
-function canonicalSiteOrigin(): string {
-  const envRaw = typeof process !== "undefined" ? process.env.NEXT_PUBLIC_SITE_URL?.trim() : "";
-  let envOrigin = "";
-  if (envRaw) {
-    try {
-      envOrigin = new URL(envRaw).origin;
-    } catch {
-      envOrigin = envRaw.replace(/\/$/, "");
-    }
-  }
-  const win = typeof window !== "undefined" ? window.location.origin : "";
-  const isLocal = (o: string) => /localhost|127\.0\.0\.1/i.test(o);
-  if (envOrigin && !isLocal(envOrigin)) return envOrigin;
-  if (win && !isLocal(win)) return win;
-  if (envOrigin) return envOrigin;
-  return win;
-}
-
-/** OTP mailindeki `emailRedirectTo`: localhost'ta asla prod origin kullanma. */
-function magicLinkRedirectOrigin(): string {
-  if (typeof window !== "undefined") {
-    const o = window.location.origin;
-    if (/localhost|127\.0\.0\.1/i.test(o)) return o;
-  }
-  return canonicalSiteOrigin();
-}
 
 /** Supabase Auth hatalarını kullanıcıya anlaşılır + yapılabilir şekilde göster. */
 function formatAuthErrorForUser(raw: string): string {
@@ -81,10 +42,13 @@ function formatAuthErrorForUser(raw: string): string {
 
 export function AuthBar() {
   const [user, setUser] = useState<User | null>(null);
+  const [approved, setApproved] = useState<boolean>(false);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [devPassword, setDevPassword] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [status, setStatus] = useState<Status>("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -113,11 +77,25 @@ export function AuthBar() {
   /** İlk mount'ta ve auth değişiminde user'ı senkronize et. */
   useEffect(() => {
     let cancelled = false;
-    supabase.auth.getSession().then(({ data }) => {
+    const sync = async () => {
+      const { data } = await supabase.auth.getSession();
       if (cancelled) return;
-      setUser(data.session?.user ?? null);
+      const sessionUser = data.session?.user ?? null;
+      setUser(sessionUser);
+      if (sessionUser) {
+        const r = await fetch("/api/auth/access-status");
+        const j = await r.json();
+        if (!cancelled && r.ok && j.ok) {
+          setApproved(Boolean(j.approved));
+          setIsAdmin(Boolean(j.isAdmin));
+        }
+      } else {
+        setApproved(false);
+        setIsAdmin(false);
+      }
       setReady(true);
-    });
+    };
+    void sync();
     const { data: sub } = supabase.auth.onAuthStateChange(
       (_event: string, session: Session | null) => {
         setUser(session?.user ?? null);
@@ -140,45 +118,21 @@ export function AuthBar() {
     }
   }, []);
 
-  const sendLink = useCallback(async () => {
+  const login = useCallback(async () => {
     const e = email.trim().toLowerCase();
     if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
       setStatus("error");
       setMsg("Geçerli bir e-posta adresi girin.");
       return;
     }
-    setStatus("sending");
-    setMsg(null);
-    const origin = magicLinkRedirectOrigin();
-    const { error } = await supabase.auth.signInWithOtp({
-      email: e,
-      options: { emailRedirectTo: `${origin}/auth/callback` },
-    });
-    if (error) {
+    if (password.length < 8) {
       setStatus("error");
-      const code = "code" in error && typeof (error as { code?: string }).code === "string"
-        ? (error as { code: string }).code
-        : "";
-      setMsg(formatAuthErrorForUser([error.message, code].filter(Boolean).join(" ")));
-    } else {
-      setStatus("sent");
-      setMsg("Bağlantıyı postana gönderdik. Maildeki linke tıkla.");
-    }
-  }, [email]);
-
-  const signInWithPasswordLocal = useCallback(async () => {
-    if (process.env.NODE_ENV !== "development") return;
-    const e = email.trim().toLowerCase();
-    if (e !== LOCAL_DEV_PASSWORD_EMAIL) return;
-    const p = devPassword;
-    if (!p) {
-      setStatus("error");
-      setMsg("Şifre girin.");
+      setMsg("Şifre en az 8 karakter olmalı.");
       return;
     }
     setStatus("sending");
     setMsg(null);
-    const { error } = await supabase.auth.signInWithPassword({ email: e, password: p });
+    const { error } = await supabase.auth.signInWithPassword({ email: e, password });
     if (error) {
       setStatus("error");
       const code = "code" in error && typeof (error as { code?: string }).code === "string"
@@ -186,15 +140,86 @@ export function AuthBar() {
         : "";
       setMsg(formatAuthErrorForUser([error.message, code].filter(Boolean).join(" ")));
     } else {
+      const accessRes = await fetch("/api/auth/access-status");
+      const accessJson = await accessRes.json();
+      if (!accessRes.ok || !accessJson.ok) {
+        setStatus("error");
+        setMsg(accessJson.error ?? "Hesap onayı doğrulanamadı.");
+        return;
+      }
+      const okApproved = Boolean(accessJson.approved);
+      const okAdmin = Boolean(accessJson.isAdmin);
+      if (!okApproved && !okAdmin) {
+        await supabase.auth.signOut();
+        setStatus("error");
+        setMsg("Hesabın kayıtlı; admin onayı bekleniyor. Onay sonrası giriş yapabilirsin.");
+        return;
+      }
+      setApproved(okApproved);
+      setIsAdmin(okAdmin);
       setOpen(false);
-      setDevPassword("");
       setStatus("idle");
       setMsg(null);
     }
-  }, [email, devPassword]);
+  }, [email, password]);
+
+  const register = useCallback(async () => {
+    const e = email.trim().toLowerCase();
+    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+      setStatus("error");
+      setMsg("Geçerli bir e-posta adresi girin.");
+      return;
+    }
+    if (password.length < 8) {
+      setStatus("error");
+      setMsg("Şifre en az 8 karakter olmalı.");
+      return;
+    }
+    setStatus("sending");
+    setMsg(null);
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: e, password }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) {
+      setStatus("error");
+      setMsg(json.error ?? "Kayıt başarısız");
+    } else {
+      setStatus("sent");
+      setMsg(json.message ?? "Kayıt alındı. Admin onayı bekleniyor.");
+    }
+  }, [email, password]);
+
+  const requestReset = useCallback(async () => {
+    const e = email.trim().toLowerCase();
+    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+      setStatus("error");
+      setMsg("Şifre sıfırlama için geçerli e-posta girin.");
+      return;
+    }
+    setStatus("sending");
+    setMsg(null);
+    const res = await fetch("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: e }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.ok) {
+      setStatus("error");
+      setMsg(json.error ?? "Şifre sıfırlama başlatılamadı.");
+      return;
+    }
+    setStatus("sent");
+    setMsg(json.message ?? "Sıfırlama bağlantısı gönderildi.");
+  }, [email]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
+    setApproved(false);
+    setIsAdmin(false);
     setOpen(false);
   }, []);
 
@@ -221,6 +246,13 @@ export function AuthBar() {
                 Giriş yapılı:
               </div>
               <div className="text-xs font-medium text-gray-900 truncate mb-2">{user.email ?? "(e-posta yok)"}</div>
+              {isAdmin && (
+                <a
+                  href="/admin"
+                  className="mb-2 inline-flex w-full items-center justify-center rounded border border-indigo-300 bg-indigo-50 px-2 py-1.5 text-xs text-indigo-800 hover:bg-indigo-100">
+                  Admin paneli
+                </a>
+              )}
               <button
                 type="button"
                 onClick={signOut}
@@ -231,10 +263,26 @@ export function AuthBar() {
           ) : (
             <>
               <div id="authbar-popover-title" className="text-xs font-semibold text-gray-800 mb-1">
-                E-posta ile giriş
+                {mode === "login" ? "Giriş yap" : "Kayıt ol"}
               </div>
               <div className="text-[10px] text-gray-500 mb-2 leading-snug">
-                Postana sihirli bir bağlantı yollayacağız. Tıklayınca giriş yapmış olursun — şifre yok.
+                {mode === "login"
+                  ? "E-posta ve şifre ile giriş yap. Hesap onaylı değilse girişe izin verilmez."
+                  : `Kayıt sonrası admin (${ADMIN_EMAIL}) onayı beklenir.`}
+              </div>
+              <div className="mb-2 flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMode("login")}
+                  className={`flex-1 rounded border px-2 py-1 text-[11px] ${mode === "login" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-700 border-gray-300"}`}>
+                  Giriş yap
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("register")}
+                  className={`flex-1 rounded border px-2 py-1 text-[11px] ${mode === "register" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-700 border-gray-300"}`}>
+                  Kayıt ol
+                </button>
               </div>
               <input
                 type="email"
@@ -242,45 +290,34 @@ export function AuthBar() {
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void sendLink(); }}
+                onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
                 placeholder="ornek@eposta.com"
                 className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400 mb-2"
-                disabled={status === "sending" || status === "sent"}
+                disabled={status === "sending"}
+              />
+              <input
+                type="password"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
+                placeholder="Şifre (en az 8 karakter)"
+                className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400 mb-2"
+                disabled={status === "sending"}
               />
               <button
                 type="button"
-                onClick={() => void sendLink()}
-                disabled={status === "sending" || status === "sent"}
+                onClick={() => void (mode === "login" ? login() : register())}
+                disabled={status === "sending"}
                 className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
-                {status === "sending" ? "Gönderiliyor…" : status === "sent" ? "Gönderildi" : "Bağlantı gönder"}
+                {status === "sending" ? "İşleniyor…" : mode === "login" ? "Giriş yap" : "Kayıt ol"}
               </button>
-              {process.env.NODE_ENV === "development" &&
-                email.trim().toLowerCase() === LOCAL_DEV_PASSWORD_EMAIL && (
-                  <div className="mt-2 pt-2 border-t border-amber-200 space-y-1.5">
-                    <div className="text-[10px] text-amber-900 leading-snug">
-                      Yerel: bu hesap için şifre ile gir (Supabase’te kullanıcıya şifre tanımlı olmalı).
-                    </div>
-                    <input
-                      type="password"
-                      autoComplete="current-password"
-                      value={devPassword}
-                      onChange={(ev) => setDevPassword(ev.target.value)}
-                      onKeyDown={(ev) => {
-                        if (ev.key === "Enter") void signInWithPasswordLocal();
-                      }}
-                      placeholder="Şifre"
-                      disabled={status === "sending"}
-                      className="w-full border border-gray-300 rounded bg-white px-2 py-1 text-xs text-gray-900 placeholder:text-gray-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void signInWithPasswordLocal()}
-                      disabled={status === "sending"}
-                      className="w-full bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
-                      {status === "sending" ? "Giriş…" : "Şifre ile gir"}
-                    </button>
-                  </div>
-                )}
+              <button
+                type="button"
+                onClick={() => void requestReset()}
+                className="mt-2 w-full text-[11px] text-indigo-700 hover:text-indigo-900 underline">
+                Şifremi sıfırla
+              </button>
               {msg && (
                 <div
                   className={`mt-2 text-[10px] rounded px-2 py-1 text-left leading-snug ${
@@ -317,6 +354,11 @@ export function AuthBar() {
             {letter}
           </span>
           <span className="hidden sm:inline text-gray-700 truncate max-w-[120px]">{emailText}</span>
+          {!approved && !isAdmin && (
+            <span className="hidden sm:inline rounded bg-amber-100 text-amber-800 px-1 py-[1px] text-[9px]">
+              beklemede
+            </span>
+          )}
         </button>
         {portal}
       </div>
@@ -332,7 +374,8 @@ export function AuthBar() {
           setOpen((v) => !v);
           setStatus("idle");
           setMsg(null);
-          setDevPassword("");
+          setPassword("");
+          setMode("login");
         }}
         className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1 rounded font-medium">
         Giriş

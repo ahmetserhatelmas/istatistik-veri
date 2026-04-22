@@ -14,6 +14,7 @@ import {
 import { readMbsFromOranRecord } from "@/lib/oran-api";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
 import { supabase } from "@/lib/supabase/client";
+import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -126,6 +127,8 @@ function formatLastSyncTr(iso: string | null): string {
 }
 
 // ── wildcard / tam eşleşme filtre ─────────────────────────────────────────────
+const SCORE_COLS = new Set(["sonuc_iy", "sonuc_ms"]);
+
 // "," → OR, "+" → AND (sunucu tarafı ile tutarlı); joker yoksa tam metin eşleşmesi
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.trim().toLowerCase();
@@ -202,7 +205,40 @@ function evalClientFilterAtom(cellVal: string, atom: string): boolean {
   return matchWildcard(cellVal, t);
 }
 
-function evalClientColFilter(cellVal: string, rawPattern: string): boolean {
+function isBlankScoreCell(val: string): boolean {
+  const s = val.trim();
+  return s === "" || s === "-" || s === "–";
+}
+
+/** Sunucu `applyCfSkorColumnFilter` ile aynı semantik (client-only filtre satırı için). */
+function evalScoreColFilter(cellVal: string, rawPattern: string): boolean {
+  const raw = rawPattern.trim();
+  if (raw === "_") {
+    return isBlankScoreCell(cellVal);
+  }
+  const orParts = rawPattern.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!orParts.length) return true;
+  return orParts.some((orPart) => {
+    const andParts = orPart.split("+").map((s) => s.trim()).filter(Boolean);
+    if (!andParts.length) return true;
+    if (andParts.length !== 1) {
+      return andParts.every((atom) => evalClientFilterAtom(cellVal, atom));
+    }
+    const tokenRaw = andParts[0]!;
+    if (tokenRaw === "_" || tokenRaw === " _" || tokenRaw === "_ ") {
+      return isBlankScoreCell(cellVal);
+    }
+    const { core, includeBlank } = parsePlainSkorTokenWithBlankSuffix(tokenRaw);
+    const exact = core.trim().toLowerCase() === cellVal.trim().toLowerCase();
+    const blankOk = includeBlank && isBlankScoreCell(cellVal);
+    return exact || blankOk;
+  });
+}
+
+function evalClientColFilter(cellVal: string, rawPattern: string, colId?: string): boolean {
+  if (colId && SCORE_COLS.has(colId)) {
+    return evalScoreColFilter(cellVal, rawPattern);
+  }
   const orParts = rawPattern.split(",").map((s) => s.trim()).filter(Boolean);
   if (!orParts.length) return true;
   return orParts.some((orPart) =>
@@ -317,7 +353,6 @@ function cellVal(row: Match, col: ColDef): string {
   return String(raw);
 }
 
-const SCORE_COLS = new Set(["sonuc_iy","sonuc_ms"]);
 const ODDS_GROUPS = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
 
 /** Kesin MS skoru var mı — yoksa henüz oynanmamış / sonuçlanmamış (sync-matches ile aynı kural). */
@@ -390,7 +425,7 @@ function applyColFilters(rows: Match[], filters: Record<string, string>, cols: C
       const col = resolveColDefForFilter(colId, cols);
       if (!col) return true;
       const val = cellVal(row, col);
-      return evalClientColFilter(val, pat);
+      return evalClientColFilter(val, pat, colId);
     })
   );
 }
