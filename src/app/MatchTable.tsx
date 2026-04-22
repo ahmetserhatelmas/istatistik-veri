@@ -157,7 +157,7 @@ function toFilterNum(s: string): number {
 
 /** Kopyala-yapış / mobil klavye: tam genişlik veya ≤≥ işaretleri `<` / `<=` olarak yorumlansın. */
 function normalizeFilterAtom(atom: string): string {
-  let t = atom.trim().replace(/^\uFEFF+/, "");
+  const t = atom.trim().replace(/^\uFEFF+/, "");
   if (t.startsWith("\u2264")) return "<=" + t.slice(1);
   if (t.startsWith("\u2265")) return ">=" + t.slice(1);
   if (t.startsWith("\uFF1C\uFF1D")) return "<=" + t.slice(2);
@@ -210,6 +210,11 @@ function isBlankScoreCell(val: string): boolean {
   return s === "" || s === "-" || s === "–";
 }
 
+/** Skor dışı: `_` / virgül-OR’da `_` → hücre boş (sunucu `postgrestFieldEmptyOrExpr` ile uyumlu). */
+function isBlankGenericCell(val: string): boolean {
+  return val.trim() === "";
+}
+
 /** Sunucu `applyCfSkorColumnFilter` ile aynı semantik (client-only filtre satırı için). */
 function evalScoreColFilter(cellVal: string, rawPattern: string): boolean {
   const raw = rawPattern.trim();
@@ -239,10 +244,23 @@ function evalClientColFilter(cellVal: string, rawPattern: string, colId?: string
   if (colId && SCORE_COLS.has(colId)) {
     return evalScoreColFilter(cellVal, rawPattern);
   }
+  const raw = rawPattern.trim();
+  if (raw === "_") {
+    return isBlankGenericCell(cellVal);
+  }
   const orParts = rawPattern.split(",").map((s) => s.trim()).filter(Boolean);
   if (!orParts.length) return true;
   return orParts.some((orPart) =>
-    orPart.split("+").map((s) => s.trim()).filter(Boolean).every((atom) => evalClientFilterAtom(cellVal, atom)),
+    orPart
+      .split("+")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .every((atom) => {
+        if (atom === "_" || atom === " _" || atom === "_ ") {
+          return isBlankGenericCell(cellVal);
+        }
+        return evalClientFilterAtom(cellVal, atom);
+      }),
   );
 }
 

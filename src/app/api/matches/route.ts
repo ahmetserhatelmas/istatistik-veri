@@ -124,6 +124,24 @@ function splitAndParts(v: string): string[] {
   return v.split("+").map((s) => s.trim()).filter(Boolean);
 }
 
+/** Virgül-OR içinde tek başına `_` → hücre boş (null / boş metin). Skor sütunlarında ayrıca `-` ve en-dash. */
+function isBlankCellOrToken(t: string): boolean {
+  const s = t.trim();
+  return s === "_" || s === "_ ";
+}
+
+function postgrestFieldEmptyOrExpr(field: string): string {
+  return `${field}.is.null,${field}.eq.""`;
+}
+
+function postgrestSkorFieldEmptyOrExpr(field: string): string {
+  return `${field}.is.null,${field}.eq."",${field}.eq."-",${field}.eq."–"`;
+}
+
+function postgrestMsOddsEmptyOrExpr(textField: string, numField: string): string {
+  return `${textField}.is.null,${textField}.eq."",${numField}.is.null`;
+}
+
 
 /** UI ? * → SQL ILIKE _ % (Postgres varsayılan kaçış yok; el ile % _ nadir). */
 function cfPatternToIlikePattern(pattern: string): string {
@@ -191,6 +209,9 @@ function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "pref
 /** PostgREST or() ifadesi için string. BETWEEN: and(gte,lte) iç grup kullanır. */
 function branchToOrStr(field: string, b: FilterBranch, plainEqAsIlike = true): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+  if (plainEqAsIlike && b.kind === "eq" && isBlankCellOrToken(b.val)) {
+    return postgrestFieldEmptyOrExpr(field);
+  }
   if (plainEqAsIlike && b.kind === "eq") {
     return `${field}.ilike.${q(escapeIlikeExactLiteral(b.val))}`;
   }
@@ -229,6 +250,9 @@ function applyParsedFilterBranch(
   b: FilterBranch,
   plainEqAsIlike: boolean
 ): any {
+  if (plainEqAsIlike && b.kind === "eq" && isBlankCellOrToken(b.val)) {
+    return query.or(postgrestFieldEmptyOrExpr(field));
+  }
   if (plainEqAsIlike && b.kind === "eq") {
     return query.ilike(field, escapeIlikeExactLiteral(b.val));
   }
@@ -249,15 +273,28 @@ function applyGenericFilter(
   defaultWrap: "prefix" | "contains" = "prefix",
   plainEqAsIlike = true
 ): any {
+  const t = v.trim();
+  if (t === "_") {
+    return plainEqAsIlike ? query.or(postgrestFieldEmptyOrExpr(field)) : query;
+  }
   const orParts = splitOrParts(v);
   if (!orParts.length) return query;
 
   if (orParts.length === 1) {
-    // Tek OR → AND zincirleri doğrudan uygula
-    for (const ap of splitAndParts(orParts[0]!)) {
-      query = applyParsedFilterBranch(query, field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
+    // Tek OR → AND zincirleri: tek atom doğrudan; çoklu atom PostgREST and(...) ile (boş `_` dahil)
+    const andParts = splitAndParts(orParts[0]!);
+    if (andParts.length === 1) {
+      const ap = andParts[0]!;
+      if (plainEqAsIlike && isBlankCellOrToken(ap)) {
+        return query.or(postgrestFieldEmptyOrExpr(field));
+      }
+      return applyParsedFilterBranch(query, field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
     }
-    return query;
+    const andExprs = andParts.map((ap) => {
+      if (plainEqAsIlike && isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
+      return branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
+    });
+    return andExprs.length ? query.or(`and(${andExprs.join(",")})`) : query;
   }
 
   // Birden fazla OR → or() ifadesi
@@ -265,12 +302,18 @@ function applyGenericFilter(
   for (const orPart of orParts) {
     const andParts = splitAndParts(orPart);
     if (andParts.length === 1) {
-      segments.push(branchToOrStr(field, parseFilterBranch(andParts[0]!, defaultWrap), plainEqAsIlike));
+      const ap0 = andParts[0]!;
+      if (plainEqAsIlike && isBlankCellOrToken(ap0)) {
+        segments.push(postgrestFieldEmptyOrExpr(field));
+      } else {
+        segments.push(branchToOrStr(field, parseFilterBranch(ap0, defaultWrap), plainEqAsIlike));
+      }
     } else {
       // AND grubu or() içinde: and(cond1,cond2,...)
-      const andExprs = andParts.map((ap) =>
-        branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike)
-      );
+      const andExprs = andParts.map((ap) => {
+        if (plainEqAsIlike && isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
+        return branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
+      });
       segments.push(`and(${andExprs.join(",")})`);
     }
   }
@@ -566,6 +609,9 @@ function applyMsOddsNumericComparison(q: any, numField: string, b: FilterBranch)
 
 function branchToOrStrMsOdds(numField: string, textField: string, b: FilterBranch): string {
   const qstr = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+  if (b.kind === "eq" && isBlankCellOrToken(b.val)) {
+    return postgrestMsOddsEmptyOrExpr(textField, numField);
+  }
   if (b.kind === "like" || b.kind === "ilike") {
     return `${textField}.${b.kind}.${qstr(b.pat)}`;
   }
@@ -608,6 +654,9 @@ function applyMsOddsCfFilter(query: any, col: "ms1" | "msx" | "ms2", v: string):
   if (!orParts.length) return query;
 
   const applyOne = (q: any, p: string): any => {
+    if (isBlankCellOrToken(p)) {
+      return q.or(postgrestMsOddsEmptyOrExpr(textField, numField));
+    }
     const b = parseFilterBranch(p.trim(), "contains");
     if (b.kind === "like" || b.kind === "ilike") {
       return applyParsedFilterBranch(q, textField, b, true);
@@ -631,17 +680,31 @@ function applyMsOddsCfFilter(query: any, col: "ms1" | "msx" | "ms2", v: string):
   };
 
   if (orParts.length === 1) {
-    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
-    return query;
+    const ands = splitAndParts(orParts[0]!);
+    if (ands.length === 1) {
+      return applyOne(query, ands[0]!);
+    }
+    const andExprs = ands
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return postgrestMsOddsEmptyOrExpr(textField, numField);
+        return branchToOrStrMsOdds(numField, textField, parseFilterBranch(ap, "contains"));
+      })
+      .filter(Boolean);
+    return andExprs.length ? query.or(`and(${andExprs.join(",")})`) : query;
   }
 
   const segments = orParts.map((orPart) => {
     const ands = splitAndParts(orPart);
     if (ands.length === 1) {
-      return branchToOrStrMsOdds(numField, textField, parseFilterBranch(ands[0]!, "contains"));
+      const ap0 = ands[0]!;
+      if (isBlankCellOrToken(ap0)) return postgrestMsOddsEmptyOrExpr(textField, numField);
+      return branchToOrStrMsOdds(numField, textField, parseFilterBranch(ap0, "contains"));
     }
     const exprs = ands
-      .map((ap) => branchToOrStrMsOdds(numField, textField, parseFilterBranch(ap, "contains")))
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return postgrestMsOddsEmptyOrExpr(textField, numField);
+        return branchToOrStrMsOdds(numField, textField, parseFilterBranch(ap, "contains"));
+      })
       .filter(Boolean);
     return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
   }).filter(Boolean);
@@ -674,11 +737,24 @@ function isPlainSkorFilterValue(raw: string): boolean {
   return true;
 }
 
+function plainSkorFilterHasBlankAtom(raw: string): boolean {
+  const orParts = splitOrParts(raw.trim());
+  for (const orPart of orParts) {
+    for (const ap of splitAndParts(orPart)) {
+      if (isBlankCellOrToken(ap)) return true;
+    }
+  }
+  return false;
+}
+
 /** Düz İY/MS skoru → PostgREST planned count sapmasın diye exact count. */
 function spRequestsPlainSkorExactCount(sp: URLSearchParams): boolean {
   const candidates = [sp.get("sonuc_ms"), sp.get("sonuc_iy"), sp.get("cf_sonuc_ms"), sp.get("cf_sonuc_iy")];
   for (const v of candidates) {
-    if (v?.trim() && isPlainSkorFilterValue(v)) return true;
+    const t = v?.trim();
+    if (!t) continue;
+    if (plainSkorFilterHasBlankAtom(t)) continue;
+    if (isPlainSkorFilterValue(t)) return true;
   }
   return false;
 }
