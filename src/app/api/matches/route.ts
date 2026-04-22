@@ -101,6 +101,7 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   suffix3:  { col: "mac_suffix3",   mode: "ilike" },
   mbs:      { col: "mac_suffix4",   mode: "ilike" },
   // tarih: cf_tarih ayrı işlenir (tarih_arama + * ? joker / virgül-VEYA)
+  // gün: cf_gun ayrı — aşağıda gunCfValueForSubstringIlike (DB değeri "DD.MM.YYYY günadı")
   // saat: time tipi — ILIKE için sql/add-matches-saat-arama-column.sql (saat_arama)
   saat:     { col: "saat_arama",    mode: "ilike" },
   kod_ms:   { col: "kod_ms",        mode: "eq" },
@@ -590,6 +591,28 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyCfTextColumnIlikeFilter(query: any, col: string, v: string): any {
   return applyGenericFilter(query, col, v, "contains");
+}
+
+/**
+ * cf_gun: `tarih_tr_gunlu` genelde "24.04.2026 cuma" — düz "Cuma" tam eşleşmez;
+ * `P*` da sütun tarihle başladığı için `P%` öneki eşleşmez. Her atomu *...* sar → ILIKE %…%.
+ */
+function gunCfValueForSubstringIlike(raw: string): string {
+  const v = raw.trim();
+  if (!v) return v;
+  return splitOrParts(v)
+    .map((orPart) =>
+      splitAndParts(orPart)
+        .map((ap) => {
+          const s = ap.trim();
+          if (!s) return s;
+          if (isBlankCellOrToken(s)) return s;
+          if (s.startsWith("*") && s.endsWith("*") && s.length >= 2) return s;
+          return `*${s}*`;
+        })
+        .join("+"),
+    )
+    .join(",");
 }
 
 /**
@@ -1580,6 +1603,10 @@ export async function GET(req: NextRequest) {
     const v = val.trim();
     if (colId === "saat") {
       query = applyCfSaatColumnFilter(query, v);
+      continue;
+    }
+    if (colId === "gun") {
+      query = applyCfTextColumnIlikeFilter(query, "tarih_tr_gunlu", gunCfValueForSubstringIlike(v));
       continue;
     }
     const msCol = MS_ODDS_DB_COL[colId];

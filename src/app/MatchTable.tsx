@@ -3963,7 +3963,7 @@ export default function MatchTable() {
                             ? "Metin: cf_tarih. Gün/ay: ⊞ Hane satırından (tarih_gun / tarih_ay, tarih_arama)."
                             : "Esc → temizle | *5?6*: wildcard | 4.9,3.2: VEYA | 4.9+3.2: VE"
                         }
-                        className={`min-w-0 flex-1 bg-gray-100 border rounded px-1 py-0.5 text-[11px] text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 ${
+                        className={`min-w-0 flex-1 rounded border px-1 py-0.5 text-[11px] bg-white text-gray-900 caret-gray-900 placeholder:text-slate-600 [color-scheme:light] focus:outline-none focus:border-blue-500 ${
                       colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
                     }`}
                   />

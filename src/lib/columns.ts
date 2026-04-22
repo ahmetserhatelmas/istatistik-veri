@@ -71,7 +71,7 @@ export interface ColDef {
 export const ALL_COLS: ColDef[] = [
   // ── Tarih ──────────────────────────────────────────────────────────────────
   { id: "tarih",    label: "Tarih",    key: "tarih",       dbCol: true, group: "Tarih", width: 96 },
-  { id: "gun",      label: "Gün",      key: "TARIH_TR_GUNLU",           group: "Tarih", width: 88 },
+  { id: "gun",      label: "Gün",      key: "tarih_tr_gunlu", dbCol: true, group: "Tarih", width: 88 },
   { id: "saat",     label: "Saat",     key: "saat",        dbCol: true, group: "Tarih", width: 56 },
 
   // ── Lig Bilgisi ────────────────────────────────────────────────────────────
