@@ -325,13 +325,23 @@ function cellVal(row: Match, col: ColDef): string {
     if (/^[1-3]$/.test(colMac)) return colMac;
     return "";
   }
-  // Çok kaynaklı OKBT: {srcId}_obktb_{idx} → client-side hesap (rowKey'den)
+  // Çok kaynaklı OKBT: önce tablodan gelen generated değer (cf_* ile aynı kaynak), yoksa rowKey’den hesap
   const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(col.id);
   if (multiOkbtM) {
     const srcId = multiOkbtM[1]!;
     const idx = Number(multiOkbtM[2]);
     const src = OKBT_MULTI_SOURCE_MAP[srcId];
     if (src && Number.isInteger(idx) && idx >= 0) {
+      const dbKey = src.id === "macid" ? `macid7_obktb_${idx}` : col.id;
+      // API’de generated kolon geldiyse o kaynak: NULL = `_` / boş hücre. Eski davranışta NULL iken
+      // rowKey’den hesaplanan rakam gösteriliyordu; `9,_` süzümünde küme doğru olsa bile sütunda 8,11… görünüyordu.
+      if (Object.prototype.hasOwnProperty.call(row, dbKey)) {
+        const dbVal = row[dbKey];
+        if (dbVal === null || dbVal === undefined || dbVal === "") return "";
+        const n = typeof dbVal === "number" ? dbVal : Number(String(dbVal).replace(",", "."));
+        if (Number.isFinite(n)) return String(Math.round(n));
+        return String(dbVal).trim();
+      }
       if (src.id === "macid") {
         return idx < OKBT_7_IDX_COUNT ? okbt7BasamakHucreDegeri(row[src.rowKey], idx) : "";
       }
@@ -385,16 +395,13 @@ const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["mbs", "suffix3", "suffix4"]);
 /**
  * Bir sütun client-side mı filtrelenmeli?
  * - Statik set (mbs, MsMKT, MBS): rowKey'den computed (digitSum vb.)
- * - Tüm çoklu OKBT sütunları ({src}_obktb_{idx}):
- *     · macid 7-haneli formülle hesaplanıyor, DB fonksiyonu 5-haneli (uyuşmazlık)
- *     · Diğer kaynaklar 5-haneli ama DB fonksiyonu kurulu/güncel değilse filtre
- *       yanlış satırı döndürebiliyor.
- *   İstemci zaten doğru değeri `cellVal` ile hesaplıyor → filtre de aynı yerden
- *   yapılsın; DB durumuna bağımlılık sıfırlanır, ekrandaki değer = filtre değeri.
+ * - Yalnızca `macid_obktb_*`: 7 haneli JS ile DB `macid7_obktb_*` arasında bilinçli fark;
+ *   diğer `*_obktb_*` sütunlarında sunucu süzümü + `cellVal`’da DB alanı kullanıldığından
+ *   çift süzüm `9,_` gibi OR-boş senaryosunda satır kaybına yol açıyordu.
  */
 function isCellValClientCol(id: string): boolean {
   if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return true;
-  if (/^[a-z][a-z0-9]*_obktb_\d+$/.test(id)) return true;
+  if (/^macid_obktb_\d+$/.test(id)) return true;
   return false;
 }
 

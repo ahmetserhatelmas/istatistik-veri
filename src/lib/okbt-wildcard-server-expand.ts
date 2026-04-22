@@ -31,7 +31,7 @@ export type OkbtWildcardExpand =
   | null;
 
 /**
- * Virgül/artı içeren VEYA saf sayısal ifade → null (mevcut parseObktbNumericRanges / istemci yolu).
+ * Virgül/artı içeren ifade → null (`parseObktbServerOrGroups` veya istemci yolu).
  * Tek parça joker → 0..max arasında eşleşen tamsayılar.
  */
 export function expandOkbtWildcardFilter(v: string, maxInclusive = OKBT_WILDCARD_MAX_INCLUSIVE): OkbtWildcardExpand {

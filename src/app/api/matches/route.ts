@@ -24,6 +24,14 @@ function flattenRawValue(v: unknown): unknown {
   return v;
 }
 
+/** PostgREST select: `cf_*_obktb_*` WHERE ile aynı generated ifadeler (satırda değer dönsün). */
+const OKBT_MULTI_COMPUTED_COLS: string[] = [
+  ...Array.from({ length: 20 }, (_, i) => `macid7_obktb_${i}`),
+  ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"] as const).flatMap((src) =>
+    Array.from({ length: 15 }, (_, i) => `${src}_obktb_${i}`),
+  ),
+];
+
 const DB_COLS = [
   "id","tarih","saat","saat_arama","tarih_tr_gunlu",
   "lig_kodu","lig_adi","lig_id",
@@ -41,6 +49,7 @@ const DB_COLS = [
   "sport_turu","bookmaker_id",
   "raw_data",
   ...OKBT_BASAMAK_LABELS.map((_, i) => `obktb_${i}`),
+  ...OKBT_MULTI_COMPUTED_COLS,
 ];
 
 /** pick=stb: hafif satır — kayıtlı filtre + oynanmamış maç seçici listesi (raw_data yok). */
@@ -209,7 +218,7 @@ function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "pref
 /** PostgREST or() ifadesi için string. BETWEEN: and(gte,lte) iç grup kullanır. */
 function branchToOrStr(field: string, b: FilterBranch, plainEqAsIlike = true): string {
   const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
-  if (plainEqAsIlike && b.kind === "eq" && isBlankCellOrToken(b.val)) {
+  if (b.kind === "eq" && isBlankCellOrToken(b.val)) {
     return postgrestFieldEmptyOrExpr(field);
   }
   if (plainEqAsIlike && b.kind === "eq") {
@@ -250,7 +259,7 @@ function applyParsedFilterBranch(
   b: FilterBranch,
   plainEqAsIlike: boolean
 ): any {
-  if (plainEqAsIlike && b.kind === "eq" && isBlankCellOrToken(b.val)) {
+  if (b.kind === "eq" && isBlankCellOrToken(b.val)) {
     return query.or(postgrestFieldEmptyOrExpr(field));
   }
   if (plainEqAsIlike && b.kind === "eq") {
@@ -275,7 +284,7 @@ function applyGenericFilter(
 ): any {
   const t = v.trim();
   if (t === "_") {
-    return plainEqAsIlike ? query.or(postgrestFieldEmptyOrExpr(field)) : query;
+    return query.or(postgrestFieldEmptyOrExpr(field));
   }
   const orParts = splitOrParts(v);
   if (!orParts.length) return query;
@@ -285,13 +294,13 @@ function applyGenericFilter(
     const andParts = splitAndParts(orParts[0]!);
     if (andParts.length === 1) {
       const ap = andParts[0]!;
-      if (plainEqAsIlike && isBlankCellOrToken(ap)) {
+      if (isBlankCellOrToken(ap)) {
         return query.or(postgrestFieldEmptyOrExpr(field));
       }
       return applyParsedFilterBranch(query, field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
     }
     const andExprs = andParts.map((ap) => {
-      if (plainEqAsIlike && isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
+      if (isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
       return branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
     });
     return andExprs.length ? query.or(`and(${andExprs.join(",")})`) : query;
@@ -303,7 +312,7 @@ function applyGenericFilter(
     const andParts = splitAndParts(orPart);
     if (andParts.length === 1) {
       const ap0 = andParts[0]!;
-      if (plainEqAsIlike && isBlankCellOrToken(ap0)) {
+      if (isBlankCellOrToken(ap0)) {
         segments.push(postgrestFieldEmptyOrExpr(field));
       } else {
         segments.push(branchToOrStr(field, parseFilterBranch(ap0, defaultWrap), plainEqAsIlike));
@@ -311,7 +320,7 @@ function applyGenericFilter(
     } else {
       // AND grubu or() içinde: and(cond1,cond2,...)
       const andExprs = andParts.map((ap) => {
-        if (plainEqAsIlike && isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
+        if (isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
         return branchToOrStr(field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
       });
       segments.push(`and(${andExprs.join(",")})`);
@@ -354,6 +363,9 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   }
 
   const applyOne = (q: any, p: string): any => {
+    if (isBlankCellOrToken(p)) {
+      return q.or(`${col}.is.null`);
+    }
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
       // Joker → _arama metin sütunu
@@ -374,6 +386,7 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   };
 
   const branchStr = (p: string): string => {
+    if (isBlankCellOrToken(p)) return `${col}.is.null`;
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
       return arama ? `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"` : "";
@@ -393,14 +406,28 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   };
 
   if (orParts.length === 1) {
-    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
-    return query;
+    const ands = splitAndParts(orParts[0]!);
+    if (ands.length === 1) {
+      return applyOne(query, ands[0]!);
+    }
+    const andExprs = ands
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return `${col}.is.null`;
+        return branchStr(ap);
+      })
+      .filter(Boolean);
+    return andExprs.length ? query.or(`and(${andExprs.join(",")})`) : query;
   }
 
   const segments = orParts.map((orPart) => {
     const ands = splitAndParts(orPart);
     if (ands.length === 1) return branchStr(ands[0]!);
-    const exprs = ands.map(branchStr).filter(Boolean);
+    const exprs = ands
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return `${col}.is.null`;
+        return branchStr(ap);
+      })
+      .filter(Boolean);
     return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
   }).filter(Boolean);
 
@@ -424,6 +451,9 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   const col = def.col;
 
   const applyOne = (q: any, p: string): any => {
+    if (isBlankCellOrToken(p)) {
+      return q.or(`${col}.is.null`);
+    }
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") return q[b.kind](arama, b.pat);
     if (b.kind === "between") {
@@ -441,6 +471,7 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   };
 
   const branchStr = (p: string): string => {
+    if (isBlankCellOrToken(p)) return `${col}.is.null`;
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") return `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
@@ -463,14 +494,28 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   }
 
   if (orParts.length === 1) {
-    for (const ap of splitAndParts(orParts[0]!)) query = applyOne(query, ap);
-    return query;
+    const ands = splitAndParts(orParts[0]!);
+    if (ands.length === 1) {
+      return applyOne(query, ands[0]!);
+    }
+    const andExprs = ands
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return `${col}.is.null`;
+        return branchStr(ap);
+      })
+      .filter(Boolean);
+    return andExprs.length ? query.or(`and(${andExprs.join(",")})`) : query;
   }
 
   const segments = orParts.map((orPart) => {
     const ands = splitAndParts(orPart);
     if (ands.length === 1) return branchStr(ands[0]!);
-    const exprs = ands.map(branchStr).filter(Boolean);
+    const exprs = ands
+      .map((ap) => {
+        if (isBlankCellOrToken(ap)) return `${col}.is.null`;
+        return branchStr(ap);
+      })
+      .filter(Boolean);
     return exprs.length > 1 ? `and(${exprs.join(",")})` : exprs[0] ?? "";
   }).filter(Boolean);
 
@@ -899,67 +944,85 @@ function parseObktbSrcIdx(colId: string): { src: string; idx: number } | null {
   return { src, idx };
 }
 
-/**
- * Basit sayısal OKBT filtre ifadesini [min, max] aralıklarına çevirir.
- * Desteklenen (OR ',' ile; AND '+', joker, != desteklenmez):
- *   N, <N, <=N, >N, >=N, N..M, N<->M
- * Karmaşık / joker ifadeler → null (istemci tarafında çalışır).
- */
-function parseObktbNumericRanges(raw: string): Array<{ min: number | null; max: number | null }> | null {
+/** OKBT generated fn (cf_*_obktb_*) sunucu süzümü: `,` OR, `+` AND, `_` boş (null). `* ?` → null (ayrı joker yolu). */
+type OkbtSeg = { kind: "blank" } | { kind: "neq"; n: number } | { kind: "range"; min: number | null; max: number | null };
+
+function parseObktbSingleAtom(t: string): OkbtSeg | null {
+  const s = t.trim();
+  if (!s) return null;
+  const rm = s.match(/^(-?\d+)\s*(?:\.\.|<->)\s*(-?\d+)$/);
+  if (rm) {
+    const lo = Number(rm[1]);
+    const hi = Number(rm[2]);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+    return { kind: "range", min: Math.min(lo, hi), max: Math.max(lo, hi) };
+  }
+  if (s.startsWith(">=")) {
+    const n = Number(s.slice(2).trim());
+    if (!Number.isFinite(n)) return null;
+    return { kind: "range", min: n, max: null };
+  }
+  if (s.startsWith("<=")) {
+    const n = Number(s.slice(2).trim());
+    if (!Number.isFinite(n)) return null;
+    return { kind: "range", min: null, max: n };
+  }
+  if (s.startsWith("<>")) {
+    const n = Number(s.slice(2).trim());
+    if (!Number.isFinite(n)) return null;
+    return { kind: "neq", n };
+  }
+  if (s.startsWith(">")) {
+    const n = Number(s.slice(1).trim());
+    if (!Number.isFinite(n)) return null;
+    return { kind: "range", min: n + 1, max: null };
+  }
+  if (s.startsWith("<")) {
+    const n = Number(s.slice(1).trim());
+    if (!Number.isFinite(n)) return null;
+    return { kind: "range", min: null, max: n - 1 };
+  }
+  if (/^-?\d+$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    return { kind: "range", min: n, max: n };
+  }
+  return null;
+}
+
+function parseObktbServerOrGroups(raw: string): OkbtSeg[][] | null {
   const v = raw.trim();
   if (!v) return null;
-  const orParts = splitOrParts(v);
-  if (!orParts.length) return null;
-  const ranges: Array<{ min: number | null; max: number | null }> = [];
-  for (const orPart of orParts) {
-    const t = orPart.trim();
-    if (!t) return null;
-    if (t.includes("+") || t.includes("*") || t.includes("?")) return null;
-    // Aralık: N..M veya N<->M
-    const rm = t.match(/^(-?\d+)\s*(?:\.\.|<->)\s*(-?\d+)$/);
-    if (rm) {
-      const lo = Number(rm[1]);
-      const hi = Number(rm[2]);
-      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
-      ranges.push({ min: Math.min(lo, hi), max: Math.max(lo, hi) });
-      continue;
+  if (v.includes("*") || v.includes("?")) return null;
+  const groups: OkbtSeg[][] = [];
+  for (const orPart of splitOrParts(v)) {
+    const andSegs: OkbtSeg[] = [];
+    for (const ap of splitAndParts(orPart)) {
+      const s = ap.trim();
+      if (!s) return null;
+      if (isBlankCellOrToken(s)) {
+        andSegs.push({ kind: "blank" });
+        continue;
+      }
+      const seg = parseObktbSingleAtom(s);
+      if (!seg) return null;
+      andSegs.push(seg);
     }
-    // Karşılaştırma operatörleri
-    if (t.startsWith(">=")) {
-      const n = Number(t.slice(2).trim());
-      if (!Number.isFinite(n)) return null;
-      ranges.push({ min: n, max: null });
-      continue;
-    }
-    if (t.startsWith("<=")) {
-      const n = Number(t.slice(2).trim());
-      if (!Number.isFinite(n)) return null;
-      ranges.push({ min: null, max: n });
-      continue;
-    }
-    if (t.startsWith("<>")) return null; // != → istemcide
-    if (t.startsWith(">")) {
-      const n = Number(t.slice(1).trim());
-      if (!Number.isFinite(n)) return null;
-      ranges.push({ min: n + 1, max: null });
-      continue;
-    }
-    if (t.startsWith("<")) {
-      const n = Number(t.slice(1).trim());
-      if (!Number.isFinite(n)) return null;
-      ranges.push({ min: null, max: n - 1 });
-      continue;
-    }
-    // Düz sayı → eq
-    if (/^-?\d+$/.test(t)) {
-      const n = Number(t);
-      if (!Number.isFinite(n)) return null;
-      ranges.push({ min: n, max: n });
-      continue;
-    }
-    return null; // parse edilemedi
+    if (!andSegs.length) return null;
+    groups.push(andSegs);
   }
-  return ranges.length ? ranges : null;
+  return groups.length ? groups : null;
+}
+
+function okbtSegToPostgrestStr(fnName: string, seg: OkbtSeg): string {
+  if (seg.kind === "blank") return `${fnName}.is.null`;
+  if (seg.kind === "neq") return `${fnName}.neq.${seg.n}`;
+  const { min, max } = seg;
+  if (min !== null && max !== null && min === max) return `${fnName}.eq.${min}`;
+  if (min !== null && max !== null) return `and(${fnName}.gte.${min},${fnName}.lte.${max})`;
+  if (min !== null) return `${fnName}.gte.${min}`;
+  if (max !== null) return `${fnName}.lte.${max}`;
+  return "";
 }
 
 /**
@@ -1556,37 +1619,22 @@ export async function GET(req: NextRequest) {
     // - macid (7 haneli): macid7_obktb_{idx}  (sql/add-macid7-obktb-computed-cols.sql)
     // - t1i / t2i / kodms / kodiy / kodcs / kodau (5 haneli): {src}_obktb_{idx}
     //   (sql/add-matches-okbt-multi-computed-col-functions.sql)
-    // Basit sayısal ifadeler sunucuda; joker/karmaşık → istemciye bırakılır (skip).
+    // Sayısal + `_` boş + `+` AND sunucuda; `* ?` joker ayrı; kalan karmaşık → istemci.
     const parsedObktb = parseObktbSrcIdx(colId);
     if (parsedObktb) {
       const fnName =
         parsedObktb.src === "macid"
           ? `macid7_obktb_${parsedObktb.idx}`
           : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
-      const ranges = parseObktbNumericRanges(v);
-      if (ranges) {
-        if (ranges.length === 1) {
-          const r = ranges[0]!;
-          if (r.min !== null && r.max !== null && r.min === r.max) {
-            query = query.eq(fnName, r.min);
-          } else if (r.min !== null && r.max !== null) {
-            query = query.gte(fnName, r.min).lte(fnName, r.max);
-          } else if (r.min !== null) {
-            query = query.gte(fnName, r.min);
-          } else if (r.max !== null) {
-            query = query.lte(fnName, r.max);
-          }
-        } else {
-          // Birden fazla aralık → OR
-          const segments = ranges.map((r) => {
-            if (r.min !== null && r.max !== null && r.min === r.max) return `${fnName}.eq.${r.min}`;
-            if (r.min !== null && r.max !== null) return `and(${fnName}.gte.${r.min},${fnName}.lte.${r.max})`;
-            if (r.min !== null) return `${fnName}.gte.${r.min}`;
-            if (r.max !== null) return `${fnName}.lte.${r.max}`;
-            return "";
-          }).filter(Boolean);
-          if (segments.length) query = query.or(segments.join(","));
-        }
+      const obktbGroups = parseObktbServerOrGroups(v);
+      if (obktbGroups) {
+        const topSegments = obktbGroups
+          .map((andSegs) => {
+            const inner = andSegs.map((s) => okbtSegToPostgrestStr(fnName, s)).filter(Boolean);
+            return inner.length > 1 ? `and(${inner.join(",")})` : inner[0] ?? "";
+          })
+          .filter(Boolean);
+        if (topSegments.length) query = query.or(topSegments.join(","));
         continue;
       }
       // Joker (* ?) tek parça: 0..99 ile genişlet — sayfalama + istemci-only tutarsızlığını önler
