@@ -29,21 +29,56 @@ export async function ensureAccessRow(
   if (!email) return null;
   const admin = isAdminEmail(email);
 
+  const cols =
+    "user_id,email,is_approved,approved_at,approved_by_email,created_at,updated_at" as const;
+
+  const { data: existing, error: selErr } = await service
+    .from("user_access")
+    .select(cols)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (selErr) return null;
+
+  if (existing) {
+    // Satır varken upsert yapma: upsert her seferinde is_approved=false yazardı;
+    // /api/auth/access-status her oturumda çağrıldığı için admin onayı anında silinirdi.
+    const row = existing as AccessRow;
+    if (normalizeEmail(row.email) !== email) {
+      const { data: updated, error: updErr } = await service
+        .from("user_access")
+        .update({ email })
+        .eq("user_id", user.id)
+        .select(cols)
+        .single();
+      if (updErr) return null;
+      return (updated as AccessRow) ?? null;
+    }
+    return row;
+  }
+
   const { data, error } = await service
     .from("user_access")
-    .upsert(
-      {
-        user_id: user.id,
-        email,
-        is_approved: admin,
-        approved_at: admin ? new Date().toISOString() : null,
-        approved_by_email: admin ? ADMIN_EMAIL : null,
-      },
-      { onConflict: "user_id" },
-    )
-    .select("user_id,email,is_approved,approved_at,approved_by_email,created_at,updated_at")
+    .insert({
+      user_id: user.id,
+      email,
+      is_approved: admin,
+      approved_at: admin ? new Date().toISOString() : null,
+      approved_by_email: admin ? ADMIN_EMAIL : null,
+    })
+    .select(cols)
     .single();
 
-  if (error) return null;
+  if (error) {
+    // auth tetikleyicisi ile aynı anda satır oluşmuş olabilir
+    const { data: again, error: againErr } = await service
+      .from("user_access")
+      .select(cols)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (againErr || !again) return null;
+    return again as AccessRow;
+  }
+
   return (data as AccessRow) ?? null;
 }
