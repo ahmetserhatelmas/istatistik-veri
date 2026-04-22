@@ -103,14 +103,14 @@ export const ALL_COLS: ColDef[] = [
   { id: "sonuc_ms", label: "MS",  key: "sonuc_ms", dbCol: true, group: "Skor", width: 60 },
 
   // ── Maç Sonucu ─────────────────────────────────────────────────────────────
-  { id: "ms1", label: "1",   key: "MS1", group: "Maç Sonucu", width: 60 },
-  { id: "msx", label: "X",   key: "MSX", group: "Maç Sonucu", width: 60 },
-  { id: "ms2", label: "2",   key: "MS2", group: "Maç Sonucu", width: 60 },
+  { id: "ms1", label: "1",   key: "ms1", dbCol: true, group: "Maç Sonucu", width: 60 },
+  { id: "msx", label: "X",   key: "msx", dbCol: true, group: "Maç Sonucu", width: 60 },
+  { id: "ms2", label: "2",   key: "ms2", dbCol: true, group: "Maç Sonucu", width: 60 },
 
   // ── OKBT (IY Sonucu) ───────────────────────────────────────────────────────
-  { id: "iy1", label: "IY1", key: "IY1", group: "İlk Yarı", width: 60 },
-  { id: "iyx", label: "IYX", key: "IYX", group: "İlk Yarı", width: 60 },
-  { id: "iy2", label: "IY2", key: "IY2", group: "İlk Yarı", width: 60 },
+  { id: "iy1", label: "IY1", key: "iy1", dbCol: true, group: "İlk Yarı", width: 60 },
+  { id: "iyx", label: "IYX", key: "iyx", dbCol: true, group: "İlk Yarı", width: 60 },
+  { id: "iy2", label: "IY2", key: "iy2", dbCol: true, group: "İlk Yarı", width: 60 },
 
   // ── 2. yarı maç sonucu (oranlar: raw_data IKIYS1 / IKIYSX / IKIYS2) ──────────
   { id: "ikiys1", label: "2Y1", key: "IKIYS1", group: "2. Yarı MS", width: 60 },
@@ -129,8 +129,8 @@ export const ALL_COLS: ColDef[] = [
   { id: "iyms22", label: "2/2", key: "IYMS22", group: "İYMS", width: 56 },
 
   // ── Karşılıklı Gol ─────────────────────────────────────────────────────────
-  { id: "kg_var", label: "KG V", key: "KGVAR", group: "KG", width: 60 },
-  { id: "kg_yok", label: "KG Y", key: "KGYOK", group: "KG", width: 60 },
+  { id: "kg_var", label: "KG V", key: "kg_var", dbCol: true, group: "KG", width: 60 },
+  { id: "kg_yok", label: "KG Y", key: "kg_yok", dbCol: true, group: "KG", width: 60 },
 
   // ── Tek / Çift ─────────────────────────────────────────────────────────────
   { id: "tek",  label: "TEK",  key: "KTCT", group: "Tek/Çift", width: 60 },
