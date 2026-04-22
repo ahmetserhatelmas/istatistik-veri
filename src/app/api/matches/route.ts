@@ -11,6 +11,7 @@ import {
   splitTarihOrPatterns,
   tarihPartToIlike,
 } from "@/lib/tarih-pattern";
+import { expandOkbtWildcardFilter } from "@/lib/okbt-wildcard-server-expand";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
@@ -79,6 +80,13 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   t2i:      { col: "t2i",           mode: "eq" },
   sonuc_iy: { col: "sonuc_iy",      mode: "ilike" },
   sonuc_ms: { col: "sonuc_ms",      mode: "ilike" },
+  iy1:      { col: "iy1",           mode: "ilike" },
+  iyx:      { col: "iyx",           mode: "ilike" },
+  iy2:      { col: "iy2",           mode: "ilike" },
+  a:        { col: "a",             mode: "ilike" },
+  u:        { col: "u",             mode: "ilike" },
+  kg_var:   { col: "kg_var",        mode: "ilike" },
+  kg_yok:   { col: "kg_yok",        mode: "ilike" },
   suffix4:  { col: "mac_suffix4",   mode: "ilike" },
   suffix3:  { col: "mac_suffix3",   mode: "ilike" },
   mbs:      { col: "mac_suffix4",   mode: "ilike" },
@@ -574,12 +582,28 @@ function branchToOrStrMsOdds(numField: string, textField: string, b: FilterBranc
   return "";
 }
 
+/**
+ * ms1/msx/ms2 filtresinde tek virgül bazen ondalık ayıracı olarak gelir (örn. 1,75*).
+ * Genel parser'da virgül OR anlamına geldiği için, bu özel durumda tek parça kabul ederiz.
+ */
+function splitMsOddsOrParts(raw: string): string[] {
+  const v = raw.trim();
+  if (!v) return [];
+  const orParts = splitOrParts(v);
+  if (orParts.length !== 2 || v.includes("+")) return orParts;
+  if (!(v.includes("*") || v.includes("?"))) return orParts;
+  const [left, right] = orParts;
+  if (!left || !right) return orParts;
+  if (!/\d/.test(left) || !/\d/.test(right)) return orParts;
+  return [`${left}.${right}`];
+}
+
 /** ms1 / msx / ms2 sütun cf_* — joker metin + sayısal karşılaştırma (ms*_n). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyMsOddsCfFilter(query: any, col: "ms1" | "msx" | "ms2", v: string): any {
   const textField = col;
   const numField = msOddsNumericField(col);
-  const orParts = splitOrParts(v.trim());
+  const orParts = splitMsOddsOrParts(v);
   if (!orParts.length) return query;
 
   const applyOne = (q: any, p: string): any => {
@@ -1409,7 +1433,7 @@ export async function GET(req: NextRequest) {
         query = applyCodeColumnPatternFilter(query, colId, v);
         continue;
       }
-      if (def.mode === "ilike") {
+    if (def.mode === "ilike") {
         if (def.col === "sonuc_iy" || def.col === "sonuc_ms") {
           query = applyCfSkorColumnFilter(query, def.col, v);
         } else {
@@ -1417,17 +1441,17 @@ export async function GET(req: NextRequest) {
           // joker istiyorsa kullanıcı * / ? açıkça yazar (örn. 14*, 19:??).
           query = applyCfTextColumnIlikeFilter(query, def.col, v);
         }
-      } else if (def.mode === "eq") {
+    } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
-        if (def.col === "id") {
+      if (def.col === "id") {
           query = applyGenericFilter(query, def.col, v, "prefix", false);
         } else if (INTEGER_EQ_CF_COLS.has(def.col)) {
           query = applyCfIntegerEqColumnFilter(query, def.col, v);
-        } else {
-          const n = Number(v);
-          query = query.eq(def.col, Number.isFinite(n) ? n : v);
-        }
+      } else {
+        const n = Number(v);
+        query = query.eq(def.col, Number.isFinite(n) ? n : v);
       }
+    }
       continue;
     }
     // Çok kaynaklı OKBT: {srcId}_obktb_{idx}
@@ -1438,34 +1462,52 @@ export async function GET(req: NextRequest) {
     // Basit sayısal ifadeler sunucuda; joker/karmaşık → istemciye bırakılır (skip).
     const parsedObktb = parseObktbSrcIdx(colId);
     if (parsedObktb) {
+      const fnName =
+        parsedObktb.src === "macid"
+          ? `macid7_obktb_${parsedObktb.idx}`
+          : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
       const ranges = parseObktbNumericRanges(v);
-      if (!ranges) continue; // karmaşık ifade → istemcide
-      const fnName = parsedObktb.src === "macid"
-        ? `macid7_obktb_${parsedObktb.idx}`
-        : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
-      if (ranges.length === 1) {
-        const r = ranges[0]!;
-        if (r.min !== null && r.max !== null && r.min === r.max) {
-          query = query.eq(fnName, r.min);
-        } else if (r.min !== null && r.max !== null) {
-          query = query.gte(fnName, r.min).lte(fnName, r.max);
-        } else if (r.min !== null) {
-          query = query.gte(fnName, r.min);
-        } else if (r.max !== null) {
-          query = query.lte(fnName, r.max);
+      if (ranges) {
+        if (ranges.length === 1) {
+          const r = ranges[0]!;
+          if (r.min !== null && r.max !== null && r.min === r.max) {
+            query = query.eq(fnName, r.min);
+          } else if (r.min !== null && r.max !== null) {
+            query = query.gte(fnName, r.min).lte(fnName, r.max);
+          } else if (r.min !== null) {
+            query = query.gte(fnName, r.min);
+          } else if (r.max !== null) {
+            query = query.lte(fnName, r.max);
+          }
+        } else {
+          // Birden fazla aralık → OR
+          const segments = ranges.map((r) => {
+            if (r.min !== null && r.max !== null && r.min === r.max) return `${fnName}.eq.${r.min}`;
+            if (r.min !== null && r.max !== null) return `and(${fnName}.gte.${r.min},${fnName}.lte.${r.max})`;
+            if (r.min !== null) return `${fnName}.gte.${r.min}`;
+            if (r.max !== null) return `${fnName}.lte.${r.max}`;
+            return "";
+          }).filter(Boolean);
+          if (segments.length) query = query.or(segments.join(","));
         }
-      } else {
-        // Birden fazla aralık → OR
-        const segments = ranges.map((r) => {
-          if (r.min !== null && r.max !== null && r.min === r.max) return `${fnName}.eq.${r.min}`;
-          if (r.min !== null && r.max !== null) return `and(${fnName}.gte.${r.min},${fnName}.lte.${r.max})`;
-          if (r.min !== null) return `${fnName}.gte.${r.min}`;
-          if (r.max !== null) return `${fnName}.lte.${r.max}`;
-          return "";
-        }).filter(Boolean);
-        if (segments.length) query = query.or(segments.join(","));
+        continue;
       }
-      continue;
+      // Joker (* ?) tek parça: 0..99 ile genişlet — sayfalama + istemci-only tutarsızlığını önler
+      const wild = expandOkbtWildcardFilter(v);
+      if (wild?.kind === "all") {
+        continue;
+      }
+      if (wild?.kind === "none") {
+        query = query.eq("id", -1);
+        continue;
+      }
+      if (wild?.kind === "ints") {
+        const { ints } = wild;
+        if (ints.length === 1) query = query.eq(fnName, ints[0]!);
+        else query = query.in(fnName, ints);
+        continue;
+      }
+      continue; // karmaşık ifade → istemcide
     }
 
     const jsonKey = mergedRawCf[colId];
