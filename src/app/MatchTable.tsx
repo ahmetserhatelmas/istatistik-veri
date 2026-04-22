@@ -502,7 +502,10 @@ function buildDigitPosPattern(val: string, positions: number[], mode: DigitPosMo
     }
   }
   if (mode === "contains") {
+    // Kenarlarda ? olmasa da (ilk/son hane seçimi) her zaman contains deseni üret: *...*
     result = result.replace(/^[?\s]+/, "*").replace(/[?\s]+$/, "*");
+    if (!result.startsWith("*")) result = `*${result}`;
+    if (!result.endsWith("*")) result = `${result}*`;
   }
   return result;
 }

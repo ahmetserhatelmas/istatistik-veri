@@ -91,6 +91,15 @@ function lsSet<T>(k: string, v: T): void {
   try { window.localStorage.setItem(k, JSON.stringify(v)); } catch { /* noop */ }
 }
 
+/** Eksik uçlar → KOD / joker filtre yapıştırma (iddaa tarzı): `*000,*001,*002` — arada boşluk yok. */
+function formatMissingEndsForFilterPaste(samples: string[]): string {
+  return samples
+    .map((s) => String(s).trim())
+    .filter((s) => s.length > 0)
+    .map((s) => (s.startsWith("*") ? s : `*${s}`))
+    .join(",");
+}
+
 interface EslestirmePaneliProps {
   open: boolean;
   onClose: () => void;
@@ -688,18 +697,39 @@ export function EslestirmePaneli({
                       </div>
                     )}
                     <div className="font-mono text-[11px] text-gray-800 leading-relaxed break-words">
-                      {missingFor.missingSamples.join(", ")}
+                      {formatMissingEndsForFilterPaste(missingFor.missingSamples)}
                     </div>
-                    <button
-                      onClick={() => {
-                        if (typeof navigator !== "undefined" && navigator.clipboard) {
-                          navigator.clipboard.writeText(missingFor.missingSamples.join(", ")).catch(() => {});
-                        }
-                      }}
-                      className="mt-3 text-[10px] bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
-                      title="Eksik listesini panoya kopyala">
-                      📋 Kopyala
-                    </button>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const t = formatMissingEndsForFilterPaste(missingFor.missingSamples);
+                          if (typeof navigator !== "undefined" && navigator.clipboard) {
+                            navigator.clipboard.writeText(t).catch(() => {});
+                          }
+                        }}
+                        className="text-[10px] bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded px-2 py-1"
+                        title="Panoya: *000,*001,*002… (boşluksuz; KOD / joker filtre kutusuna yapıştır)">
+                        📋 Kopyala (*…,*…)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof navigator !== "undefined" && navigator.clipboard) {
+                            navigator.clipboard
+                              .writeText(missingFor.missingSamples.join(", "))
+                              .catch(() => {});
+                          }
+                        }}
+                        className="text-[10px] text-gray-600 hover:text-gray-900 underline"
+                        title="Okunaklı liste: 000, 001, 002 (virgül + boşluk)">
+                        Virgül+boşluk
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[9px] text-gray-500">
+                      Varsayılan kopya: iddaa / Excel’de kullandığın gibi{" "}
+                      <span className="font-mono">*abc,*abc</span> biçimi, arada boşluk yok.
+                    </p>
                   </>
                 )}
               </div>
