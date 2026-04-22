@@ -192,30 +192,6 @@ export function AuthBar() {
     }
   }, [email, password]);
 
-  const requestReset = useCallback(async () => {
-    const e = email.trim().toLowerCase();
-    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-      setStatus("error");
-      setMsg("Şifre sıfırlama için geçerli e-posta girin.");
-      return;
-    }
-    setStatus("sending");
-    setMsg(null);
-    const res = await fetch("/api/auth/reset-password", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: e }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.ok) {
-      setStatus("error");
-      setMsg(json.error ?? "Şifre sıfırlama başlatılamadı.");
-      return;
-    }
-    setStatus("sent");
-    setMsg(json.message ?? "Sıfırlama bağlantısı gönderildi.");
-  }, [email]);
-
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setApproved(false);
@@ -311,12 +287,6 @@ export function AuthBar() {
                 disabled={status === "sending"}
                 className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
                 {status === "sending" ? "İşleniyor…" : mode === "login" ? "Giriş yap" : "Kayıt ol"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void requestReset()}
-                className="mt-2 w-full text-[11px] text-indigo-700 hover:text-indigo-900 underline">
-                Şifremi sıfırla
               </button>
               {msg && (
                 <div
