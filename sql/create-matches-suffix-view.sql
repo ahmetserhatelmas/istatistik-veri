@@ -1,7 +1,7 @@
 -- Üst bar "Kod / son N / rakam" kutusu: tüm tabloda son N haneye göre arama (PostgREST .eq ile).
 -- Çalıştır: Supabase SQL Editor veya psql
 -- İndeksler: sql/add-matches-suffix-expression-indexes.sql
--- matches’a yeni sütun eklendiyse (örn. sql/add-matches-code-arama-columns.sql, sql/add-matches-okbt-basamak-generated-cols.sql): bu dosyayı yeniden çalıştırın ki m.* güncellensin.
+-- matches’a yeni sütun eklendiyse (örn. sql/add-matches-code-arama-columns.sql, sql/add-matches-okbt-basamak-generated-cols.sql, sql/add-matches-mkt-display-from-id.sql, sql/add-matches-msmkt-display-from-kod-ms.sql + backfill): bu dosyayı yeniden çalıştırın ki m.* güncellensin.
 
 CREATE OR REPLACE FUNCTION public.matches_sfx_mod(v bigint, modulus bigint)
 RETURNS bigint

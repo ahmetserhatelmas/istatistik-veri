@@ -11,9 +11,13 @@
     "sync:forward": "node scripts/forward-sync.mjs",
     "sync:forward:60": "node scripts/forward-sync.mjs 60",
     "backfill:kod-suffix": "node scripts/backfill-match-raw-kod-suffix.mjs",
+    "backfill:mkt": "node scripts/backfill-mkt-display.mjs",
+    "backfill:msmkt": "node scripts/backfill-msmkt-display.mjs",
+    "bootstrap:approved-user": "node scripts/bootstrap-approved-user.mjs",
     "auth:set-password": "node scripts/set-user-password.mjs"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^9.3.4",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",
     "date-fns": "^4.1.0",
@@ -24,10 +28,12 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
+    "pg": "^8.13.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

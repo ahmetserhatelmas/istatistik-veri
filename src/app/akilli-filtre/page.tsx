@@ -126,8 +126,9 @@ function readReferenceValue(row: Record<string, unknown>, colId: string, colById
   ]);
   if (colId === "alt_lig") candidates.add("alt_lig_adi");
   if (colId === "sezon") candidates.add("sezon_adi");
-  if (colId === "mbs" || colId === "suffix4") candidates.add("mac_suffix4");
-  if (colId === "suffix3") candidates.add("mac_suffix3");
+  if (colId === "mbs") candidates.add("mkt_display");
+  if (colId === "suffix4") candidates.add("mac_suffix4");
+  if (colId === "suffix3") candidates.add("msmkt_display");
   if (colId === "saat") candidates.add("saat_arama");
   if (colId === "tarih") candidates.add("tarih");
 

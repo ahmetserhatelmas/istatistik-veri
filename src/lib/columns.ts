@@ -85,9 +85,9 @@ export const ALL_COLS: ColDef[] = [
 
   // ── Maç Kodu ve MS Kodu ────────────────────────────────────────────────────
   { id: "id",       label: "Maç Kodu",  key: "id",         dbCol: true, group: "Maç Kodu ve MS Kodu", width: 90 },
-  { id: "mbs",      label: "MKT",       key: "mac_suffix4",dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
+  { id: "mbs",      label: "MKT",       key: "mkt_display", dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
   { id: "kod_ms",   label: "MS Kodu",   key: "kod_ms",     dbCol: true, group: "Maç Kodu ve MS Kodu", width: 72 },
-  { id: "suffix3",  label: "MsMKT",     key: "mac_suffix3",dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
+  { id: "suffix3",  label: "MsMKT",     key: "msmkt_display", dbCol: true, group: "Maç Kodu ve MS Kodu", width: 60 },
 
   // ── MBS ────────────────────────────────────────────────────────────────────
   { id: "suffix4",  label: "MBS",       key: "mac_suffix4",dbCol: true, group: "MBS", width: 56 },

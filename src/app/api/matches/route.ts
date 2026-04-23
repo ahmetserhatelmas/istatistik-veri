@@ -98,8 +98,8 @@ const DB_COL_MAP: Record<string, { col: string; mode: "ilike" | "eq" }> = {
   kg_var:   { col: "kg_var",        mode: "ilike" },
   kg_yok:   { col: "kg_yok",        mode: "ilike" },
   suffix4:  { col: "mac_suffix4",   mode: "ilike" },
-  suffix3:  { col: "mac_suffix3",   mode: "ilike" },
-  mbs:      { col: "mac_suffix4",   mode: "ilike" },
+  suffix3:  { col: "msmkt_display", mode: "ilike" },
+  mbs:      { col: "mkt_display",   mode: "ilike" },
   // tarih: cf_tarih ayrı işlenir (tarih_arama + * ? joker / virgül-VEYA)
   // gün: cf_gun ayrı — aşağıda gunCfValueForSubstringIlike (DB değeri "DD.MM.YYYY günadı")
   // saat: time tipi — ILIKE için sql/add-matches-saat-arama-column.sql (saat_arama)
@@ -1578,7 +1578,7 @@ export async function GET(req: NextRequest) {
   }
   if (sp.get("suffix3")) {
     const pat = plainOrWildcardIlikePattern(sp.get("suffix3")!);
-    if (pat) query = query.ilike("mac_suffix3", pat);
+    if (pat) query = query.ilike("msmkt_display", pat);
   }
 
   // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
@@ -1808,6 +1808,21 @@ export async function GET(req: NextRequest) {
         {
           error:
             "Jokerli maç/oyun kodu filtresi için kolonlar eksik. sql/add-matches-code-arama-columns-01-id.sql … 05 dosyalarını (tek tek; timeout’ta psql) çalıştırın; ardından create-matches-suffix-view.sql ile görünümü yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
+    const missingMktMsmktDisplay =
+      e.code === "42703" &&
+      (/mkt_display|msmkt_display/i.test(msg) ||
+        /column .*mkt_display|column .*msmkt_display/i.test(msg));
+    if (missingMktMsmktDisplay) {
+      return NextResponse.json(
+        {
+          error:
+            "MKT / MsMKT sütun süzümü ve doğru toplam sayısı için `matches.mkt_display` ve `matches.msmkt_display` kolonları gerekir. sql/add-matches-mkt-display-from-id.sql (+ backfill) ve sql/add-matches-msmkt-display-from-kod-ms.sql (+ backfill) çalıştırın; ardından sql/create-matches-suffix-view.sql ile görünümü yenileyin.",
           detail: msg,
           code: e.code,
         },

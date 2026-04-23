@@ -79,12 +79,16 @@ export default function AdminPage() {
   }, [loadUsers]);
 
   if (!ready) {
-    return <div className="p-6 text-sm text-gray-500">Yükleniyor…</div>;
+    return (
+      <div className="min-h-screen bg-slate-100 p-6 text-sm text-slate-900">
+        Yükleniyor…
+      </div>
+    );
   }
 
   if (!authorized) {
     return (
-      <div className="p-6">
+      <div className="min-h-screen bg-slate-100 p-6 text-slate-900">
         <div className="max-w-xl rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
           Bu sayfa sadece admin hesabına açık.
         </div>
@@ -93,10 +97,10 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="p-4 sm:p-6 space-y-4">
+    <div className="min-h-screen bg-slate-100 p-4 text-slate-900 sm:p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-slate-800">Admin Paneli</h1>
-        <a href="/" className="text-xs text-blue-700 hover:underline">
+        <h1 className="text-lg font-semibold text-slate-900">Admin Paneli</h1>
+        <a href="/" className="text-xs text-blue-800 hover:underline">
           Ana sayfaya dön
         </a>
       </div>
@@ -107,19 +111,19 @@ export default function AdminPage() {
         </div>
       )}
 
-      <section className="rounded border border-slate-200 bg-white p-3">
-        <div className="mb-2 text-sm font-semibold text-slate-800">
+      <section className="rounded border border-slate-200 bg-white p-3 text-slate-900">
+        <div className="mb-2 text-sm font-semibold text-slate-900">
           Onay Bekleyen Hesaplar ({pending.length})
         </div>
         {loading ? (
-          <div className="text-xs text-slate-500">Yükleniyor…</div>
+          <div className="text-xs text-slate-600">Yükleniyor…</div>
         ) : pending.length === 0 ? (
-          <div className="text-xs text-emerald-700">Bekleyen hesap yok.</div>
+          <div className="text-xs text-emerald-800">Bekleyen hesap yok.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-xs text-slate-900">
               <thead>
-                <tr className="border-b border-slate-200 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-700">
                   <th className="text-left py-1">E-posta</th>
                   <th className="text-left py-1">Kayıt</th>
                   <th className="text-right py-1">İşlem</th>
@@ -128,8 +132,8 @@ export default function AdminPage() {
               <tbody>
                 {pending.map((u) => (
                   <tr key={u.user_id} className="border-b border-slate-100">
-                    <td className="py-1 font-mono">{u.email}</td>
-                    <td className="py-1">{fmtDate(u.created_at)}</td>
+                    <td className="py-1 font-mono text-slate-900">{u.email}</td>
+                    <td className="py-1 text-slate-900">{fmtDate(u.created_at)}</td>
                     <td className="py-1 text-right">
                       <button
                         type="button"
@@ -146,17 +150,17 @@ export default function AdminPage() {
         )}
       </section>
 
-      <section className="rounded border border-slate-200 bg-white p-3">
-        <div className="mb-2 text-sm font-semibold text-slate-800">
+      <section className="rounded border border-slate-200 bg-white p-3 text-slate-900">
+        <div className="mb-2 text-sm font-semibold text-slate-900">
           Onaylı Hesaplar ({approved.length})
         </div>
         {approved.length === 0 ? (
-          <div className="text-xs text-slate-500">Henüz onaylı hesap yok.</div>
+          <div className="text-xs text-slate-600">Henüz onaylı hesap yok.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full text-xs text-slate-900">
               <thead>
-                <tr className="border-b border-slate-200 text-slate-500">
+                <tr className="border-b border-slate-200 text-slate-700">
                   <th className="text-left py-1">E-posta</th>
                   <th className="text-left py-1">Onay zamanı</th>
                   <th className="text-left py-1">Onaylayan</th>
@@ -166,9 +170,9 @@ export default function AdminPage() {
               <tbody>
                 {approved.map((u) => (
                   <tr key={u.user_id} className="border-b border-slate-100">
-                    <td className="py-1 font-mono">{u.email}</td>
-                    <td className="py-1">{fmtDate(u.approved_at)}</td>
-                    <td className="py-1 font-mono">{u.approved_by_email ?? "—"}</td>
+                    <td className="py-1 font-mono text-slate-900">{u.email}</td>
+                    <td className="py-1 text-slate-900">{fmtDate(u.approved_at)}</td>
+                    <td className="py-1 font-mono text-slate-900">{u.approved_by_email ?? "—"}</td>
                     <td className="py-1 text-right">
                       {u.email !== ADMIN_EMAIL && (
                         <button

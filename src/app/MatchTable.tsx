@@ -310,13 +310,19 @@ function cellVal(row: Match, col: ColDef): string {
   // Hesaplanan (computed) sütunlar
   // MKT = maç kodu basamak toplamı (0–63); hane satırında A/B iki kutu için 2 hane sabitlenir
   if (col.id === "mbs") {
+    const db = row["mkt_display"];
+    if (typeof db === "string" && db.trim()) return db.trim();
     const s = digitSum(row["id"]);
     if (!s) return "";
     const n = Number(s);
     if (!Number.isFinite(n)) return s;
     return String(Math.max(0, Math.min(99, n))).padStart(2, "0");
   }
-  if (col.id === "suffix3") return digitSum(row["kod_ms"]);   // MsMKT = MS kodu basamak toplamı
+  if (col.id === "suffix3") {
+    const db = row["msmkt_display"];
+    if (typeof db === "string" && db.trim()) return db.trim();
+    return digitSum(row["kod_ms"]);
+  }
   // MBS = Oran `MB` / `MBS` (1–3). `mac_suffix4` çoğunlukla son 4 maç kodu hanesi — MBS diye gösterilmez.
   if (col.id === "suffix4") {
     const mb = readMbsFromRow(row);
@@ -391,10 +397,10 @@ function rowHasPlayedMs(row: Match): boolean {
 }
 
 /** cellVal ile filtrelenen client-side sütunlar — hesaplamalı sütunlar sunucuya gönderilmez */
-const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["mbs", "suffix3", "suffix4"]);
+const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["suffix4"]);
 /**
  * Bir sütun client-side mı filtrelenmeli?
- * - Statik set (mbs, MsMKT, MBS): rowKey'den computed (digitSum vb.)
+ * - Statik set (MBS): Oran/raw. MKT / MsMKT: sunucuda `mkt_display` / `msmkt_display` (cf_mbs / cf_suffix3).
  * - Yalnızca `macid_obktb_*`: 7 haneli JS ile DB `macid7_obktb_*` arasında bilinçli fark;
  *   diğer `*_obktb_*` sütunlarında sunucu süzümü + `cellVal`’da DB alanı kullanıldığından
  *   çift süzüm `9,_` gibi OR-boş senaryosunda satır kaybına yol açıyordu.
@@ -1617,7 +1623,7 @@ export default function MatchTable() {
   );
 
   // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
-  // (mbs, suffix3, suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
+  // (suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
   const rawColFilters = useMemo(() => {
     const m: Record<string, string> = {};
     for (const [id, v] of normalizedColFilterEntries(colFiltersEffective)) {
@@ -1650,14 +1656,13 @@ export default function MatchTable() {
   // dbCol filtreleri değişince server fetch.
   // NOT: *_obktb_* sütunları da sunucuya iletilir — sunucu basit sayısal
   // ifadeleri RPC ile ID'ye indirger (pagination tutarsızlığını önler).
-  // mbs/suffix3/suffix4 istemcide kalır (ayrı suffix3/suffix4 üst paramı üzerinden
-  // server-side ayrıca filtrelenir).
+  // suffix4 (MBS) istemcide; MKT/MsMKT sunucuda mkt_display / msmkt_display.
   const [dbColFiltersApplied, setDbColFiltersApplied] = useState<Record<string,string>>({});
   useEffect(() => {
     const dbPart = Object.fromEntries(
       normalizedColFilterEntries(colFiltersCommitted).filter(([id]) => {
         if (CF_CLIENT_ONLY_COL_IDS.has(id)) return false;
-        if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // mbs/suffix3/suffix4
+        if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return false; // suffix4
         return true; // *_obktb_* dahil — server push dener
       })
     );
@@ -2288,7 +2293,7 @@ export default function MatchTable() {
   );
   const codePickPanelH = Math.min(440, viewportH - 24);
 
-  /** Sunucu bu sayfada döndürdüğü satırların bir kısmı MBS/MsMKT/MBS sonek veya OKBT istemci süzümüyle elenir. */
+  /** Sunucu bu sayfada döndürdüğü satırların bir kısmı MBS sütunu veya OKBT (macid) istemci süzümüyle elenir. */
   const clientPageRowGap = !loading && matches.length > 0 && matches.length !== sortedRows.length;
 
   return (
@@ -2309,7 +2314,7 @@ export default function MatchTable() {
             className="tabular-nums"
             title={
               clientPageRowGap
-                ? "Toplam, sunucu filtreleri + sayfalama ile uyumlu kayıt sayısıdır. Tabloda daha az satır görünüyorsa MBS / MsMKT / MBS sonek veya OKBT sütunları istemcide ek süzülür."
+                ? "Üstteki sayı sunucu filtresine göre tüm veritabanındaki kayıt sayısıdır. MBS veya bazı OKBT sütunları bu sayfada ek süzülürse satır sayısı bundan az görünebilir."
                 : undefined
             }>
             {total.toLocaleString("tr-TR")} maç
@@ -2351,11 +2356,11 @@ export default function MatchTable() {
                     className="text-amber-700/90 font-normal"
                     title={
                       clientPageRowGap
-                        ? "Sunucu toplamı; bu sayfada tabloda daha az satır görünüyorsa MBS / MsMKT / MBS sonek veya OKBT istemci süzümü satır eliyor."
+                        ? "Sunucu toplamı; MBS veya OKBT (macid) istemci süzümü varsa bu sayfada daha az satır görünür."
                         : "Sunucu filtresiyle eşleşen toplam kayıt (sayfalar arası)"
                     }>
                     {" "}
-                    {clientPageRowGap ? "(sunucu · tablo ayrı süzülüyor)" : "(tümü)"}
+                    {clientPageRowGap ? "(sunucu toplamı; MBS/OKBT ek süzümü)" : "(tümü)"}
                   </span>
                 </>
               )}
@@ -4209,7 +4214,7 @@ export default function MatchTable() {
         <span
           title={
             clientPageRowGap
-              ? "Üstteki maç sayısı sunucu toplamıdır; bu sayfada tabloda daha az satır varsa istemci süzümü (MBS / sonek / OKBT) devrededir."
+              ? "Üstteki maç sayısı sunucu toplamıdır; MBS veya OKBT istemci süzümü bu sayfada satır sayısını düşürebilir."
               : undefined
           }>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç
