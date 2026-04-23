@@ -228,10 +228,18 @@ export function EslestirmePaneli({
     const keys = (rawKodKeys ?? [])
       .map((k) => String(k ?? "").trim())
       .filter((k) => /^KOD/i.test(k) && SAFE_RAW_JSON_KEY.test(k));
-    const dedup = Array.from(new Set(keys.map((k) => k.toUpperCase()))).sort((a, b) => a.localeCompare(b));
+    // JSON anahtarları case-sensitive; burada "canonical upper" yapmayalım.
+    const dedup = Array.from(
+      keys.reduce((m, k) => {
+        const lk = k.toLowerCase();
+        if (!m.has(lk)) m.set(lk, k);
+        return m;
+      }, new Map<string, string>())
+      .values(),
+    ).sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
     // Ana 4 kod + maç kodu zaten üstte; raw_data tekrarını listeleme
-    const skip = new Set(["KODMS", "KODCS", "KODIY", "KODAU"]);
-    return dedup.filter((k) => !skip.has(k));
+    const skip = new Set(["kodms", "kodcs", "kodiy", "kodau"]);
+    return dedup.filter((k) => !skip.has(k.toLowerCase()));
   }, [rawKodKeys]);
 
   const toggleDim = useCallback((col: EslestirmeCol, n: number) => {

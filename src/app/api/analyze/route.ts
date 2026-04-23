@@ -29,7 +29,7 @@ function normalizeDimToRpcString(col: string, n: number): string | null {
   if (!c) return null;
   if (ALLOWED_BASE_COLS.has(c)) return `${c}:${n}`;
   if (c.startsWith("raw_")) {
-    const key = c.slice("raw_".length).trim().toUpperCase();
+    const key = c.slice("raw_".length).trim();
     if (!key || !SAFE_RAW_JSON_KEY.test(key)) return null;
     return `raw:${key}:${n}`;
   }
