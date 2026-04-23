@@ -1256,20 +1256,37 @@ export async function GET(req: NextRequest) {
     return false;
   })();
 
-  const forceExactCount =
-    spRequestsPlainSkorExactCount(sp) ||
-    spRequestsSaatExactCount(sp) ||
-    hasObktbCfParam ||
-    spRequestsCfOtherThanTarih(sp) ||
-    spHasNarrowingListFilter(sp);
-  const countMode = forceExactCount
-    ? ("exact" as const)
-    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive
-      ? ("planned" as const)
-      : ("exact" as const);
-
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
+  /**
+   * Raw JSON kolonlarında OR/AND + joker kombinasyonları (örn. 3*,_) geniş sonuç kümesi üretir.
+   * Bu durumda exact COUNT ikinci ağır tarama yaptığı için planned'a düşür.
+   */
+  const hasComplexRawCfParam = (() => {
+    for (const [k, v] of sp.entries()) {
+      if (!k.startsWith("cf_")) continue;
+      const colId = k.slice(3);
+      if (!mergedRawCf[colId]) continue;
+      const t = String(v ?? "").trim();
+      if (!t) continue;
+      if (t.includes(",") || t.includes("+") || t.includes("*") || t.includes("?")) return true;
+    }
+    return false;
+  })();
+  const forceExactCount =
+    !hasComplexRawCfParam &&
+    (
+      spRequestsPlainSkorExactCount(sp) ||
+      spRequestsSaatExactCount(sp) ||
+      hasObktbCfParam ||
+      spRequestsCfOtherThanTarih(sp) ||
+      spHasNarrowingListFilter(sp)
+    );
+  const countMode = forceExactCount
+    ? ("exact" as const)
+    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive || hasComplexRawCfParam
+      ? ("planned" as const)
+      : ("exact" as const);
 
   const ksAnyTarih = ksAnyRpcTarihBounds(sp);
 
