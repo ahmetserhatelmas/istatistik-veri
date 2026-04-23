@@ -14,7 +14,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 //   6) Kombinasyonu isimlendirerek kaydet (localStorage)
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type EslestirmeCol = "id" | "kod_ms" | "kod_cs" | "kod_iy" | "kod_au";
+export type EslestirmeCol =
+  | "id"
+  | "kod_ms"
+  | "kod_cs"
+  | "kod_iy"
+  | "kod_au"
+  /** raw_data JSON anahtarı — analyze_combos tarafında `raw:<KEY>:<n>` olarak gönderilir */
+  | `raw_${string}`;
 
 export interface EslestirmeDim {
   col: EslestirmeCol;
@@ -105,14 +112,38 @@ interface EslestirmePaneliProps {
   onClose: () => void;
   /** Paneli açarken mevcut tablo filtrelerinin kopyası — "Mevcut filtreler" kapsamı için */
   currentScope: EslestirmeScope;
+  /** `/api/matches/raw-keys` birleşimi — ham KOD* alanlarını listelemek için */
+  rawKodKeys?: string[];
   /** Tekrarları/Benzersizleri tabloda göstermek için: id listesi uygula */
   onApplyIdList: (ids: number[], label: string) => void;
+}
+
+const SAFE_RAW_JSON_KEY = /^[A-Za-z0-9_]+$/;
+
+function parseSelectedDimKey(key: string): EslestirmeDim | null {
+  const i = key.lastIndexOf(":");
+  if (i <= 0 || i === key.length - 1) return null;
+  const colPart = key.slice(0, i);
+  const n = Number(key.slice(i + 1));
+  if (!Number.isInteger(n) || !DIGIT_CHOICES.includes(n as (typeof DIGIT_CHOICES)[number])) return null;
+
+  const baseCols = new Set<string>(DIM_COLS.map((d) => d.col as string));
+  if (baseCols.has(colPart)) {
+    return { col: colPart as EslestirmeCol, n };
+  }
+  if (colPart.startsWith("raw_")) {
+    const jsonKey = colPart.slice("raw_".length);
+    if (!jsonKey || !SAFE_RAW_JSON_KEY.test(jsonKey)) return null;
+    return { col: colPart as EslestirmeCol, n };
+  }
+  return null;
 }
 
 export function EslestirmePaneli({
   open,
   onClose,
   currentScope,
+  rawKodKeys,
   onApplyIdList,
 }: EslestirmePaneliProps) {
   // Seçili boyutlar: her hücre {col:n} key'iyle
@@ -185,13 +216,23 @@ export function EslestirmePaneli({
 
   const dims: EslestirmeDim[] = useMemo(() => {
     const out: EslestirmeDim[] = [];
-    for (const { col } of DIM_COLS) {
-      for (const n of DIGIT_CHOICES) {
-        if (selected.has(`${col}:${n}`)) out.push({ col, n });
-      }
+    const keys = Array.from(selected).sort();
+    for (const k of keys) {
+      const d = parseSelectedDimKey(k);
+      if (d) out.push(d);
     }
     return out;
   }, [selected]);
+
+  const rawKodDimRows = useMemo(() => {
+    const keys = (rawKodKeys ?? [])
+      .map((k) => String(k ?? "").trim())
+      .filter((k) => /^KOD/i.test(k) && SAFE_RAW_JSON_KEY.test(k));
+    const dedup = Array.from(new Set(keys.map((k) => k.toUpperCase()))).sort((a, b) => a.localeCompare(b));
+    // Ana 4 kod + maç kodu zaten üstte; raw_data tekrarını listeleme
+    const skip = new Set(["KODMS", "KODCS", "KODIY", "KODAU"]);
+    return dedup.filter((k) => !skip.has(k));
+  }, [rawKodKeys]);
 
   const toggleDim = useCallback((col: EslestirmeCol, n: number) => {
     const key = `${col}:${n}`;
@@ -478,11 +519,83 @@ export function EslestirmePaneli({
               <div className="mt-2 text-[11px] text-gray-600">
                 <span className="font-semibold">Eşleştirilecek anahtar:</span>{" "}
                 <span className="font-mono text-indigo-700">
-                  {dims.map((d) => `${DIM_COLS.find((x) => x.col === d.col)?.label}-son${d.n}`).join(" + ")}
+                  {dims.map((d) => {
+                    const base = DIM_COLS.find((x) => x.col === d.col)?.label;
+                    if (base) return `${base}-son${d.n}`;
+                    if (String(d.col).startsWith("raw_")) {
+                      const k = String(d.col).slice("raw_".length);
+                      return `${k}-son${d.n}`;
+                    }
+                    return `${String(d.col)}-son${d.n}`;
+                  }).join(" + ")}
                 </span>
               </div>
             )}
           </section>
+
+          {rawKodDimRows.length > 0 && (
+            <section className="bg-white border border-gray-200 rounded p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-gray-800">
+                  2b. Ham veri <span className="font-mono">KOD*</span>{" "}
+                  <span className="text-gray-500 font-normal">({rawKodDimRows.length})</span>
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500 mb-2 leading-snug">
+                Bu liste API’de görünen ham anahtarlardan gelir. Boyutlar{" "}
+                <span className="font-mono">raw:ANAHTAR:sonN</span> olarak analize gider; değerden{" "}
+                <span className="font-semibold">rakamlar</span> çıkarılıp son N haneye bakılır.
+              </div>
+              <div className="max-h-[42vh] overflow-y-auto overflow-x-auto border border-gray-100 rounded">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-white z-10 shadow-sm">
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left px-2 py-1.5 text-gray-600 font-medium">KOD*</th>
+                      {DIGIT_CHOICES.map((n) => (
+                        <th key={n} className="text-center px-2 py-1.5 text-gray-600 font-medium w-16">
+                          Son {n}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawKodDimRows.map((k) => {
+                      const col = `raw_${k}` as EslestirmeCol;
+                      return (
+                        <tr key={k} className="border-b border-gray-100 hover:bg-gray-50">
+                          <td className="px-2 py-1.5">
+                            <span className="inline-block border rounded px-2 py-0.5 text-[11px] font-mono font-semibold bg-slate-100 border-slate-300 text-slate-900">
+                              {k}
+                            </span>
+                          </td>
+                          {DIGIT_CHOICES.map((n) => {
+                            const key = `${col}:${n}`;
+                            const isSel = selected.has(key);
+                            return (
+                              <td key={n} className="text-center px-2 py-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDim(col, n)}
+                                  className={`w-9 h-7 rounded border text-[11px] font-mono font-semibold transition ${
+                                    isSel
+                                      ? "bg-indigo-600 border-indigo-700 text-white shadow-sm"
+                                      : "bg-white border-gray-300 text-gray-500 hover:border-indigo-400 hover:bg-indigo-50"
+                                  }`}
+                                  title={isSel ? `Kaldır: ${k} son ${n}` : `Ekle: ${k} son ${n}`}
+                                >
+                                  {isSel ? "✓" : `−`}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           {/* Hesapla + Sonuç */}
           <section className="bg-white border border-gray-300 rounded p-3">

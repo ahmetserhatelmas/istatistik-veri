@@ -3662,6 +3662,7 @@ export default function MatchTable() {
         open={showEslestirme}
         onClose={() => setShowEslestirme(false)}
         currentScope={eslestirmeCurrentScope}
+        rawKodKeys={rawKeyUnion}
         onApplyIdList={applyEslestirmeIdList}
       />
 

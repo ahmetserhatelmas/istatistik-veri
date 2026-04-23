@@ -21,11 +21,23 @@ export const maxDuration = 60;
  *   Eksik uçlar kullanıcıya listelenir (çok büyükse kısaltılmış).
  */
 
-type DimCol = "id" | "kod_ms" | "kod_cs" | "kod_iy" | "kod_au";
-const ALLOWED_COLS: readonly DimCol[] = ["id", "kod_ms", "kod_cs", "kod_iy", "kod_au"] as const;
+const SAFE_RAW_JSON_KEY = /^[A-Za-z0-9_]+$/;
+const ALLOWED_BASE_COLS = new Set(["id", "kod_ms", "kod_cs", "kod_iy", "kod_au"]);
+
+function normalizeDimToRpcString(col: string, n: number): string | null {
+  const c = String(col ?? "").trim();
+  if (!c) return null;
+  if (ALLOWED_BASE_COLS.has(c)) return `${c}:${n}`;
+  if (c.startsWith("raw_")) {
+    const key = c.slice("raw_".length).trim().toUpperCase();
+    if (!key || !SAFE_RAW_JSON_KEY.test(key)) return null;
+    return `raw:${key}:${n}`;
+  }
+  return null;
+}
 
 interface AnalyzeRequest {
-  dims: Array<{ col: DimCol; n: number }>;
+  dims: Array<{ col: string; n: number }>;
   scope?: {
     sonuc_iy?: string;
     sonuc_ms?: string;
@@ -74,19 +86,20 @@ export async function POST(req: NextRequest) {
   if (dims.length === 0) {
     return NextResponse.json({ ok: false, error: "En az bir boyut seçmelisiniz" }, { status: 400 });
   }
-  if (dims.length > 8) {
-    return NextResponse.json({ ok: false, error: "En fazla 8 boyut seçilebilir" }, { status: 400 });
+  if (dims.length > 12) {
+    return NextResponse.json({ ok: false, error: "En fazla 12 boyut seçilebilir" }, { status: 400 });
   }
 
   const dimStrings: string[] = [];
   for (const d of dims) {
-    if (!ALLOWED_COLS.includes(d.col)) {
-      return NextResponse.json({ ok: false, error: `Geçersiz alan: ${d.col}` }, { status: 400 });
-    }
     if (!Number.isInteger(d.n) || d.n < 1 || d.n > 10) {
       return NextResponse.json({ ok: false, error: `Geçersiz hane sayısı: ${d.n}` }, { status: 400 });
     }
-    dimStrings.push(`${d.col}:${d.n}`);
+    const rpc = normalizeDimToRpcString(d.col, d.n);
+    if (!rpc) {
+      return NextResponse.json({ ok: false, error: `Geçersiz boyut: ${d.col}` }, { status: 400 });
+    }
+    dimStrings.push(rpc);
   }
 
   const scope = body.scope ?? {};
