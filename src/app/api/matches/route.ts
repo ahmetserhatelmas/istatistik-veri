@@ -1259,22 +1259,24 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
   /**
-   * Raw JSON kolonlarında OR/AND + joker kombinasyonları (örn. 3*,_) geniş sonuç kümesi üretir.
-   * Bu durumda exact COUNT ikinci ağır tarama yaptığı için planned'a düşür.
+   * Raw JSON kolonları timeout'a en yatkın bölge:
+   * - joker (*, ?), OR/AND (, +), boş token (_) gibi ifadeler
+   * - hatta sade değerlerde bile exact COUNT ikinci pahalı tarama üretebilir
+   * Bu nedenle raw cf_* varken count'u planned tutup sorguyu akıcı bırakıyoruz.
    */
-  const hasComplexRawCfParam = (() => {
+  const hasAnyRawCfParam = (() => {
     for (const [k, v] of sp.entries()) {
       if (!k.startsWith("cf_")) continue;
       const colId = k.slice(3);
       if (!mergedRawCf[colId]) continue;
       const t = String(v ?? "").trim();
       if (!t) continue;
-      if (t.includes(",") || t.includes("+") || t.includes("*") || t.includes("?")) return true;
+      return true;
     }
     return false;
   })();
   const forceExactCount =
-    !hasComplexRawCfParam &&
+    !hasAnyRawCfParam &&
     (
       spRequestsPlainSkorExactCount(sp) ||
       spRequestsSaatExactCount(sp) ||
@@ -1284,7 +1286,7 @@ export async function GET(req: NextRequest) {
     );
   const countMode = forceExactCount
     ? ("exact" as const)
-    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive || hasComplexRawCfParam
+    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive || hasAnyRawCfParam
       ? ("planned" as const)
       : ("exact" as const);
 
