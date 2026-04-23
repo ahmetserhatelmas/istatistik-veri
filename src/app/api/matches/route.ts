@@ -18,6 +18,16 @@ import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
 export const maxDuration = 300;
 
+/**
+ * PostgREST `.range(offset, …)` büyük `OFFSET` değerlerinde Postgres’te çok pahalı olabilir
+ * (özellikle `ORDER BY tarih, saat` ile) ve Supabase `statement_timeout` (57014) yiyebilir.
+ * UI’daki `»»` (son sayfaya atla) tam da bunu tetikler.
+ *
+ * Not: Bu sınır “doğru sonuç”u engellemez; yalnızca aşırı derin sayfalamayı erken keser.
+ * Daha derin sayfalar için tarih/lig ile küçültün veya cursor-tabanlı sayfalama ekleyin.
+ */
+const MAX_RANGE_OFFSET = 100_000;
+
 function flattenRawValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (typeof v === "object") return JSON.stringify(v);
@@ -540,6 +550,10 @@ function getSimpleIlikePattern(v: string): string | null {
   return b.kind === "ilike" ? b.pat : null;
 }
 
+function isOnlyPercentWildcardPattern(pat: string): boolean {
+  return /^%+$/.test(pat);
+}
+
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
 const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms1: "ms1",
@@ -581,6 +595,13 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
+  if (v.trim() === "*") {
+    const field = `raw_data->>${jsonKey}`;
+    // "*" için kullanıcı beklentisi: boş olmayan hücreler (null ve "" hariç).
+    // PostgREST expression alanlarında not(...).neq(...) zinciri beklenmedik daralma
+    // yapabildiği için tek OR ifadesinde and(...) olarak veriyoruz.
+    return query.or(`and(${field}.not.is.null,${field}.neq."")`);
+  }
   return applyGenericFilter(query, `raw_data->>${jsonKey}`, v, "prefix");
 }
 
@@ -1200,6 +1221,18 @@ export async function GET(req: NextRequest) {
   const maxLimit = pickStub ? 500 : 100;
   const limit = Math.min(maxLimit, Math.max(1, Number(sp.get("limit") || 100)));
   const offset = (page - 1) * limit;
+  if (offset > MAX_RANGE_OFFSET) {
+    const maxPage = Math.floor(MAX_RANGE_OFFSET / limit) + 1;
+    return NextResponse.json(
+      {
+        error:
+          `Sayfa çok derin (OFFSET=${offset.toLocaleString("tr-TR")}). Bu aralıkta Postgres sık sık zaman aşımına düşer — özellikle “»» son sayfa” atlaması. Önce tarih/lig/takım ile sonuç kümesini daraltın veya en fazla ${maxPage.toLocaleString("tr-TR")}. sayfaya kadar gidin.`,
+        detail: `limit=${limit} page=${page} maxOffset=${MAX_RANGE_OFFSET}`,
+        code: "RANGE_TOO_DEEP",
+      },
+      { status: 400 }
+    );
+  }
 
   const cfTarihRaw = sp.get("cf_tarih")?.trim() ?? "";
   const tarihFiltParts = cfTarihRaw
@@ -1348,6 +1381,7 @@ export async function GET(req: NextRequest) {
     if (!jsonKey || !SAFE_RAW_JSON_KEY.test(jsonKey)) continue;
     const ilikePattern = getSimpleIlikePattern(v.trim());
     if (!ilikePattern) continue; // OR/AND karmaşığı → eski yol
+    if (isOnlyPercentWildcardPattern(ilikePattern)) continue; // "*" gibi tümü-eşleşen desenlerde RPC ön-filtreleme yapma
 
     preFilterColIds.add(colId);
     // get_matches_raw_ilike_ids: ORDER BY olmadan trgm index kullanır

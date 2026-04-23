@@ -53,7 +53,7 @@ export function AuthBar() {
   const [status, setStatus] = useState<Status>("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const [popoverPos, setPopoverPos] = useState<{ top: number; right: number } | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) {
@@ -64,7 +64,19 @@ export function AuthBar() {
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPopoverPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+      const pad = 8;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // Tailwind: w-[min(22rem,calc(100vw-1rem))] — pratikte 352px cap + yatay padding
+      const width = Math.max(240, Math.min(22 * 16, vw - pad * 2));
+      // Sağa hizalı his: popover'ın sağ kenarı tetikleyicinin sağıyla hizalansın,
+      // ama asla viewport dışına taşmasın (özellikle dar mobilde).
+      const idealRight = r.right;
+      const left = Math.min(Math.max(pad, idealRight - width), vw - pad - width);
+      // Çok kısa ekranlarda aşağı taşmayı azalt (klavye açıkken de işe yarar)
+      const maxTop = Math.max(pad, vh - pad - 240);
+      const top = Math.min(r.bottom + 6, maxTop);
+      setPopoverPos({ top, left, width });
     };
     update();
     window.addEventListener("resize", update);
@@ -237,8 +249,8 @@ export function AuthBar() {
           onClick={() => setOpen(false)}
         />
         <div
-          className="fixed z-[210] w-[min(22rem,calc(100vw-1rem))] rounded border border-gray-300 bg-white p-3 text-gray-900 shadow-2xl [color-scheme:light]"
-          style={{ top: popoverPos.top, right: popoverPos.right }}
+          className="fixed z-[210] max-w-[calc(100vw-1rem)] rounded border border-gray-300 bg-white p-3 text-gray-900 shadow-2xl [color-scheme:light]"
+          style={{ top: popoverPos.top, left: popoverPos.left, width: popoverPos.width }}
           role="dialog"
           aria-modal="true"
           aria-labelledby="authbar-popover-title">

@@ -1135,6 +1135,16 @@ const REF_FIELD_TO_COL_ID: Partial<Record<RefMatchField, string>> = {
   kod_iy: "kod_iy",
 };
 
+/** `/api/matches` tablo çekiminde kullanılan sayfa boyutu (fetchMatches ile aynı kalmalı). */
+const MATCHES_PAGE_SIZE = 100;
+/**
+ * PostgREST `.range(offset, …)` büyük offset’lerde Postgres’te çok pahalı olabiliyor (57014).
+ * UI’daki `»»` (son sayfaya atla) tam da bunu tetiklediği için, aşırı derin atlama yapılmasın.
+ *
+ * API tarafındaki sınır: `src/app/api/matches/route.ts` içindeki `MAX_RANGE_OFFSET` ile eşleşmeli.
+ */
+const MATCHES_MAX_RANGE_OFFSET = 100_000;
+
 export default function MatchTable() {
   const [matches, setMatches]     = useState<Match[]>([]);
   const [loading, setLoading]     = useState(false);
@@ -1939,7 +1949,7 @@ export default function MatchTable() {
     setFetchError(null);
     const p = buildMatchesApiParams();
     p.set("page", String(page));
-    p.set("limit", "100");
+    p.set("limit", String(MATCHES_PAGE_SIZE));
     try {
       const [res, syncRes] = await Promise.all([
         fetch(`/api/matches?${p}`),
@@ -4287,13 +4297,30 @@ export default function MatchTable() {
           )}
         </span>
         <div className="flex gap-1.5 shrink-0">
-          {[
-            { label:"««", disabled:page<=1,          action:()=>setPage(1) },
-            { label:"‹",  disabled:page<=1,          action:()=>setPage((p)=>p-1) },
-            { label:"›",  disabled:page>=totalPages, action:()=>setPage((p)=>p+1) },
-            { label:"»»", disabled:page>=totalPages, action:()=>setPage(totalPages) },
-          ].map(({ label, disabled, action }) => (
-            <button key={label} disabled={disabled} onClick={action}
+          {(() => {
+            const maxJumpPage =
+              MATCHES_PAGE_SIZE > 0 ? Math.floor(MATCHES_MAX_RANGE_OFFSET / MATCHES_PAGE_SIZE) + 1 : 1;
+            const lastJumpTooDeep = totalPages > maxJumpPage;
+            const lastJumpTitle = lastJumpTooDeep
+              ? `Son sayfaya atlamak çok büyük OFFSET üretir (${((totalPages - 1) * MATCHES_PAGE_SIZE).toLocaleString("tr-TR")} satır atlama) ve veritabanında zaman aşımına yol açabilir. Önce filtreyle toplam sayfayı ${maxJumpPage.toLocaleString("tr-TR")} ve altına indirin.`
+              : "Son sayfa";
+            return [
+              { label: "««", disabled: page <= 1, action: () => setPage(1), title: undefined as string | undefined },
+              { label: "‹", disabled: page <= 1, action: () => setPage((p) => p - 1), title: undefined as string | undefined },
+              { label: "›", disabled: page >= totalPages, action: () => setPage((p) => p + 1), title: undefined as string | undefined },
+              {
+                label: "»»",
+                disabled: page >= totalPages || lastJumpTooDeep,
+                action: () => setPage(totalPages),
+                title: lastJumpTitle,
+              },
+            ];
+          })().map(({ label, disabled, action, title }) => (
+            <button
+              key={label}
+              disabled={disabled}
+              title={title}
+              onClick={action}
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 disabled:opacity-30 px-2.5 py-1 rounded transition">
               {label}
             </button>
