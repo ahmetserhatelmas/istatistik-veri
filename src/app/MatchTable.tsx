@@ -16,6 +16,7 @@ import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } fro
 import { supabase } from "@/lib/supabase/client";
 import { teamContainsIlikePattern } from "@/lib/matches-ilike";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
+import { buildDigitPosPattern, isHaneSeparator, type DigitPosMode } from "@/lib/digit-pos-pattern";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -110,6 +111,16 @@ function formatPickerOptionLabel(row: PickerMatchRow): string {
   return `${sa} — ${row.id} — ${t1} & ${t2}`;
 }
 
+/** pick=stb satırından sütun ham değeri (hane deseni için); stub’ta olmayan alanlar boş. */
+function pickerStubCellRaw(row: PickerMatchRow, col: ColDef): string {
+  if (col.id === "id") return String(row.id ?? "");
+  if (col.id === "saat") return formatSaatCfFromPickerRow(row);
+  const r = row as Record<string, unknown>;
+  const v = r[col.id];
+  if (v == null) return "";
+  return String(v).trim();
+}
+
 function formatLastSyncTr(iso: string | null): string {
   if (!iso) return "";
   try {
@@ -137,6 +148,8 @@ function matchWildcard(value: string, pattern: string): boolean {
   if (!orParts.length) return true;
   const testPart = (part: string): boolean => {
     const p = part.trim();
+    // Yalnız `*` → regex `^.*$` boş stringi de tutar; ILIKE `%` ile aynı: dolu hücre istenir.
+    if (!p.includes("?") && /^\*+$/.test(p)) return val.length > 0;
     if (!p.includes("*") && !p.includes("?")) return val === p.toLowerCase();
     const re = p.replace(/[-[\]{}()|^$\\]/g, "\\$&").replace(/\./g, "\\.").replace(/\*/g, ".*").replace(/\?/g, ".");
     try { return new RegExp(`^${re}$`, "i").test(val); } catch { return val === p.toLowerCase(); }
@@ -489,16 +502,6 @@ function shouldSuppressCfWhenKsAny(colId: string): boolean {
 }
 
 /**
- * Adam'ın isteği: "isimler de hane sayılsın, neden sayılmasın" → Hane artık
- * sadece rakam değil, **ayraç olmayan her karakter** (harf dahil).
- * Ayraçlar pozisyon saymaz — ör. "20:00" için 1-4, "Süper Lig" için 1-9.
- */
-const HANE_SEPARATORS = new Set([".", ":", "-", "/", ",", " ", "(", ")", "_", "'"]);
-function isHaneSeparator(ch: string): boolean {
-  return HANE_SEPARATORS.has(ch);
-}
-
-/**
  * Hangi sütunlarda hane kutucukları gösterilmesin?
  *  • tarih — özel gün/ay widget'ı var
  *  • dahili `__...` sütunlar (kod_suffix_active vb.)
@@ -549,34 +552,6 @@ function digitClickTemplate(col: ColDef): string {
  * Örn. "Süper Lig" + pos=[1,2] → "Sü??? ???"
  * Örn. "20:00" + pos=[1,2] → "20:??"
  */
-type DigitPosMode = "contains" | "positional";
-
-/**
- * mode="contains"   → baş ve son ? blokları * olur: *09* (herhangi yerde bul, ilike %09%)
- * mode="positional" → ? karakterleri olduğu gibi kalır: ?09???? (tam pozisyon eşleşmesi)
- */
-function buildDigitPosPattern(val: string, positions: number[], mode: DigitPosMode = "contains"): string {
-  if (!positions.length) return val;
-  const posSet = new Set(positions);
-  let haneIdx = 0;
-  let result = "";
-  for (const ch of val) {
-    if (!isHaneSeparator(ch)) {
-      haneIdx++;
-      result += posSet.has(haneIdx) ? ch : "?";
-    } else {
-      result += ch;
-    }
-  }
-  if (mode === "contains") {
-    // Kenarlarda ? olmasa da (ilk/son hane seçimi) her zaman contains deseni üret: *...*
-    result = result.replace(/^[?\s]+/, "*").replace(/[?\s]+$/, "*");
-    if (!result.startsWith("*")) result = `*${result}`;
-    if (!result.endsWith("*")) result = `${result}*`;
-  }
-  return result;
-}
-
 /** Oyun kodu / oran hücreleri — sonek vurgusu (son3–5 hane; kaynak kod seçilebilir). */
 const KOD_SUFFIX_SKIP_COLS = new Set([
   "tarih","gun","saat",
@@ -1364,7 +1339,7 @@ export default function MatchTable() {
   const [showSavedFilters, setShowSavedFilters] = useState(false);
   /** Çekmece kaydı uygulanınca dolar — oynanmamış maç seçici şeridi */
   const [loadedSavedFilterName, setLoadedSavedFilterName] = useState<string | null>(null);
-  /** Kayıtlı filtreye ek olarak tek maça odak (cf_id); picker listesi buna göre daralmaz */
+  /** Kayıtlı filtre şeridinde referans maç (picker); ana liste `cf_id` ile kısıtlanmaz — yalnızca desen / maça göre doldurma */
   const [focusMatchId, setFocusMatchId] = useState<string | null>(null);
   const [pickerRows, setPickerRows] = useState<PickerMatchRow[]>([]);
   const [pickerLoading, setPickerLoading] = useState(false);
@@ -1753,13 +1728,15 @@ export default function MatchTable() {
         if (v.trim()) p.set(k, v.trim());
       });
       const fid = focusMatchId?.trim();
+      /** Kayıtlı filtre + oynanmamış picker: referans maç yalnızca ⊞ desen / “Maça göre doldur” için; `cf_id` gönderilirse tablo tek maça kilitlenir (kullanıcı tüm DB’de `?????6` gibi arar). */
+      const omitPickerFocusCfId = Boolean(loadedSavedFilterName?.trim());
       Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
         if (!v.trim()) return;
         if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
-        if (id === "id" && fid && !opts?.forPicker) return;
+        if (id === "id" && fid && !opts?.forPicker && !omitPickerFocusCfId) return;
         p.set(`cf_${id}`, v.trim());
       });
-      if (!opts?.forPicker && fid) p.set("cf_id", fid);
+      if (!opts?.forPicker && fid && !omitPickerFocusCfId) p.set("cf_id", fid);
       // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
       if (anyKodSuffix) {
         p.set("ks_any_suffix", anyKodSuffix.digits);
@@ -1780,6 +1757,7 @@ export default function MatchTable() {
       bidirFilters.personel.antDep.committed,
       bidirFilters.personel.antHer.committed,
       anyKodSuffix,
+      loadedSavedFilterName,
     ],
   );
 
@@ -1860,6 +1838,90 @@ export default function MatchTable() {
     };
   }, [loadedSavedFilterName, pickerFilterKey, buildMatchesApiParams]);
 
+  const applyReferenceFieldsFromPickerRow = useCallback(
+    (row: PickerMatchRow) => {
+      if (!refAutoFillFromPicker) return;
+      const iso = normalizePickerRowTarihIso(row.tarih);
+      const sa = formatSaatCfFromPickerRow(row);
+      const ligStr =
+        typeof row.lig_adi === "string" ? row.lig_adi.trim() : "";
+      // Kayıtlı filtre şeridi: referans maçın gününe üst tarihi kilitleme — kullanıcı MS/kod desenini
+      // tüm DB’de arar; tek güne sıkışınca yalnız “yakın tarihler” görünüyordu.
+      const narrowTarihToRefDay = !loadedSavedFilterName?.trim();
+
+      setFilters((f) => ({
+        ...f,
+        ...(iso && narrowTarihToRefDay
+          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
+          : {}),
+        ...(ligStr ? { lig: ligStr } : {}),
+      }));
+      setApplied((a) => ({
+        ...a,
+        ...(iso && narrowTarihToRefDay
+          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
+          : {}),
+        ...(ligStr ? { lig: ligStr } : {}),
+      }));
+      if (iso && narrowTarihToRefDay) setTarihPick({ d: "", m: "" });
+
+      if (sa) {
+        setColFilters((cf) => ({ ...cf, saat: sa }));
+        setColFiltersCommitted((c) => {
+          const next = { ...c, saat: sa };
+          lsSet(LS_COL_FILT, next);
+          return next;
+        });
+      }
+    },
+    [refAutoFillFromPicker, loadedSavedFilterName],
+  );
+
+  /** Kayıtlı filtrede ⊞ hane seçiliyse: seçilen maçın o sütunlarından desen (örn. maç kodu + MS son 2). */
+  const applyDigitPatternsFromPickerRow = useCallback(
+    (row: PickerMatchRow) => {
+      const updates: Record<string, string> = {};
+      for (const [colId, positions] of Object.entries(colClickPos)) {
+        if (!Array.isArray(positions) || positions.length === 0) continue;
+        const colDef = mergedCols.find((c) => c.id === colId);
+        if (!colDef || !isHaneClickCol(colDef)) continue;
+        const raw = pickerStubCellRaw(row, colDef);
+        if (!raw) continue;
+        const pat = buildDigitPosPattern(raw, positions, effectiveDigitMode(colId));
+        if (pat) updates[colId] = pat;
+      }
+      if (Object.keys(updates).length === 0) return;
+      // Aynı değerlerle yeni obje yazma: picker listesi yeniden fetch olunca bu fonksiyon
+      // tekrar çalışır; colFiltersCommitted referansı değişince pickerFilterKey değişir
+      // → sonsuz /api/matches + picker döngüsü oluşur.
+      setColFilters((prev) => {
+        let changed = false;
+        for (const [k, v] of Object.entries(updates)) {
+          if (prev[k] !== v) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) return prev;
+        return { ...prev, ...updates };
+      });
+      setColFiltersCommitted((prev) => {
+        let changed = false;
+        for (const [k, v] of Object.entries(updates)) {
+          if (prev[k] !== v) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) return prev;
+        const next = { ...prev, ...updates };
+        lsSet(LS_COL_FILT, next);
+        return next;
+      });
+    },
+    [colClickPos, mergedCols, effectiveDigitMode],
+  );
+
   useEffect(() => {
     if (pickerRows.length === 0) {
       setPickerSelectedIndex(null);
@@ -1876,43 +1938,8 @@ export default function MatchTable() {
       return;
     }
     setPickerSelectedIndex((prev) => (prev === idx ? prev : idx));
-  }, [focusMatchId, pickerRows]);
-
-  const applyReferenceFieldsFromPickerRow = useCallback(
-    (row: PickerMatchRow) => {
-      if (!refAutoFillFromPicker) return;
-      const iso = normalizePickerRowTarihIso(row.tarih);
-      const sa = formatSaatCfFromPickerRow(row);
-      const ligStr =
-        typeof row.lig_adi === "string" ? row.lig_adi.trim() : "";
-
-      setFilters((f) => ({
-        ...f,
-        ...(iso
-          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
-          : {}),
-        ...(ligStr ? { lig: ligStr } : {}),
-      }));
-      setApplied((a) => ({
-        ...a,
-        ...(iso
-          ? { tarih_from: iso, tarih_to: iso, tarih_gun: "", tarih_ay: "", tarih_yil: "" }
-          : {}),
-        ...(ligStr ? { lig: ligStr } : {}),
-      }));
-      if (iso) setTarihPick({ d: "", m: "" });
-
-      if (sa) {
-        setColFilters((cf) => ({ ...cf, saat: sa }));
-        setColFiltersCommitted((c) => {
-          const next = { ...c, saat: sa };
-          lsSet(LS_COL_FILT, next);
-          return next;
-        });
-      }
-    },
-    [refAutoFillFromPicker],
-  );
+    applyDigitPatternsFromPickerRow(pickerRows[idx]!);
+  }, [focusMatchId, pickerRows, applyDigitPatternsFromPickerRow]);
 
   const goPickerPrev = useCallback(() => {
     if (pickerRows.length === 0) return;
@@ -1920,10 +1947,11 @@ export default function MatchTable() {
     const ni = (from - 1 + pickerRows.length) % pickerRows.length;
     const row = pickerRows[ni]!;
     applyReferenceFieldsFromPickerRow(row);
+    applyDigitPatternsFromPickerRow(row);
     setPickerSelectedIndex(ni);
     setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow]);
+  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow, applyDigitPatternsFromPickerRow]);
 
   const goPickerNext = useCallback(() => {
     if (pickerRows.length === 0) return;
@@ -1931,10 +1959,11 @@ export default function MatchTable() {
     const ni = (from + 1) % pickerRows.length;
     const row = pickerRows[ni]!;
     applyReferenceFieldsFromPickerRow(row);
+    applyDigitPatternsFromPickerRow(row);
     setPickerSelectedIndex(ni);
     setFocusMatchId(String(row.id));
     setPage(1);
-  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow]);
+  }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow, applyDigitPatternsFromPickerRow]);
 
   /** Maç odak (cf_id) kapat; açılır liste — Maç seç — konumuna döner. */
   const clearPickerMatchFocus = useCallback(() => {
@@ -3635,7 +3664,7 @@ export default function MatchTable() {
             <>
               <label
                 className="flex items-center gap-1 shrink-0 cursor-pointer select-none text-slate-600"
-                title="Açıkken: seçilen maçın günü (tarih_from/to), saati (Saat sütunu) ve lig adı (üst Lig) otomatik yazılır. Kapatırsan yalnızca maç odak (cf_id) kalır.">
+                title="Açıkken: saat (Saat sütunu) ve lig (üst Lig) referans maçtan yazılır. Kayıtlı filtre şeridindeyken üst tarih o güne sıkıştırılmaz (MS/kod deseni tüm yıllarda aranır). Kayıtsız modda ayrıca gün (tarih_from/to) da dolar. Kapalı: otomatik doldurma yok.">
                 <input
                   type="checkbox"
                   className="rounded border-slate-400"
@@ -3647,7 +3676,7 @@ export default function MatchTable() {
               <select
                 className="min-w-0 max-w-[min(48rem,88vw)] flex-1 truncate text-[11px] border border-slate-300 rounded px-1 py-0.5 bg-white"
                 value={pickerSelectedIndex === null ? "" : String(pickerSelectedIndex)}
-                title="Önce — Maç seç —; sonra bir maç seçince tablo o maça odaklanır (cf_id). İşaretliyse tarih/saat/lig maça göre dolar."
+                title="Referans maç: ⊞ hane seçiliyse MS/İY kod desenlerini bu maça göre doldurur. Tablo tüm veritabanında filtrelenir (elle `?????6` gibi). İşaretli “Maça göre doldur” ile tarih/saat/lig de yazılır."
                 onChange={(e) => {
                   const raw = e.target.value;
                   if (raw === "") {
@@ -3658,6 +3687,7 @@ export default function MatchTable() {
                   if (!Number.isFinite(i) || !pickerRows[i]) return;
                   const row = pickerRows[i]!;
                   applyReferenceFieldsFromPickerRow(row);
+                  applyDigitPatternsFromPickerRow(row);
                   setPickerSelectedIndex(i);
                   setFocusMatchId(String(row.id));
                   setPage(1);
@@ -3690,7 +3720,7 @@ export default function MatchTable() {
                 <button
                   type="button"
                   className="shrink-0 px-1.5 py-0 rounded border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
-                  title="Maç odaklamayı kapat; yalnızca kayıtlı filtre + liste (cf_id yok). Açılır liste — Maç seç — konumuna döner."
+                  title="Referans seçimini temizle; açılır liste — Maç seç — konumuna döner. Tablo zaten tüm kümede filtrelenir."
                   onClick={() => clearPickerMatchFocus()}
                 >
                   Filtreye dön

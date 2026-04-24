@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { ALL_COLS, type ColDef } from "@/lib/columns";
+import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
 
 type SavedFilter = {
   id: string;
@@ -191,43 +192,57 @@ function buildSmartTableState(
     ) as Record<string, "contains" | "positional">;
   }
 
-  if (selectedRefRow && compareColIds.length > 0) {
+  if (selectedRefRow) {
     const colById = new Map<string, ColDef>(ALL_COLS.map((c) => [c.id, c]));
-    for (const colId of compareColIds) {
-      // Kayıtlı filtrede bu sütunda ⊞ hane seçimi varsa (ör. maç kodu son 2), referans
-      // maçın tam kodu / değeri bunu ezmesin — "mackodu son 2 + lig + gün" senaryosu.
-      const savedPos = colClickPos[colId];
-      if (Array.isArray(savedPos) && savedPos.length > 0) continue;
 
+    if (compareColIds.length > 0) {
+      for (const colId of compareColIds) {
+        // Kayıtlı filtrede bu sütunda ⊞ hane seçimi varsa (ör. maç kodu son 2), referans
+        // maçın tam kodu / değeri bunu ezmesin — "mackodu son 2 + lig + gün" senaryosu.
+        const savedPos = colClickPos[colId];
+        if (Array.isArray(savedPos) && savedPos.length > 0) continue;
+
+        const v = readReferenceValue(selectedRefRow, colId, colById);
+        if (!v) continue;
+        if (colId === SPECIAL_COMPARE_DAY) {
+          topFilters.tarih_gun = v;
+          topFilters.tarih_from = "";
+          topFilters.tarih_to = "";
+          topFilters.tarih_ay = "";
+          topFilters.tarih_yil = "";
+        } else if (colId === "gun") {
+          // "Gün" sütunu client-computed (hafta günü) olduğu için cf_gun backend'de hataya
+          // düşebiliyor; güvenli yol olarak gün numarasıyla (dd) tarih_gun kullan.
+          const dayNum = extractDayOfMonth(selectedRefRow.tarih);
+          if (!dayNum) continue;
+          topFilters.tarih_gun = dayNum;
+          topFilters.tarih_from = "";
+          topFilters.tarih_to = "";
+          topFilters.tarih_ay = "";
+          topFilters.tarih_yil = "";
+        } else if (colId === "tarih") {
+          const iso = normalizeIsoDate(v);
+          if (!iso) continue;
+          topFilters.tarih_from = iso;
+          topFilters.tarih_to = iso;
+          topFilters.tarih_gun = "";
+          topFilters.tarih_ay = "";
+          topFilters.tarih_yil = "";
+        } else {
+          colFiltersOut[colId] = v;
+        }
+      }
+    }
+
+    for (const [colId, positions] of Object.entries(colClickPos)) {
+      if (!Array.isArray(positions) || positions.length === 0) continue;
+      const col = colById.get(colId);
+      if (!col || col.id === "tarih" || col.id.startsWith("__")) continue;
       const v = readReferenceValue(selectedRefRow, colId, colById);
       if (!v) continue;
-      if (colId === SPECIAL_COMPARE_DAY) {
-        topFilters.tarih_gun = v;
-        topFilters.tarih_from = "";
-        topFilters.tarih_to = "";
-        topFilters.tarih_ay = "";
-        topFilters.tarih_yil = "";
-      } else if (colId === "gun") {
-        // "Gün" sütunu client-computed (hafta günü) olduğu için cf_gun backend'de hataya
-        // düşebiliyor; güvenli yol olarak gün numarasıyla (dd) tarih_gun kullan.
-        const dayNum = extractDayOfMonth(selectedRefRow.tarih);
-        if (!dayNum) continue;
-        topFilters.tarih_gun = dayNum;
-        topFilters.tarih_from = "";
-        topFilters.tarih_to = "";
-        topFilters.tarih_ay = "";
-        topFilters.tarih_yil = "";
-      } else if (colId === "tarih") {
-        const iso = normalizeIsoDate(v);
-        if (!iso) continue;
-        topFilters.tarih_from = iso;
-        topFilters.tarih_to = iso;
-        topFilters.tarih_gun = "";
-        topFilters.tarih_ay = "";
-        topFilters.tarih_yil = "";
-      } else {
-        colFiltersOut[colId] = v;
-      }
+      const mode = colDigitMode[colId] ?? digitPosMode;
+      const pat = buildDigitPosPattern(v, positions, mode);
+      if (pat) colFiltersOut[colId] = pat;
     }
   }
 

@@ -28,6 +28,79 @@ export const maxDuration = 300;
  */
 const MAX_RANGE_OFFSET = 100_000;
 
+/** PostgREST `or=(…)` parametresi — proxy / sunucu URL sınırı için üst sınır (güvenli marj). */
+const KS_ANY_OR_MAX_LEN = 5200;
+
+function buildKsAnyIdInOrParts(ids: number[], chunkSize: number): string[] {
+  const parts: string[] = [];
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    parts.push(`id.in.(${ids.slice(i, i + chunkSize).join(",")})`);
+  }
+  return parts;
+}
+
+function ksAnyOrJoinedLength(ids: number[], chunkSize: number): number {
+  return buildKsAnyIdInOrParts(ids, chunkSize).join(",").length;
+}
+
+/**
+ * KOD* son N (ks_any_*): RPC çok id döndürünce tek `id.in.(…)` URL’yi taşır.
+ * En büyük mümkün `chunkSize` ile `id.in.(chunk)` parçalarını `or` ile birleştirir
+ * (PostgREST `or=(a,b,c)` — supabase `.or("a,b,c")` dış parantezi kendisi ekler).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyKsAnyIdListFilter(query: any, idsRaw: unknown[]): any {
+  const ids = [
+    ...new Set(
+      idsRaw
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n)),
+    ),
+  ] as number[];
+  if (!ids.length) return query.in("id", [-1]);
+  if (ids.length === 1) return query.in("id", ids);
+
+  const bestChunk = findKsAnyOrChunkSize(ids);
+  if (bestChunk == null) return query.in("id", [-1]);
+  const parts = buildKsAnyIdInOrParts(ids, bestChunk);
+  if (parts.length === 1) return query.in("id", ids);
+  return query.or(parts.join(","));
+}
+
+/** `id.in.(chunk)` OR zinciri PostgREST URL sınırına sığacak bir chunk boyutu var mı? */
+function findKsAnyOrChunkSize(ids: number[]): number | null {
+  let lo = 1;
+  let hi = ids.length;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (ksAnyOrJoinedLength(ids, mid) <= KS_ANY_OR_MAX_LEN) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best > 0 ? best : null;
+}
+
+/** RPC `returns bigint[]` bazen JSON / string gelir; normalize et. */
+function normalizeRpcIdArray(data: unknown): number[] {
+  if (data == null) return [];
+  if (Array.isArray(data)) {
+    return data.map((x) => Number(x)).filter((n) => Number.isFinite(n));
+  }
+  if (typeof data === "string") {
+    try {
+      const j = JSON.parse(data) as unknown;
+      return Array.isArray(j) ? j.map((x) => Number(x)).filter((n) => Number.isFinite(n)) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function flattenRawValue(v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (typeof v === "object") return JSON.stringify(v);
@@ -172,6 +245,12 @@ function cfPatternToIlikePattern(pattern: string): string {
     else out += c;
   }
   return out;
+}
+
+/** Yalnızca `%` (UI'da yalnız `*`): Postgres `'' ILIKE '%'` true olduğundan boş metinleri süzmek için ana kolonda .not.is.null ile birleştirilir. */
+function isOnlyPercentIlikePattern(pat: string): boolean {
+  const s = pat.trim();
+  return s.length > 0 && /^%+$/.test(s);
 }
 
 /** ILIKE içinde % ve _ sabit karakter olarak eşleşsin (düz girdi = tam metin). */
@@ -380,7 +459,9 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
       // Joker → _arama metin sütunu
-      return arama ? q[b.kind](arama, b.pat) : q;
+      if (!arama) return q;
+      const qx = q[b.kind](arama, b.pat);
+      return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
     }
     if (b.kind === "between") {
       const lo = Number(b.lo), hi = Number(b.hi);
@@ -400,7 +481,9 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
     if (isBlankCellOrToken(p)) return `${col}.is.null`;
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
-      return arama ? `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"` : "";
+      if (!arama) return "";
+      const inner = `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
+      return isOnlyPercentIlikePattern(b.pat) ? `and(${inner},${col}.not.is.null)` : inner;
     }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
     if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
@@ -466,7 +549,10 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
       return q.or(`${col}.is.null`);
     }
     const b = parseFilterBranch(p.trim(), "prefix");
-    if (b.kind === "like" || b.kind === "ilike") return q[b.kind](arama, b.pat);
+    if (b.kind === "like" || b.kind === "ilike") {
+      const qx = q[b.kind](arama, b.pat);
+      return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
+    }
     if (b.kind === "between") {
       const lo = Number(b.lo), hi = Number(b.hi);
       return Number.isFinite(lo) && Number.isFinite(hi) ? q.gte(col, lo).lte(col, hi) : q;
@@ -484,7 +570,10 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   const branchStr = (p: string): string => {
     if (isBlankCellOrToken(p)) return `${col}.is.null`;
     const b = parseFilterBranch(p.trim(), "prefix");
-    if (b.kind === "like" || b.kind === "ilike") return `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
+    if (b.kind === "like" || b.kind === "ilike") {
+      const inner = `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
+      return isOnlyPercentIlikePattern(b.pat) ? `and(${inner},${col}.not.is.null)` : inner;
+    }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
     if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
       const val = (b as { val: string }).val;
@@ -548,10 +637,6 @@ function getSimpleIlikePattern(v: string): string | null {
   if (andParts.length !== 1) return null;
   const b = parseFilterBranch(andParts[0]!.trim(), "prefix");
   return b.kind === "ilike" ? b.pat : null;
-}
-
-function isOnlyPercentWildcardPattern(pat: string): boolean {
-  return /^%+$/.test(pat);
 }
 
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
@@ -1325,14 +1410,36 @@ export async function GET(req: NextRequest) {
 
   const ksAnyTarih = ksAnyRpcTarihBounds(sp);
 
-  // ks_any_suffix: raw_data içindeki tüm KOD* anahtarlarında son N hane (get_matches_by_raw_kod_suffix)
-  if (
-    /^\d+$/.test(ksAnySuffixRaw) &&
-    ksAnySuffixRaw.length === ksAnyN &&
-    KS_N_OK.has(ksAnyN)
-  ) {
+  /** İndeks tablosu dolu + taban `matches` sorgusu → URL’de dev id listesi yok; `match_raw_kod_suffix!inner` ile filtre. */
+  let ksAnyJoinSpec: { n: number; suffix: number } | null = null;
+
+  const ksAnySuffixParsed = (() => {
+    if (!/^\d+$/.test(ksAnySuffixRaw) || ksAnySuffixRaw.length !== ksAnyN || !KS_N_OK.has(ksAnyN)) {
+      return null;
+    }
     const suffixNum = parseInt(ksAnySuffixRaw, 10);
-    if (Number.isFinite(suffixNum) && suffixNum >= 0 && suffixNum < 10 ** ksAnyN) {
+    if (!Number.isFinite(suffixNum) || suffixNum < 0 || suffixNum >= 10 ** ksAnyN) return null;
+    return suffixNum;
+  })();
+
+  if (ksAnySuffixParsed !== null) {
+    const suffixNum = ksAnySuffixParsed;
+    const onSuffixColsView = useKsView && !pickStub;
+    /** `count: exact` bazen 0/null dönebiliyor; satır varlığı için limit(1) daha güvenilir. */
+    let indexTableHasRows = false;
+
+    if (!onSuffixColsView) {
+      const { data: mrsProbe, error: mrsE } = await supabase
+        .from("match_raw_kod_suffix")
+        .select("match_id")
+        .limit(1);
+      indexTableHasRows = !mrsE && Array.isArray(mrsProbe) && mrsProbe.length > 0;
+      if (indexTableHasRows) {
+        ksAnyJoinSpec = { n: ksAnyN, suffix: suffixNum };
+      }
+    }
+
+    if (!ksAnyJoinSpec) {
       const rpcArgs: Record<string, unknown> = {
         p_suffix: suffixNum,
         p_n: ksAnyN,
@@ -1363,7 +1470,29 @@ export async function GET(req: NextRequest) {
           { status: 503 }
         );
       }
-      ksAnyFilterIds = (idData as number[] | null) ?? [];
+      ksAnyFilterIds = normalizeRpcIdArray(idData);
+      if (ksAnyFilterIds.length > 50_000) {
+        return NextResponse.json(
+          {
+            error:
+              "Bu KOD soneki çok fazla maç döndürüyor (50.000 üstü). Üstte tarih aralığı ile daraltın veya soneği değiştirin.",
+            code: "KS_ANY_TOO_MANY",
+          },
+          { status: 413 }
+        );
+      }
+      if (ksAnyFilterIds.length > 0 && findKsAnyOrChunkSize(ksAnyFilterIds) === null) {
+        const errSuffix = onSuffixColsView
+          ? "KOD sonek sütun görünümü (matches_with_suffix_cols) açıkken tüm eşleşen id’ler tek istek URL’sine sığmıyor. Üstte tarih aralığı (tarih_from / tarih_to) ile daraltın veya üst KOD sonek (◉) modunu kapatın."
+          : "`public.match_raw_kod_suffix` tablosunda satır yok veya API’den okunamıyor (RLS / şema). sql/create-get-matches-by-raw-kod-suffix-fn.sql + sql/backfill-match-raw-kod-suffix.sql ile indeksi doldurun; Supabase’te tablo API’ye açık ve service_role için SELECT izni olduğundan emin olun. Geçici olarak tarih aralığı ile daraltın.";
+        return NextResponse.json(
+          {
+            error: `${errSuffix} (KS_ANY_URL_LIMIT)`,
+            code: "KS_ANY_URL_LIMIT",
+          },
+          { status: 413 }
+        );
+      }
     }
   }
 
@@ -1381,7 +1510,7 @@ export async function GET(req: NextRequest) {
     if (!jsonKey || !SAFE_RAW_JSON_KEY.test(jsonKey)) continue;
     const ilikePattern = getSimpleIlikePattern(v.trim());
     if (!ilikePattern) continue; // OR/AND karmaşığı → eski yol
-    if (isOnlyPercentWildcardPattern(ilikePattern)) continue; // "*" gibi tümü-eşleşen desenlerde RPC ön-filtreleme yapma
+    if (isOnlyPercentIlikePattern(ilikePattern)) continue; // "*" gibi tümü-eşleşen desenlerde RPC ön-filtreleme yapma
 
     preFilterColIds.add(colId);
     // get_matches_raw_ilike_ids: ORDER BY olmadan trgm index kullanır
@@ -1406,9 +1535,13 @@ export async function GET(req: NextRequest) {
 
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
   const selectCols = pickStub ? PICK_STUB_COLS : DB_COLS;
+  let selectListStr = selectCols.join(",");
+  if (ksAnyJoinSpec) {
+    selectListStr = `${selectListStr},match_raw_kod_suffix!inner(n,suffix)`;
+  }
   let query = pickStub
-    ? supabase.from(fromTable).select(selectCols.join(","))
-    : supabase.from(fromTable).select(selectCols.join(","), { count: countMode });
+    ? supabase.from(fromTable).select(selectListStr)
+    : supabase.from(fromTable).select(selectListStr, { count: countMode });
 
   // Sıfır eşleşme → hemen boş dön
   if (preFilteredIds !== null && preFilteredIds.length === 0) {
@@ -1416,6 +1549,11 @@ export async function GET(req: NextRequest) {
   }
   if (preFilteredIds !== null) {
     query = query.in("id", preFilteredIds);
+  }
+  if (ksAnyJoinSpec) {
+    query = query
+      .eq("match_raw_kod_suffix.n", ksAnyJoinSpec.n)
+      .eq("match_raw_kod_suffix.suffix", ksAnyJoinSpec.suffix);
   }
 
   // ── Üst filtreler ────────────────────────────────────────────────────────────
@@ -1746,12 +1884,11 @@ export async function GET(req: NextRequest) {
     query = query.eq(`sfx_${ksRef}_${ksN}`, ksSuffixNum);
   }
 
-  if (ksAnyFilterIds !== null) {
+  if (!ksAnyJoinSpec && ksAnyFilterIds !== null) {
     if (ksAnyFilterIds.length === 0) {
-      // Hiç eşleşme yok — boş sonuç
       query = query.in("id", [-1]);
     } else {
-      query = query.in("id", ksAnyFilterIds);
+      query = applyKsAnyIdListFilter(query, ksAnyFilterIds);
     }
   }
 
@@ -1775,7 +1912,7 @@ export async function GET(req: NextRequest) {
 
   if (error) {
     const e = error as { message?: string; details?: string; hint?: string; code?: string };
-    const msg = [e.message, e.details, e.hint].filter(Boolean).join(" | ");
+    const msg = [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
     const statementTimeout =
       e.code === "57014" ||
       /statement timeout|canceling statement due to statement timeout/i.test(msg);
@@ -1970,6 +2107,21 @@ export async function GET(req: NextRequest) {
         { status: 503 }
       );
     }
+    const ksAnyJoinHint =
+      ksAnyJoinSpec &&
+      (/match_raw_kod_suffix|PGRST200|PGRST204|Could not find a relationship|schema cache/i.test(msg) ||
+        e.code === "PGRST200");
+    if (ksAnyJoinHint) {
+      return NextResponse.json(
+        {
+          error:
+            "KOD* son N (indeks join) şemada çözülemedi. public.match_raw_kod_suffix FK’sı ve sql/create-get-matches-by-raw-kod-suffix-fn.sql kurulumunu doğrulayın; Supabase şema önbelleğini yenileyin.",
+          detail: msg,
+          code: e.code,
+        },
+        { status: 503 }
+      );
+    }
     return NextResponse.json({ error: e.message ?? "Bilinmeyen hata", detail: msg, code: e.code }, { status: 500 });
   }
 
@@ -1977,6 +2129,7 @@ export async function GET(req: NextRequest) {
   const rows = ((data as unknown) as RawRow[] || []).map((row: RawRow) => {
     const rd = (row["raw_data"] as Record<string, unknown>) ?? {};
     const flat: Record<string, unknown> = { ...row };
+    delete flat["match_raw_kod_suffix"];
     // raw_data'yı koru (panel için lazım), ama içindeki alanları da düzleştir
     for (const [k, v] of Object.entries(rd)) {
       flat[k] = flattenRawValue(v);
