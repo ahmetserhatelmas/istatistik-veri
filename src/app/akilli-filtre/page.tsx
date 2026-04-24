@@ -170,10 +170,9 @@ function buildSmartTableState(
   const colFilters = payload.colFilters && typeof payload.colFilters === "object"
     ? (payload.colFilters as Record<string, unknown>)
     : {};
-  for (const [id, raw] of Object.entries(colFilters)) {
-    if (id === "id") continue;
+  for (const [cid, raw] of Object.entries(colFilters)) {
     const v = trimStr(raw);
-    if (v) colFiltersOut[id] = v;
+    if (v) colFiltersOut[cid] = v;
   }
 
   if (payload.bidirFilters && typeof payload.bidirFilters === "object") {
@@ -195,6 +194,11 @@ function buildSmartTableState(
   if (selectedRefRow && compareColIds.length > 0) {
     const colById = new Map<string, ColDef>(ALL_COLS.map((c) => [c.id, c]));
     for (const colId of compareColIds) {
+      // Kayıtlı filtrede bu sütunda ⊞ hane seçimi varsa (ör. maç kodu son 2), referans
+      // maçın tam kodu / değeri bunu ezmesin — "mackodu son 2 + lig + gün" senaryosu.
+      const savedPos = colClickPos[colId];
+      if (Array.isArray(savedPos) && savedPos.length > 0) continue;
+
       const v = readReferenceValue(selectedRefRow, colId, colById);
       if (!v) continue;
       if (colId === SPECIAL_COMPARE_DAY) {

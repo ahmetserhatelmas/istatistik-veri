@@ -77,10 +77,12 @@ BEGIN
         RAISE EXCEPTION 'Geçersiz hane sayısı: %. 1-10 arası olmalı.', v_n;
       END IF;
 
+      -- regexp_replace 3./4. argüman: boş metin ve 'g' — şablonda '''', ''g'' kullanma:
+      -- dinamik SQL'de virgül kaybolup "near g" hatası veriyordu.
       v_select_parts := array_append(
         v_select_parts,
         format(
-          $s$lpad(right(abs((regexp_replace(coalesce(raw_data->>%L, ''''), '[^0-9]', '''', ''g'')))::bigint)::text, %s), %s, '0')$s$,
+          $s$lpad(right(abs((regexp_replace(coalesce(raw_data->>%L, ''), '[^0-9]', '', 'g')))::bigint)::text, %s), %s, '0')$s$,
           v_json_key,
           v_n,
           v_n
@@ -91,8 +93,8 @@ BEGIN
         v_null_parts,
         format(
           $s$AND (raw_data->>%L) IS NOT NULL
-              AND btrim(raw_data->>%L) <> ''''
-              AND regexp_replace(coalesce(raw_data->>%L, ''''), '[^0-9]', '''', ''g'') <> ''''$s$,
+              AND btrim(raw_data->>%L) <> ''
+              AND regexp_replace(coalesce(raw_data->>%L, ''), '[^0-9]', '', 'g') <> ''$s$,
           v_json_key,
           v_json_key,
           v_json_key
