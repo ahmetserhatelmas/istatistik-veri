@@ -39,7 +39,21 @@ export interface EslestirmeScope {
   gun?: number; // 1-31
   ay?: number;  // 1-12
   yil?: number; // 1900-2100
+  /**
+   * Tablo takım süzümü + skor perspektifi (analyze_combos /api/analyze).
+   * Dep kulvarı tek başına doluysa İY/MS karşılaştırması t2–t1 (fokus takım önce) normalize edilir.
+   */
+  takim_ev_ilike?: string;
+  takim_dep_ilike?: string;
+  takim_or_ilike?: string;
+  swap_skor_all?: boolean;
+  /** Panel “İY/MS perspektifi” — RPC: p_force_raw_skor / p_force_swap_skor */
+  force_raw_skor?: boolean;
+  force_swap_skor?: boolean;
 }
+
+/** Panel 1b: İY/MS metin filtresinin skor sırası. */
+export type EslestirmeSkorPerspektif = "auto" | "match_raw" | "swap_all";
 
 /** Sunucunun boyut başına hesapladığı "görülmüş/eksik uçlar" özeti. */
 export interface EslestirmeDimCoverage {
@@ -160,6 +174,11 @@ export function EslestirmePaneli({
   const [manualAy, setManualAy] = useState("");
   const [manualYil, setManualYil] = useState("");
 
+  /** Manuel kapsam: tablo filtrelerinden ilk dolumu takip et (kullanıcı yazdıysa ezme). */
+  const manualSeededRef = useRef(false);
+
+  const [skorPerspektif, setSkorPerspektif] = useState<EslestirmeSkorPerspektif>("auto");
+
   const [result, setResult] = useState<EslestirmeResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -179,8 +198,31 @@ export function EslestirmePaneli({
       setResult(null);
       setErrorMsg(null);
       setMissingFor(null);
+      manualSeededRef.current = false;
     }
   }, [open]);
+
+  // Manuel kapsam seçilince: tabloda o an ne filtre varsa inputlara başlangıç değeri olarak taşı
+  useEffect(() => {
+    if (!open) return;
+    if (useCurrentScope) return;
+    if (manualSeededRef.current) return;
+    manualSeededRef.current = true;
+    setManualIy(currentScope.sonuc_iy ?? "");
+    setManualMs(currentScope.sonuc_ms ?? "");
+    setManualTarihFrom(currentScope.tarih_from ?? "");
+    setManualTarihTo(currentScope.tarih_to ?? "");
+    setManualLigAdi(currentScope.lig_adi ?? "");
+    setManualAltLigId(currentScope.alt_lig_id != null ? String(currentScope.alt_lig_id) : "");
+    setManualGun(currentScope.gun != null ? String(currentScope.gun) : "");
+    setManualAy(currentScope.ay != null ? String(currentScope.ay) : "");
+    setManualYil(currentScope.yil != null ? String(currentScope.yil) : "");
+  }, [open, useCurrentScope, currentScope]);
+
+  // Tablo kapsamına dönünce bir sonraki "Manuel" seçiminde yeniden tohumla
+  useEffect(() => {
+    if (useCurrentScope) manualSeededRef.current = false;
+  }, [useCurrentScope]);
 
   // ESC ile kapat
   useEffect(() => {
@@ -190,8 +232,14 @@ export function EslestirmePaneli({
     return () => window.removeEventListener("keydown", fn);
   }, [open, onClose]);
 
+  const skorPerspektifFlags = useMemo((): Pick<EslestirmeScope, "force_raw_skor" | "force_swap_skor"> => {
+    if (skorPerspektif === "match_raw") return { force_raw_skor: true, force_swap_skor: false };
+    if (skorPerspektif === "swap_all") return { force_raw_skor: false, force_swap_skor: true };
+    return {};
+  }, [skorPerspektif]);
+
   const scope: EslestirmeScope = useMemo(() => {
-    if (useCurrentScope) return currentScope;
+    if (useCurrentScope) return { ...currentScope, ...skorPerspektifFlags };
     const altLigNum = manualAltLigId.trim() && /^\d+$/.test(manualAltLigId.trim())
       ? Number(manualAltLigId.trim()) : undefined;
     const toIntInRange = (s: string, lo: number, hi: number): number | undefined => {
@@ -200,19 +248,38 @@ export function EslestirmePaneli({
       const n = Number(t);
       return n >= lo && n <= hi ? n : undefined;
     };
+    const pickText = (manual: string, fallback?: string) => {
+      const m = manual.trim();
+      if (m) return m;
+      const f = (fallback ?? "").trim();
+      return f || undefined;
+    };
+    const pickDate = (manual: string, fallback?: string) => {
+      const m = manual.trim();
+      if (m) return m;
+      const f = (fallback ?? "").trim();
+      return f || undefined;
+    };
     return {
-      sonuc_iy: manualIy.trim() || undefined,
-      sonuc_ms: manualMs.trim() || undefined,
-      tarih_from: manualTarihFrom.trim() || undefined,
-      tarih_to: manualTarihTo.trim() || undefined,
-      lig_adi: manualLigAdi.trim() || undefined,
-      alt_lig_id: altLigNum,
-      gun: toIntInRange(manualGun, 1, 31),
-      ay:  toIntInRange(manualAy,  1, 12),
-      yil: toIntInRange(manualYil, 1900, 2100),
+      // Manuel alan boşsa → tablodaki mevcut filtreler (currentScope) devralınır
+      sonuc_iy: pickText(manualIy, currentScope.sonuc_iy),
+      sonuc_ms: pickText(manualMs, currentScope.sonuc_ms),
+      tarih_from: pickDate(manualTarihFrom, currentScope.tarih_from),
+      tarih_to: pickDate(manualTarihTo, currentScope.tarih_to),
+      lig_adi: pickText(manualLigAdi, currentScope.lig_adi),
+      alt_lig_id: altLigNum ?? currentScope.alt_lig_id,
+      gun: toIntInRange(manualGun, 1, 31) ?? currentScope.gun,
+      ay:  toIntInRange(manualAy,  1, 12) ?? currentScope.ay,
+      yil: toIntInRange(manualYil, 1900, 2100) ?? currentScope.yil,
+      // Takım / skor perspektifi yalnız tablodan (manuel kutularda yok)
+      takim_ev_ilike: currentScope.takim_ev_ilike,
+      takim_dep_ilike: currentScope.takim_dep_ilike,
+      takim_or_ilike: currentScope.takim_or_ilike,
+      swap_skor_all: currentScope.swap_skor_all,
+      ...skorPerspektifFlags,
     };
   }, [useCurrentScope, currentScope, manualIy, manualMs, manualTarihFrom, manualTarihTo,
-      manualLigAdi, manualAltLigId, manualGun, manualAy, manualYil]);
+      manualLigAdi, manualAltLigId, manualGun, manualAy, manualYil, skorPerspektifFlags]);
 
   const dims: EslestirmeDim[] = useMemo(() => {
     const out: EslestirmeDim[] = [];
@@ -249,6 +316,11 @@ export function EslestirmePaneli({
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+    setResult(null);
+  }, []);
+
+  const onSkorPerspektifChange = useCallback((v: EslestirmeSkorPerspektif) => {
+    setSkorPerspektif(v);
     setResult(null);
   }, []);
 
@@ -331,9 +403,13 @@ export function EslestirmePaneli({
 
   if (!open) return null;
 
-  const hasScope = useCurrentScope
-    ? Boolean(currentScope.sonuc_iy || currentScope.sonuc_ms || currentScope.tarih_from || currentScope.tarih_to || currentScope.lig_adi || currentScope.alt_lig_id || currentScope.gun || currentScope.ay || currentScope.yil)
-    : Boolean(manualIy || manualMs || manualTarihFrom || manualTarihTo || manualLigAdi || manualAltLigId || manualGun || manualAy || manualYil);
+  /** Manuel modda boş alanlar tablo filtresini devralır; rozet bunu yansıtsın. */
+  const hasScope = Boolean(
+    scope.sonuc_iy || scope.sonuc_ms || scope.tarih_from || scope.tarih_to || scope.lig_adi ||
+    scope.alt_lig_id != null || scope.gun != null || scope.ay != null || scope.yil != null ||
+    scope.takim_ev_ilike || scope.takim_dep_ilike || scope.takim_or_ilike ||
+    skorPerspektif !== "auto",
+  );
 
   return (
     <div
@@ -399,6 +475,18 @@ export function EslestirmePaneli({
                     {currentScope.gun != null && <div>Gün: {currentScope.gun}</div>}
                     {currentScope.ay  != null && <div>Ay: {currentScope.ay}</div>}
                     {currentScope.yil != null && <div>Yıl: {currentScope.yil}</div>}
+                    {currentScope.takim_ev_ilike && !currentScope.takim_dep_ilike && (
+                      <div>Takım (ev): süzüm aktif — İY/MS <span className="text-gray-600">ev–dep</span> (ham sıra)</div>
+                    )}
+                    {currentScope.takim_dep_ilike && !currentScope.takim_ev_ilike && (
+                      <div>Takım (dep): süzüm aktif — İY/MS <span className="text-emerald-700 font-semibold">fokus takım önce</span> (normalize)</div>
+                    )}
+                    {currentScope.takim_ev_ilike && currentScope.takim_dep_ilike && (
+                      <div>Takım ev+dep: süzüm aktif — İY/MS <span className="text-gray-600">ev–dep</span> (ham sıra)</div>
+                    )}
+                    {currentScope.takim_or_ilike && !currentScope.takim_ev_ilike && !currentScope.takim_dep_ilike && (
+                      <div>Takım (üst çubuk): süzüm aktif — İY/MS <span className="text-emerald-700 font-semibold">satıra göre takım önce</span></div>
+                    )}
                   </>
                 ) : (
                   <span className="text-gray-400 italic">Filtre yok — tüm veritabanı analiz edilir (yavaş olabilir)</span>
@@ -461,11 +549,55 @@ export function EslestirmePaneli({
                     </div>
                   </div>
                 </div>
-                <div className="text-[10px] text-gray-500 italic">
-                  İpucu: Gün/Ay/Yıl her biri bağımsız uygulanır — ör. <b>sadece Ay=3</b> yazarsan, farklı yıllardaki tüm Mart maçları analiz edilir.
+                <div className="text-[10px] text-gray-500 italic space-y-0.5">
+                  <div>
+                    Manuel alanları boş bıraktığında, tabloda o an seçili olan filtreler otomatik uygulanır; doldurduğun alan tabloyu o noktada ezer.
+                  </div>
+                  <div>
+                    Gün/Ay/Yıl her biri bağımsız uygulanır — ör. <b>sadece Ay=3</b> yazarsan, farklı yıllardaki tüm Mart maçları analiz edilir.
+                  </div>
                 </div>
               </div>
             )}
+          </section>
+
+          <section className="bg-indigo-50/80 border border-indigo-200 rounded p-3">
+            <div className="text-xs font-semibold text-indigo-900 mb-1.5">1b. İY / MS skor perspektifi</div>
+            <p className="text-[10px] text-indigo-800/90 mb-2 leading-snug">
+              İY ve MS kutu filtreleri hangi skor sırasına göre eşleşsin? Takım süzümü tablodan gelir; burada yalnız skor metninin okunuşunu seçersin.
+            </p>
+            <div className="flex flex-col gap-1.5 text-xs">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="skorPerspektif"
+                  checked={skorPerspektif === "auto"}
+                  onChange={() => onSkorPerspektifChange("auto")}
+                  className="mt-0.5"
+                />
+                <span><span className="font-medium text-indigo-950">Otomatik</span> — tablodaki ev/dep takım kutularına göre (üst çubuk <code className="text-[10px] bg-white/80 px-0.5 rounded">takim=</code> için satır başına).</span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="skorPerspektif"
+                  checked={skorPerspektif === "match_raw"}
+                  onChange={() => onSkorPerspektifChange("match_raw")}
+                  className="mt-0.5"
+                />
+                <span><span className="font-medium text-indigo-950">Maç skoru (ev–dep)</span> — veritabanındaki ham sıra; tablo takım süzümü kalır, skor eşleşmesi çevrilmez.</span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="skorPerspektif"
+                  checked={skorPerspektif === "swap_all"}
+                  onChange={() => onSkorPerspektifChange("swap_all")}
+                  className="mt-0.5"
+                />
+                <span><span className="font-medium text-indigo-950">Dep önce (tüm satırlar)</span> — İY/MS her satırda <code className="text-[10px] bg-white/80 px-0.5 rounded">dep–ev</code> gibi ters okunur (farklı maçlarda aynı anlam için).</span>
+              </label>
+            </div>
           </section>
 
           {/* Boyut Seçimi */}

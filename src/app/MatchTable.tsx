@@ -14,6 +14,7 @@ import {
 import { readMbsFromOranRecord } from "@/lib/oran-api";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
 import { supabase } from "@/lib/supabase/client";
+import { teamContainsIlikePattern } from "@/lib/matches-ilike";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
@@ -2078,8 +2079,39 @@ export default function MatchTable() {
 
   /** Eşleştirme Paneli için kapsam: tablodaki mevcut filtreleri derle */
   const eslestirmeCurrentScope: EslestirmeScope = useMemo(() => {
+    const parseCalendarPart = (raw: string | undefined, lo: number, hi: number): number | undefined => {
+      const t = (raw ?? "").trim();
+      if (!t || !/^\d+$/.test(t)) return undefined;
+      const n = Number(t);
+      return n >= lo && n <= hi ? n : undefined;
+    };
     const altLigRaw = colFiltersCommitted.alt_lig_id?.trim();
     const altLigNum = altLigRaw && /^\d+$/.test(altLigRaw) ? Number(altLigRaw) : undefined;
+
+    const te = bidirFilters.takim.ev.committed.trim();
+    const td = bidirFilters.takim.dep.committed.trim();
+    const legacyTakim = (applied.takim ?? "").trim();
+
+    let takim_ev_ilike: string | undefined;
+    let takim_dep_ilike: string | undefined;
+    let takim_or_ilike: string | undefined;
+    let swap_skor_all: boolean | undefined;
+
+    if (te && !td) {
+      takim_ev_ilike = teamContainsIlikePattern(te) ?? undefined;
+      swap_skor_all = false;
+    } else if (!te && td) {
+      takim_dep_ilike = teamContainsIlikePattern(td) ?? undefined;
+      swap_skor_all = true;
+    } else if (te && td) {
+      takim_ev_ilike = teamContainsIlikePattern(te) ?? undefined;
+      takim_dep_ilike = teamContainsIlikePattern(td) ?? undefined;
+      swap_skor_all = false;
+    } else if (legacyTakim) {
+      takim_or_ilike = teamContainsIlikePattern(legacyTakim) ?? undefined;
+      swap_skor_all = false;
+    }
+
     return {
       sonuc_iy: (colFiltersCommitted.sonuc_iy ?? "").trim() || undefined,
       sonuc_ms: (colFiltersCommitted.sonuc_ms ?? "").trim() || undefined,
@@ -2087,8 +2119,25 @@ export default function MatchTable() {
       tarih_to: applied.tarih_to?.trim() || undefined,
       lig_adi: (colFiltersCommitted.lig_adi ?? "").trim() || undefined,
       alt_lig_id: altLigNum,
+      gun: parseCalendarPart(applied.tarih_gun, 1, 31),
+      ay: parseCalendarPart(applied.tarih_ay, 1, 12),
+      yil: parseCalendarPart(applied.tarih_yil, 1900, 2100),
+      takim_ev_ilike,
+      takim_dep_ilike,
+      takim_or_ilike,
+      swap_skor_all,
     };
-  }, [colFiltersCommitted, applied.tarih_from, applied.tarih_to]);
+  }, [
+    colFiltersCommitted,
+    applied.tarih_from,
+    applied.tarih_to,
+    applied.tarih_gun,
+    applied.tarih_ay,
+    applied.tarih_yil,
+    applied.takim,
+    bidirFilters.takim.ev.committed,
+    bidirFilters.takim.dep.committed,
+  ]);
 
   /** Skor combo'sunu cell filtrelerine uygular + recent listesine ekler */
   const applyScoreCombo = useCallback((iy: string, ms: string) => {

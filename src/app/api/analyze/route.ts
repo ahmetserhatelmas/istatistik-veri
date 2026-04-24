@@ -48,6 +48,12 @@ interface AnalyzeRequest {
     gun?: number;
     ay?: number;
     yil?: number;
+    takim_ev_ilike?: string;
+    takim_dep_ilike?: string;
+    takim_or_ilike?: string;
+    swap_skor_all?: boolean;
+    force_raw_skor?: boolean;
+    force_swap_skor?: boolean;
   };
   limit?: number;
 }
@@ -115,6 +121,13 @@ export async function POST(req: NextRequest) {
   const iyLike = scope.sonuc_iy?.trim() ? `%${scope.sonuc_iy.trim()}%` : null;
   const msLike = scope.sonuc_ms?.trim() ? `%${scope.sonuc_ms.trim()}%` : null;
 
+  const evPat = scope.takim_ev_ilike?.trim() || null;
+  const depPat = scope.takim_dep_ilike?.trim() || null;
+  const orPat = scope.takim_or_ilike?.trim() || null;
+  const swapSkor = Boolean(scope.swap_skor_all);
+  const forceRaw = Boolean(scope.force_raw_skor);
+  const forceSwap = Boolean(scope.force_swap_skor);
+
   const { data, error } = await supabase.rpc("analyze_combos", {
     p_dims: dimStrings,
     p_sonuc_iy: iyLike,
@@ -126,6 +139,12 @@ export async function POST(req: NextRequest) {
     p_gun: gun,
     p_ay: ay,
     p_yil: yil,
+    p_takim_ev_ilike: evPat,
+    p_takim_dep_ilike: depPat,
+    p_takim_or_ilike: orPat,
+    p_swap_skor_all: swapSkor,
+    p_force_raw_skor: forceRaw,
+    p_force_swap_skor: forceSwap,
     p_limit: limit,
   });
 
@@ -135,7 +154,7 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         error: error.message || "RPC hatası",
-        hint: "sql/create-analyze-combos-fn.sql fonksiyonunun yüklü olduğundan emin olun.",
+        hint: "Supabase’te analyze_combos güncel mi? sql/add-analyze-combos-takim-skor-norm.sql dosyasını tekrar çalıştırın (p_force_raw_skor / p_force_swap_skor parametreleri).",
       },
       { status: 500 }
     );
