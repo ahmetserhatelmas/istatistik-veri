@@ -335,23 +335,34 @@ export default function AkilliFiltrePage() {
     try {
       const all: DayMatch[] = [];
       let page = 1;
-      let totalPages = 1;
-      while (page <= totalPages && page <= 20) {
+      const pageSize = 100;
+      // `pick=stb` yanıtında totalPages her zaman güvenilir değil (örn. 1); bu yüzden
+      // son sayfayı "dönen satır < limit" kuralıyla tespit et.
+      while (true) {
         const p = new URLSearchParams({
           tarih_from: dayIso,
           tarih_to: dayIso,
           page: String(page),
-          limit: "100",
+          limit: String(pageSize),
           pick: "stb",
         });
         const res = await fetch(`/api/matches?${p.toString()}`);
         const json = (await res.json()) as MatchesApiResponse;
         if (!res.ok) throw new Error(json.error || json.detail || `Hata (${res.status})`);
-        all.push(...((json.data ?? []) as DayMatch[]));
-        totalPages = Math.max(1, Number(json.totalPages ?? 1));
+        const rows = ((json.data ?? []) as DayMatch[]);
+        all.push(...rows);
+        if (rows.length < pageSize) break;
         page += 1;
       }
-      setDayMatches(all);
+      // API tarafında sayfalama sınırlarında aynı maç id'si tekrar gelebiliyor;
+      // select option key çakışmaması için id bazlı tekilleştir.
+      const uniqueById = new Map<string, DayMatch>();
+      for (const row of all) {
+        const k = String(row.id ?? "");
+        if (!k) continue;
+        if (!uniqueById.has(k)) uniqueById.set(k, row);
+      }
+      setDayMatches(Array.from(uniqueById.values()));
     } catch (e) {
       setDayErr(e instanceof Error ? e.message : "Gün maçları alınamadı");
       setDayMatches([]);
