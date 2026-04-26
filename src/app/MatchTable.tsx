@@ -22,6 +22,7 @@ import {
 } from "@/lib/columns";
 import { readMbsFromOranRecord } from "@/lib/oran-api";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
+import { normalizeOkbtCfInput } from "@/lib/okbt-wildcard-server-expand";
 import { supabase } from "@/lib/supabase/client";
 import { teamContainsIlikePattern } from "@/lib/matches-ilike";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
@@ -445,13 +446,11 @@ const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["suffix4"]);
 /**
  * Bir sütun client-side mı filtrelenmeli?
  * - Statik set (MBS): Oran/raw. MKT / MsMKT: sunucuda `mkt_display` / `msmkt_display` (cf_mbs / cf_suffix3).
- * - Yalnızca `macid_obktb_*`: 7 haneli JS ile DB `macid7_obktb_*` arasında bilinçli fark;
- *   diğer `*_obktb_*` sütunlarında sunucu süzümü + `cellVal`’da DB alanı kullanıldığından
- *   çift süzüm `9,_` gibi OR-boş senaryosunda satır kaybına yol açıyordu.
+ * - `macid_obktb_*`: sunucu `cf_*` + `macid7_obktb_*` ile süzülür; `cellVal` DB alanını kullanır —
+ *   istemci süzümü kaldırıldı (çift süzüm sayım şeridinde “MBS/OKBT ek süzümü” yanılsamasına yol açıyordu).
  */
 function isCellValClientCol(id: string): boolean {
   if (CELL_VAL_CLIENT_COL_IDS_STATIC.has(id)) return true;
-  if (/^macid_obktb_\d+$/.test(id)) return true;
   return false;
 }
 
@@ -1812,6 +1811,7 @@ export default function MatchTable() {
         if (FIVE_DIGIT_KOD_COL_IDS.has(id)) out = normalizeFiveDigitPureFilterInput(out);
         else if (isCfColIdMatchCodeId(id)) out = normalizeSevenDigitIdPureFilterInput(out);
         else if (id.startsWith("raw_")) out = normalizeRawKodCfValue(id, out);
+        else if (/^[a-z][a-z0-9]*_obktb_\d+$/i.test(id)) out = normalizeOkbtCfInput(out);
         p.set(`cf_${id}`, out);
       });
       if (!opts?.forPicker && fid && !omitPickerFocusCfId) p.set("cf_id", fid);
@@ -2459,7 +2459,7 @@ export default function MatchTable() {
   );
   const codePickPanelH = Math.min(440, viewportH - 24);
 
-  /** Sunucu bu sayfada döndürdüğü satırların bir kısmı MBS sütunu veya OKBT (macid) istemci süzümüyle elenir. */
+  /** Sunucu bu sayfada döndürdüğü satırların bir kısmı MBS (suffix4) veya ks_any+ham KOD istemci süzümüyle elenir. */
   const clientPageRowGap = !loading && matches.length > 0 && matches.length !== sortedRows.length;
 
   return (
@@ -2480,7 +2480,7 @@ export default function MatchTable() {
             className="tabular-nums"
             title={
               clientPageRowGap
-                ? "Üstteki sayı sunucu filtresine göre tüm veritabanındaki kayıt sayısıdır. MBS veya bazı OKBT sütunları bu sayfada ek süzülürse satır sayısı bundan az görünebilir."
+                ? "Üstteki sayı sunucu filtresine göre tüm veritabanındaki kayıt sayısıdır. MBS (suffix4) veya ◉ son hane + ham KOD istemci süzümü bu sayfada ek daraltırsa satır sayısı bundan az görünebilir."
                 : undefined
             }>
             {total.toLocaleString("tr-TR")} maç
@@ -2522,11 +2522,11 @@ export default function MatchTable() {
                     className="text-amber-700/90 font-normal"
                     title={
                       clientPageRowGap
-                        ? "Sunucu toplamı; MBS veya OKBT (macid) istemci süzümü varsa bu sayfada daha az satır görünür."
+                        ? "Sunucu toplamı; MBS veya ks_any + ham KOD istemci süzümü varsa bu sayfada daha az satır görünür."
                         : "Sunucu filtresiyle eşleşen toplam kayıt (sayfalar arası)"
                     }>
                     {" "}
-                    {clientPageRowGap ? "(sunucu toplamı; MBS/OKBT ek süzümü)" : "(tümü)"}
+                    {clientPageRowGap ? "(sunucu toplamı; MBS / istemci KOD süzümü)" : "(tümü)"}
                   </span>
                 </>
               )}
@@ -2576,9 +2576,9 @@ export default function MatchTable() {
             <button
               type="button"
               onClick={resetAllListFiltersToDefault}
-              title="Üst şerit (Lig, Takım, Tarih, skor, MBS…), tüm sütun aramaları, ⇄ satırı, maç odak / kayıtlı filtre şeridi, sıralama, skor kutusu ve tarama modunu sıfırlar; tablo tam listeyi yeniden çeker."
+              title="Üst şerit (Lig, Takım, Tarih, skor, MBS…), tüm sütun aramaları, ⇄ satırı, maç odak / kayıtlı filtre şeridi, sıralama, skor kutusu ve tarama modunu sıfırlar. Sütun görünürlüğü / sırası (☰ Sütunlar) değişmez."
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
-              Sütunları temizle
+              Liste filtrelerini sıfırla
             </button>
             <button
               type="button"
@@ -4406,7 +4406,7 @@ export default function MatchTable() {
         <span
           title={
             clientPageRowGap
-              ? "Üstteki maç sayısı sunucu toplamıdır; MBS veya OKBT istemci süzümü bu sayfada satır sayısını düşürebilir."
+              ? "Üstteki maç sayısı sunucu toplamıdır; MBS (suffix4) veya ◉ son hane + ham KOD istemci süzümü bu sayfada satır sayısını düşürebilir."
               : undefined
           }>
           Sayfa {page} / {totalPages||1} · {total.toLocaleString("tr-TR")} maç

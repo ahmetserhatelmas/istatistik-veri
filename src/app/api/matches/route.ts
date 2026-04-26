@@ -11,7 +11,11 @@ import {
   splitTarihOrPatterns,
   tarihPartToIlike,
 } from "@/lib/tarih-pattern";
-import { expandOkbtWildcardFilter } from "@/lib/okbt-wildcard-server-expand";
+import {
+  expandOkbtWildcardFilter,
+  normalizeOkbtCfInput,
+  type OkbtWildcardExpand,
+} from "@/lib/okbt-wildcard-server-expand";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 import { isRawFiveDigitPaddedKodJsonKey } from "@/lib/kod-format";
 
@@ -1306,6 +1310,91 @@ function okbtSegToPostgrestStr(fnName: string, seg: OkbtSeg): string {
   return "";
 }
 
+const OKBT_MIX_INT_MAX = 99;
+
+function intersectOkbtIntSets(a: Set<number>, b: Set<number>): Set<number> {
+  const out = new Set<number>();
+  for (const x of a) {
+    if (b.has(x)) out.add(x);
+  }
+  return out;
+}
+
+/** 0..maxInclusive içinde tek OKBT atomunun tam tamsayı kümesi (sunucu joker genişletmesi ile uyumlu). */
+function okbtSegToIntSet(seg: OkbtSeg, maxInclusive: number): Set<number> | null {
+  if (seg.kind === "blank") return null;
+  if (seg.kind === "neq") {
+    const s = new Set<number>();
+    for (let n = 0; n <= maxInclusive; n++) {
+      if (n !== seg.n) s.add(n);
+    }
+    return s;
+  }
+  const { min, max } = seg;
+  const lo = min == null ? 0 : Math.max(0, min);
+  const hi = max == null ? maxInclusive : Math.min(maxInclusive, max);
+  if (lo > hi) return new Set();
+  const s = new Set<number>();
+  for (let n = lo; n <= hi; n++) s.add(n);
+  return s;
+}
+
+type OkbtExpandResolved = Exclude<OkbtWildcardExpand, null>;
+
+function okbtWildcardExpandToIntSet(w: OkbtExpandResolved, maxInclusive: number): Set<number> {
+  if (w.kind === "all") {
+    const s = new Set<number>();
+    for (let n = 0; n <= maxInclusive; n++) s.add(n);
+    return s;
+  }
+  if (w.kind === "none") return new Set();
+  return new Set(w.ints);
+}
+
+/**
+ * `,` OR ve `+` AND içinde joker (*?) ile düz sayı/ aralık atomlarını birleştirir (örn. `1*,25`, `>5+1*`).
+ * `parseObktbServerOrGroups` ifadede * veya ? görünce null; `expandOkbtWildcardFilter` virgülde null
+ * kaldığı için bu iki durumda filtre hiç uygulanmıyordu.
+ */
+function tryExpandOkbtMixedWildOr(obktV: string): OkbtWildcardExpand | null {
+  const t = normalizeOkbtCfInput(obktV);
+  if (!t) return null;
+  const MAX = OKBT_MIX_INT_MAX;
+  const orParts = splitOrParts(t);
+  if (!orParts.length) return null;
+
+  const union = new Set<number>();
+  for (const orPart of orParts) {
+    const andParts = splitAndParts(orPart);
+    if (!andParts.length) return null;
+    let andSet: Set<number> | null = null;
+    for (const apRaw of andParts) {
+      const ap = apRaw.trim();
+      if (!ap) return null;
+      if (isBlankCellOrToken(ap)) return null;
+      let segSet: Set<number> | null;
+      if (ap.includes("*") || ap.includes("?")) {
+        const w = expandOkbtWildcardFilter(ap);
+        if (!w) return null;
+        segSet = okbtWildcardExpandToIntSet(w, MAX);
+      } else {
+        const atom = parseObktbSingleAtom(ap);
+        if (!atom) return null;
+        segSet = okbtSegToIntSet(atom, MAX);
+      }
+      if (segSet === null) return null;
+      andSet = andSet === null ? segSet : intersectOkbtIntSets(andSet, segSet);
+      if (andSet.size === 0) break;
+    }
+    if (andSet == null) return null;
+    for (const n of andSet) union.add(n);
+  }
+
+  if (union.size === 0) return { kind: "none" };
+  if (union.size === MAX + 1) return { kind: "all" };
+  return { kind: "ints", ints: Array.from(union).sort((a, b) => a - b) };
+}
+
 /**
  * Tarama modu “maç ara” kutusu: mevcut tüm API filtreleri uygulandıktan sonra,
  * **tüm eşleşen küme** içinde serbest metin arar (sayfalama öncesi WHERE’e eklenir).
@@ -2047,7 +2136,8 @@ export async function GET(req: NextRequest) {
         parsedObktb.src === "macid"
           ? `macid7_obktb_${parsedObktb.idx}`
           : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
-      const obktbGroups = parseObktbServerOrGroups(v);
+      const obktV = normalizeOkbtCfInput(v);
+      const obktbGroups = parseObktbServerOrGroups(obktV);
       if (obktbGroups) {
         const topSegments = obktbGroups
           .map((andSegs) => {
@@ -2058,8 +2148,8 @@ export async function GET(req: NextRequest) {
         if (topSegments.length) query = query.or(topSegments.join(","));
         continue;
       }
-      // Joker (* ?) tek parça: 0..99 ile genişlet — sayfalama + istemci-only tutarsızlığını önler
-      const wild = expandOkbtWildcardFilter(v);
+      // Joker (* ?) ve virgül-OR / +-AND karışımı: 0..99 genişletme (örn. `1*,25`)
+      const wild = tryExpandOkbtMixedWildOr(obktV);
       if (wild?.kind === "all") {
         continue;
       }

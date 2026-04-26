@@ -57,7 +57,6 @@ const LS_BIDIR = "bidir_filters_v1";
 const LS_COL_CLICK_POS = "om_col_click_pos";
 const LS_DIGIT_POS_MODE = "om_digit_pos_mode";
 const LS_COL_DIGIT_MODE = "om_col_digit_mode";
-const LS_VISIBLE = "om_visible_cols";
 
 function todayIsoLocal(): string {
   const d = new Date();
@@ -417,8 +416,8 @@ export default function AkilliFiltrePage() {
       localStorage.setItem(LS_COL_CLICK_POS, JSON.stringify(smart.colClickPos));
       localStorage.setItem(LS_DIGIT_POS_MODE, JSON.stringify(smart.digitPosMode));
       localStorage.setItem(LS_COL_DIGIT_MODE, JSON.stringify(smart.colDigitMode));
-      // Akıllı Filtre'de normal sütun paneli varsayılanı: hiçbir sütun tikli olmasın.
-      localStorage.setItem(LS_VISIBLE, JSON.stringify([]));
+      // om_visible_cols'a dokunma: ana tabloda kullanıcının sütun seçimi korunur (önceden []
+      // yazılıyordu → boş LS "varsayılan sütunlar"a düşüyor, düzen kayboluyordu).
       setSearchErr(null);
       setShowMainTable(true);
       setTableKey((k) => k + 1);

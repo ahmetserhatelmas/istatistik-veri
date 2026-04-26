@@ -6,6 +6,19 @@
 
 const OKBT_WILDCARD_MAX_INCLUSIVE = 99;
 
+/**
+ * cf OKBT kutusunda sonda/ başta yanlışlıkla kalan virgül (örn. `1*,`, `,1*`) joker
+ * yolunu kırıyordu: `expandOkbtWildcardFilter` virgül görünce `null` dönüyor, API filtreyi
+ * hiç uygulamıyordu. OR ifadelerindeki `1,2` iç virgüllere dokunmaz.
+ */
+export function normalizeOkbtCfInput(raw: string): string {
+  return String(raw ?? "")
+    .trim()
+    .replace(/^\s*,+/, "")
+    .replace(/,+\s*$/, "")
+    .trim();
+}
+
 /** Tek değer + tek desen (virgül/artı yok); MatchTable `matchWildcard` ile aynı mantık. */
 function matchOneWildcard(value: string, pattern: string): boolean {
   const val = value.trim().toLowerCase();
@@ -35,7 +48,7 @@ export type OkbtWildcardExpand =
  * Tek parça joker → 0..max arasında eşleşen tamsayılar.
  */
 export function expandOkbtWildcardFilter(v: string, maxInclusive = OKBT_WILDCARD_MAX_INCLUSIVE): OkbtWildcardExpand {
-  const t = v.trim();
+  const t = normalizeOkbtCfInput(v);
   if (!t || t.includes(",") || t.includes("+")) return null;
   if (!t.includes("*") && !t.includes("?")) return null;
 
