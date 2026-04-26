@@ -1,6 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   ALL_COLS,
@@ -17,6 +26,18 @@ import { supabase } from "@/lib/supabase/client";
 import { teamContainsIlikePattern } from "@/lib/matches-ilike";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 import { buildDigitPosPattern, isHaneSeparator, type DigitPosMode } from "@/lib/digit-pos-pattern";
+import {
+  FIVE_DIGIT_KOD_COL_IDS,
+  isCfColIdMatchCodeId,
+  isRawFiveDigitPaddedKodJsonKey,
+  isRawSkorKodEightKey,
+  normalizeFiveDigitPureFilterInput,
+  normalizeRawKodCfValue,
+  normalizeSevenDigitIdPureFilterInput,
+  padFiveDigitKodDisplay,
+  padRawKodNumericDisplay,
+  padSevenDigitMatchIdDisplay,
+} from "@/lib/kod-format";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -373,10 +394,18 @@ function cellVal(row: Match, col: ColDef): string {
   if (col.id === "id") {
     const rawId = row[col.key] ?? null;
     if (rawId == null || rawId === "") return "";
-    const n = typeof rawId === "number" ? rawId : Number(rawId);
-    if (!Number.isFinite(n)) return String(rawId);
-    const s = String(Math.abs(Math.round(n)));
-    return s.length <= 7 ? s.padStart(7, "0") : s;
+    return padSevenDigitMatchIdDisplay(rawId);
+  }
+
+  if (FIVE_DIGIT_KOD_COL_IDS.has(col.id)) {
+    const rawKod = row[col.key] ?? null;
+    return padFiveDigitKodDisplay(rawKod);
+  }
+
+  if (col.group === RAW_API_GROUP) {
+    const rawK = row[col.key] ?? null;
+    const padded = padRawKodNumericDisplay(String(col.key), rawK);
+    if (padded !== null) return padded;
   }
 
   const raw = row[col.key] ?? null;
@@ -537,6 +566,12 @@ function digitClickTemplate(col: ColDef): string {
   if (ODDS_GROUPS.has(col.group)) return "#.##";
   // OKBT multi sütunları: 2 haneli toplam
   if (/_obktb_\d+$/.test(col.id)) return "##";
+  // Ham veri KOD*: skor kodu (KODHMS…) 8 hane; diğer KOD* 5 hane; geri kalan metin 6 kutu
+  if (col.group === RAW_API_GROUP) {
+    const k = String(col.key ?? "");
+    if (isRawSkorKodEightKey(k)) return "########";
+    if (/^KOD/i.test(k)) return "#####";
+  }
   // Metin sütunları (lig adı, takımlar, gün vb.) — soldan 6 hane
   return "######";
 }
@@ -813,6 +848,27 @@ function reorderColOrder(
 
 const COL_W_MIN = 40;
 const COL_W_MAX = 900;
+
+/** Dar görünüm: sütunlar içeriğe göre genişler; … kesilmez (mobilde satır genişletme yok). */
+const MOBILE_TABLE_MQ = "(max-width: 639px)";
+
+function useNarrowTableLayout(): boolean {
+  return useSyncExternalStore(
+    (onStoreChange) => {
+      if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+        return () => {};
+      }
+      const mq = window.matchMedia(MOBILE_TABLE_MQ);
+      mq.addEventListener("change", onStoreChange);
+      return () => mq.removeEventListener("change", onStoreChange);
+    },
+    () =>
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(MOBILE_TABLE_MQ).matches
+        : false,
+    () => false
+  );
+}
 
 // ── localStorage ──────────────────────────────────────────────────────────────
 const LS_VISIBLE  = "om_visible_cols";
@@ -1293,6 +1349,8 @@ export default function MatchTable() {
   // sütun sırası ve genişlikleri (Excel benzeri)
   const [colOrder, setColOrder] = useState<string[]>(() => lsGet<string[]>(LS_COL_ORDER, []));
   const [colWidths, setColWidths] = useState<Record<string, number>>(() => lsGet<Record<string, number>>(LS_COL_WIDTHS, {}));
+  /** Mobil: sabit max genişlik + … kaldırılır; sütunlar içeriğe göre genişler (yatay kaydır). */
+  const narrowTable = useNarrowTableLayout();
   const resizeRef = useRef<{ id: string; startX: number; startW: number } | null>(null);
 
   // hane seçici (digit-position click): hangi sütunda hangi hane pozisyonları seçili?
@@ -1589,6 +1647,12 @@ export default function MatchTable() {
     [colWidths]
   );
 
+  const dataColStyle = useCallback(
+    (c: ColDef): CSSProperties =>
+      narrowTable ? { minWidth: colW(c) } : { width: colW(c), minWidth: colW(c), maxWidth: colW(c) },
+    [narrowTable, colW]
+  );
+
   const visibleCols = useMemo(
     () => orderedVisibleCols(mergedCols, visibleIds, colOrder),
     [mergedCols, visibleIds, colOrder]
@@ -1610,13 +1674,22 @@ export default function MatchTable() {
 
   // İstemci tarafı filtre: CF_CLIENT_ONLY_COL_IDS + hesaplamalı sütunlar
   // (suffix4 ve tüm macid_obktb_* — 7-haneli formül DB ile uyuşmadığı için)
+  // ks_any açıkken `raw_KOD*` cf sunucuya gitmez; jokerleri padlenmiş cellVal + matchWildcard ile süz.
   const rawColFilters = useMemo(() => {
     const m: Record<string, string> = {};
     for (const [id, v] of normalizedColFilterEntries(colFiltersEffective)) {
       if (CF_CLIENT_ONLY_COL_IDS.has(id) || isCellValClientCol(id)) m[id] = v;
+      else if (
+        anyKodSuffix &&
+        id.startsWith("raw_") &&
+        isRawFiveDigitPaddedKodJsonKey(id.slice(4)) &&
+        /[*?]/.test(v)
+      ) {
+        m[id] = v;
+      }
     }
     return m;
-  }, [colFiltersEffective]);
+  }, [colFiltersEffective, anyKodSuffix]);
   const filteredRows = useMemo(
     () => applyColFilters(matches, rawColFilters, mergedCols),
     [matches, rawColFilters, mergedCols]
@@ -1734,7 +1807,11 @@ export default function MatchTable() {
         if (!v.trim()) return;
         if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
         if (id === "id" && fid && !opts?.forPicker && !omitPickerFocusCfId) return;
-        p.set(`cf_${id}`, v.trim());
+        let out = v.trim();
+        if (FIVE_DIGIT_KOD_COL_IDS.has(id)) out = normalizeFiveDigitPureFilterInput(out);
+        else if (isCfColIdMatchCodeId(id)) out = normalizeSevenDigitIdPureFilterInput(out);
+        else if (id.startsWith("raw_")) out = normalizeRawKodCfValue(id, out);
+        p.set(`cf_${id}`, out);
       });
       if (!opts?.forPicker && fid && !omitPickerFocusCfId) p.set("cf_id", fid);
       // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar
@@ -3770,15 +3847,24 @@ export default function MatchTable() {
       {/* ── TABLO ── (z-0: üstteki header + Sütunlar paneli her zaman üstte; isolate: yükleme örtüsü thead üstünde) */}
       <div ref={tableScrollAreaRef} className="relative z-0 isolate flex-1 min-h-0 min-w-0 overflow-auto">
         <table
-          className="text-sm border-collapse table-fixed max-w-none"
-          style={{ width: tableScrollWidth, minWidth: tableScrollWidth }}
+          className={`text-sm border-collapse max-w-none ${
+            narrowTable ? "table-auto w-max min-w-full" : "table-fixed"
+          }`}
+          style={
+            narrowTable
+              ? { minWidth: tableScrollWidth }
+              : { width: tableScrollWidth, minWidth: tableScrollWidth }
+          }
         >
           {/* colgroup: table-fixed'in her sütun için doğru genişliği kullanmasını sağlar.
               colSpan'lı grup başlık satırı olmadan tarayıcı genişlikleri yanlış hesaplar. */}
           <colgroup>
             <col style={{ width: 16, minWidth: 16, maxWidth: 16 }} />
             {visibleCols.map((c) => (
-              <col key={c.id} style={{ width: colW(c), minWidth: colW(c) }} />
+              <col
+                key={c.id}
+                style={narrowTable ? { minWidth: colW(c) } : { width: colW(c), minWidth: colW(c) }}
+              />
             ))}
           </colgroup>
           {/* z-[1]: yalnızca tablo gövdesinin üstünde kalsın; üstteki ⇄ öneri listeleri (z-[200]) ile yarışmasın */}
@@ -3801,7 +3887,7 @@ export default function MatchTable() {
               {visibleCols.map((c) => (
                 <th
                   key={c.id}
-                  style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                  style={dataColStyle(c)}
                   className="relative px-1 py-1 text-left font-medium text-gray-900 border-b border-gray-400 border-r border-gray-400 select-none group align-top"
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -3894,7 +3980,7 @@ export default function MatchTable() {
                   const colMode = effectiveDigitMode(c.id);
                   const hasOverride = colDigitMode[c.id] !== undefined;
                   return (
-                    <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                    <th key={c.id} style={dataColStyle(c)}
                       className="px-0.5 py-0.5 border-r border-gray-300"
                       title={
                         c.id === "tarih"
@@ -3904,7 +3990,11 @@ export default function MatchTable() {
                       {c.id === "tarih" ? (
                         renderTarihGunAyPick()
                       ) : isDigitCol ? (
-                        <div className="flex items-center gap-px overflow-x-hidden">
+                        <div
+                          className={`flex items-center gap-px ${
+                            narrowTable ? "overflow-x-auto [scrollbar-width:thin]" : "overflow-x-hidden"
+                          }`}
+                        >
                           {/* Sütun başına H↔A mini override butonu */}
                           <button type="button"
                             className={`text-[8px] leading-none px-0.5 py-px rounded border font-bold shrink-0 transition-colors ${
@@ -3982,10 +4072,10 @@ export default function MatchTable() {
                   Boolean(colFiltersCommitted[c.id]?.trim()) ||
                   tarihPickActive;
                 return (
-                  <th key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
+                  <th key={c.id} style={dataColStyle(c)}
                   className="px-0.5 py-0.5 border-b border-gray-400 border-r border-gray-400">
-                    <div className="flex min-w-0 items-center gap-0.5">
-                      <div className="flex items-center gap-0.5 min-w-0 w-full">
+                    <div className={`flex items-center gap-0.5 ${narrowTable ? "min-w-min" : "min-w-0"}`}>
+                      <div className={`flex items-center gap-0.5 w-full ${narrowTable ? "min-w-min" : "min-w-0"}`}>
                   <input
                     id={`cf-input-${c.id}`}
                     value={colFilters[c.id] ?? ""}
@@ -4058,7 +4148,9 @@ export default function MatchTable() {
                             ? "Metin: cf_tarih. Gün/ay: ⊞ Hane satırından (tarih_gun / tarih_ay, tarih_arama)."
                             : "Esc → temizle | *5?6*: wildcard | 4.9,3.2: VEYA | 4.9+3.2: VE"
                         }
-                        className={`min-w-0 flex-1 rounded border px-1 py-0.5 text-[11px] bg-white text-gray-900 caret-gray-900 placeholder:text-slate-600 [color-scheme:light] focus:outline-none focus:border-blue-500 ${
+                        className={`${
+                          narrowTable ? "min-w-[9rem] shrink-0" : "min-w-0"
+                        } flex-1 rounded border px-1 py-0.5 text-[11px] bg-white text-gray-900 caret-gray-900 placeholder:text-slate-600 [color-scheme:light] focus:outline-none focus:border-blue-500 ${
                       colFiltersCommitted[c.id] ? "border-blue-600" : "border-gray-700"
                     }`}
                   />
@@ -4159,6 +4251,9 @@ export default function MatchTable() {
                           const d = val.replace(/\D/g, "");
                           return d.length >= ks.n && d.endsWith(ks.digits);
                         })();
+                      const kodLikeCell =
+                        KOD_ID_COL_IDS.has(c.id) ||
+                        (c.group === RAW_API_GROUP && /^kod/i.test(String(c.key)));
                       let cls: string;
                       if (kodSonHit || rowClickHit) {
                         cls = "bg-yellow-300/90 text-gray-900 font-semibold";
@@ -4172,8 +4267,14 @@ export default function MatchTable() {
                         cls = "text-gray-900";
                       }
                       return (
-                        <td key={c.id} style={{ width: colW(c), minWidth: colW(c), maxWidth: colW(c) }}
-                          className={`px-1.5 py-2 whitespace-nowrap overflow-hidden text-ellipsis border-r border-gray-400 font-mono cursor-pointer ${cls}`}
+                        <td key={c.id} style={dataColStyle(c)}
+                          className={`px-1.5 py-2 whitespace-nowrap border-r border-gray-400 font-mono cursor-pointer ${
+                            narrowTable
+                              ? "overflow-visible max-w-none"
+                              : kodLikeCell
+                                ? "overflow-x-auto overflow-y-hidden max-w-none [scrollbar-width:thin]"
+                                : "overflow-hidden text-ellipsis"
+                          } ${cls}`}
                           title={val}
                           onClick={() => {
                             if (!val) return;

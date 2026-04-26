@@ -15,6 +15,7 @@ import { createPortal } from "react-dom";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
 import { ADMIN_EMAIL } from "@/lib/auth/access";
+import { recordSessionRevAfterLogin, storageKeySessionRev } from "@/app/SessionRevGuard";
 
 type Status = "idle" | "sending" | "sent" | "error";
 
@@ -173,6 +174,15 @@ export function AuthBar() {
       setOpen(false);
       setStatus("idle");
       setMsg(null);
+      const sess = (await supabase.auth.getSession()).data.session;
+      const uid = sess?.user?.id;
+      if (uid) {
+        const bump = await fetch("/api/auth/session-rev", { method: "POST", credentials: "same-origin" });
+        if (bump.ok) {
+          const bj = (await bump.json()) as { ok?: boolean; rev?: number };
+          if (bj.ok && typeof bj.rev === "number") recordSessionRevAfterLogin(uid, bj.rev);
+        }
+      }
     }
   }, [email, password]);
 
@@ -231,6 +241,9 @@ export function AuthBar() {
   }, [email]);
 
   const signOut = useCallback(async () => {
+    const { data: s } = await supabase.auth.getSession();
+    const uid = s.session?.user?.id;
+    if (uid) sessionStorage.removeItem(storageKeySessionRev(uid));
     await supabase.auth.signOut();
     setApproved(false);
     setIsAdmin(false);

@@ -13,6 +13,7 @@ import {
 } from "@/lib/tarih-pattern";
 import { expandOkbtWildcardFilter } from "@/lib/okbt-wildcard-server-expand";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
+import { isRawFiveDigitPaddedKodJsonKey } from "@/lib/kod-format";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
@@ -639,6 +640,20 @@ function getSimpleIlikePattern(v: string): string | null {
   return b.kind === "ilike" ? b.pat : null;
 }
 
+/** Tek OR / tek AND atomunda * ? jokeri → LIKE / ILIKE deseni (prefix modu). */
+function getSimpleRawJsonWildcardPattern(
+  v: string,
+  defaultWrap: "prefix" | "contains" = "prefix"
+): { pat: string; ci: boolean } | null {
+  const orParts = splitOrParts(v);
+  if (orParts.length !== 1) return null;
+  const andParts = splitAndParts(orParts[0]!);
+  if (andParts.length !== 1) return null;
+  const b = parseFilterBranch(andParts[0]!.trim(), defaultWrap);
+  if (b.kind !== "like" && b.kind !== "ilike") return null;
+  return { pat: b.pat, ci: b.kind === "ilike" };
+}
+
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
 const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms1: "ms1",
@@ -674,6 +689,57 @@ function buildMergedRawCfColToJsonKey(rawKeyUnion: string[]): Record<string, str
 }
 
 /**
+ * `get_raw_data_keys` yalnızca son birkaç satırdan anahtar topladığı için `KODIYMS` vb.
+ * birleşik haritada yoksa `raw_KODIYMS` → `KODIYMS` güvenli çıkarımı (cf_* yine uygulanır).
+ */
+function resolveRawCfJsonKey(colId: string, mergedRawCf: Record<string, string>): string | null {
+  const mapped = mergedRawCf[colId];
+  if (mapped && SAFE_RAW_JSON_KEY.test(mapped)) return mapped;
+  if (colId.startsWith("raw_")) {
+    const inferred = colId.slice(4);
+    if (SAFE_RAW_JSON_KEY.test(inferred)) return inferred;
+  }
+  return null;
+}
+
+/**
+ * LIKE deseni `0%`, `00%`, … (yaln başta sıfır + %) → 5 haneye padlenince o sıfırlarla başlayan
+ * kısa saf rakam hücreleri (örn. 2072). RPC kurulmadan PostgREST `match` (~) ile tamamlanır.
+ */
+function rawKodLeadingZeroPercentToShortDigitRegex(pat: string): string | null {
+  if (pat.startsWith("%") || !pat.endsWith("%") || pat.length < 2) return null;
+  const zeros = pat.slice(0, -1);
+  if (!/^0+$/.test(zeros)) return null;
+  const m = zeros.length;
+  if (m >= 5) return null;
+  const maxLen = 5 - m;
+  if (maxLen < 1) return null;
+  return `^[0-9]{1,${maxLen}}$`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function tryApplyRawKodPaddedLeadingZeroPostgrestOr(
+  query: any,
+  jsonKey: string,
+  v: string
+): any | null {
+  if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return null;
+  if (!isRawFiveDigitPaddedKodJsonKey(jsonKey)) return null;
+  const wild = getSimpleRawJsonWildcardPattern(v.trim(), "prefix");
+  if (!wild || isOnlyPercentIlikePattern(wild.pat)) return null;
+  const reShort = rawKodLeadingZeroPercentToShortDigitRegex(wild.pat);
+  if (!reShort) return null;
+  const field = `raw_data->>${jsonKey}`;
+  const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+  const patEsc = q(wild.pat);
+  const reEsc = q(reShort);
+  if (wild.ci) {
+    return query.or(`${field}.ilike.${patEsc},${field}.imatch.${reEsc}`);
+  }
+  return query.or(`${field}.like.${patEsc},${field}.match.${reEsc}`);
+}
+
+/**
  * Ham veri (raw_data) alan filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
  * Sade değer → tam eşleşme; * ? ile desen araması.
  */
@@ -687,6 +753,8 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
     // yapabildiği için tek OR ifadesinde and(...) olarak veriyoruz.
     return query.or(`and(${field}.not.is.null,${field}.neq."")`);
   }
+  const kodPadOr = tryApplyRawKodPaddedLeadingZeroPostgrestOr(query, jsonKey, v);
+  if (kodPadOr != null) return kodPadOr;
   return applyGenericFilter(query, `raw_data->>${jsonKey}`, v, "prefix");
 }
 
@@ -1386,7 +1454,7 @@ export async function GET(req: NextRequest) {
     for (const [k, v] of sp.entries()) {
       if (!k.startsWith("cf_")) continue;
       const colId = k.slice(3);
-      if (!mergedRawCf[colId]) continue;
+      if (!resolveRawCfJsonKey(colId, mergedRawCf)) continue;
       const t = String(v ?? "").trim();
       if (!t) continue;
       return true;
@@ -1506,9 +1574,33 @@ export async function GET(req: NextRequest) {
   for (const [k, v] of sp.entries()) {
     if (!k.startsWith("cf_")) continue;
     const colId = k.slice(3);
-    const jsonKey = mergedRawCf[colId];
-    if (!jsonKey || !SAFE_RAW_JSON_KEY.test(jsonKey)) continue;
-    const ilikePattern = getSimpleIlikePattern(v.trim());
+    const jsonKey = resolveRawCfJsonKey(colId, mergedRawCf);
+    if (!jsonKey) continue;
+    const trimmed = v.trim();
+
+    // KOD* (KODHMS hariç): ham JSON metni padlenmeden joker aranıyordu (ör. 0* → 2072 kaçıyordu).
+    const kodWild = getSimpleRawJsonWildcardPattern(trimmed, "prefix");
+    if (
+      kodWild &&
+      !isOnlyPercentIlikePattern(kodWild.pat) &&
+      isRawFiveDigitPaddedKodJsonKey(jsonKey)
+    ) {
+      const { data: idsData, error: kodPadErr } = await supabase.rpc(
+        "get_matches_raw_kod_padded_pattern_ids",
+        {
+          json_key: jsonKey,
+          pattern: kodWild.pat,
+          case_insensitive: kodWild.ci,
+        }
+      );
+      if (!kodPadErr) {
+        preFilterColIds.add(colId);
+        idSetsForIntersect.push(normalizeRpcIdArray(idsData));
+      }
+      continue;
+    }
+
+    const ilikePattern = getSimpleIlikePattern(trimmed);
     if (!ilikePattern) continue; // OR/AND karmaşığı → eski yol
     if (isOnlyPercentIlikePattern(ilikePattern)) continue; // "*" gibi tümü-eşleşen desenlerde RPC ön-filtreleme yapma
 
@@ -1518,8 +1610,7 @@ export async function GET(req: NextRequest) {
       json_key: jsonKey,
       ilike_pattern: ilikePattern,
     });
-    const ids = (idsData as number[] | null) ?? [];
-    idSetsForIntersect.push(ids);
+    idSetsForIntersect.push(normalizeRpcIdArray(idsData));
   }
 
   // Birden fazla leading-wildcard kolonu: AND semantiği → kesişim (intersection)
@@ -1873,7 +1964,7 @@ export async function GET(req: NextRequest) {
       continue; // karmaşık ifade → istemcide
     }
 
-    const jsonKey = mergedRawCf[colId];
+    const jsonKey = resolveRawCfJsonKey(colId, mergedRawCf);
     if (jsonKey) {
       if (preFilterColIds.has(colId)) continue; // leading-wildcard → zaten id IN ile filtrelendi
       query = applyRawJsonPathIlikeFilter(query, jsonKey, v);
