@@ -208,6 +208,37 @@ const CODE_ILIKE_ARAMA: Record<string, string> = {
   kod_au: "kod_au_arama",
 };
 
+/** UI gösterimi ile uyum: maç kodu 7 hane, diğer kodlar 5 hane (leading-zero pad). */
+const CODE_PAD_WIDTH: Record<string, number> = {
+  id: 7,
+  kod_ms: 5,
+  kod_iy: 5,
+  kod_cs: 5,
+  kod_au: 5,
+};
+
+/**
+ * *_arama sütunları bazı kurulumlarda pad'siz olabilir (örn. 9714).
+ * Kullanıcı 5-hane wildcard yazdığında (örn. ___14) baştaki pad hanesi opsiyonel olsun:
+ * ___14 -> __14 -> _14 -> 14
+ */
+function expandOptionalLeadingPadWildcard(colId: string, pattern: string): string[] {
+  if (pattern.includes("%")) return [];
+  const width = CODE_PAD_WIDTH[colId];
+  if (!width) return [];
+  const out: string[] = [];
+  let cur = pattern;
+  for (let i = 0; i < width - 1; i++) {
+    if (!cur) break;
+    const ch = cur[0];
+    if (ch !== "_" && ch !== "0") break;
+    cur = cur.slice(1);
+    if (!cur) break;
+    out.push(cur);
+  }
+  return out;
+}
+
 /** "," → OR parçalarına böl. */
 function splitOrParts(v: string): string[] {
   return v.split(",").map((s) => s.trim()).filter(Boolean);
@@ -544,6 +575,7 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   if (!orParts.length) return query;
 
   const col = def.col;
+  const quoteVal = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
 
   const applyOne = (q: any, p: string): any => {
     if (isBlankCellOrToken(p)) {
@@ -551,8 +583,13 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
     }
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
-      const qx = q[b.kind](arama, b.pat);
-      return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
+      const pats = [b.pat, ...expandOptionalLeadingPadWildcard(colId, b.pat)];
+      if (pats.length === 1) {
+        const qx = q[b.kind](arama, b.pat);
+        return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
+      }
+      const expr = pats.map((pat) => `${arama}.${b.kind}.${quoteVal(pat)}`).join(",");
+      return query.or(expr);
     }
     if (b.kind === "between") {
       const lo = Number(b.lo), hi = Number(b.hi);
@@ -572,7 +609,9 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
     if (isBlankCellOrToken(p)) return `${col}.is.null`;
     const b = parseFilterBranch(p.trim(), "prefix");
     if (b.kind === "like" || b.kind === "ilike") {
-      const inner = `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
+      const pats = [b.pat, ...expandOptionalLeadingPadWildcard(colId, b.pat)];
+      const segs = pats.map((pat) => `${arama}.${b.kind}.${quoteVal(pat)}`);
+      const inner = segs.length > 1 ? `or(${segs.join(",")})` : segs[0]!;
       return isOnlyPercentIlikePattern(b.pat) ? `and(${inner},${col}.not.is.null)` : inner;
     }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
@@ -652,6 +691,27 @@ function getSimpleRawJsonWildcardPattern(
   const b = parseFilterBranch(andParts[0]!.trim(), defaultWrap);
   if (b.kind !== "like" && b.kind !== "ilike") return null;
   return { pat: b.pat, ci: b.kind === "ilike" };
+}
+
+/**
+ * KOD* alanlarında baştaki `?` dizisi (örn. `???4`) tam-prefix LIKE üretip çok pahalı
+ * olabiliyor. Kullanıcı beklentisi genelde "sonu 4 olanlar" olduğundan `*4`e yumuşat.
+ */
+function normalizeRawKodWildcardInput(jsonKey: string, raw: string): string {
+  if (!isRawFiveDigitPaddedKodJsonKey(jsonKey)) return raw;
+  const t = raw.trim();
+  if (!t) return raw;
+  const orParts = splitOrParts(t);
+  if (orParts.length !== 1) return raw;
+  const andParts = splitAndParts(orParts[0]!);
+  if (andParts.length !== 1) return raw;
+  const atom = andParts[0]!.trim();
+  if (!atom.includes("?") || atom.includes("*")) return raw;
+  const m = atom.match(/^\?+(.*)$/);
+  if (!m) return raw;
+  const rest = (m[1] ?? "").trim();
+  if (!rest) return raw;
+  return `*${rest}`;
 }
 
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
@@ -746,16 +806,17 @@ function tryApplyRawKodPaddedLeadingZeroPostgrestOr(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
 function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
-  if (v.trim() === "*") {
+  const normalized = normalizeRawKodWildcardInput(jsonKey, v);
+  if (normalized.trim() === "*") {
     const field = `raw_data->>${jsonKey}`;
     // "*" için kullanıcı beklentisi: boş olmayan hücreler (null ve "" hariç).
     // PostgREST expression alanlarında not(...).neq(...) zinciri beklenmedik daralma
     // yapabildiği için tek OR ifadesinde and(...) olarak veriyoruz.
     return query.or(`and(${field}.not.is.null,${field}.neq."")`);
   }
-  const kodPadOr = tryApplyRawKodPaddedLeadingZeroPostgrestOr(query, jsonKey, v);
+  const kodPadOr = tryApplyRawKodPaddedLeadingZeroPostgrestOr(query, jsonKey, normalized);
   if (kodPadOr != null) return kodPadOr;
-  return applyGenericFilter(query, `raw_data->>${jsonKey}`, v, "prefix");
+  return applyGenericFilter(query, `raw_data->>${jsonKey}`, normalized, "prefix");
 }
 
 /**
@@ -1576,7 +1637,7 @@ export async function GET(req: NextRequest) {
     const colId = k.slice(3);
     const jsonKey = resolveRawCfJsonKey(colId, mergedRawCf);
     if (!jsonKey) continue;
-    const trimmed = v.trim();
+    const trimmed = normalizeRawKodWildcardInput(jsonKey, v.trim());
 
     // KOD* (KODHMS hariç): ham JSON metni padlenmeden joker aranıyordu (ör. 0* → 2072 kaçıyordu).
     const kodWild = getSimpleRawJsonWildcardPattern(trimmed, "prefix");
@@ -1596,6 +1657,34 @@ export async function GET(req: NextRequest) {
       if (!kodPadErr) {
         preFilterColIds.add(colId);
         idSetsForIntersect.push(normalizeRpcIdArray(idsData));
+      } else {
+        // SQL fonksiyonu henüz kurulmadıysa (veya hata verirse) en azından
+        // ORDER BY'sız id ön-filtresine düşüp statement timeout riskini azalt.
+        const { data: ilikeIds, error: ilikeErr } = await supabase.rpc(
+          "get_matches_raw_ilike_ids",
+          {
+            json_key: jsonKey,
+            ilike_pattern: kodWild.pat,
+          }
+        );
+        if (!ilikeErr) {
+          preFilterColIds.add(colId);
+          idSetsForIntersect.push(normalizeRpcIdArray(ilikeIds));
+        } else {
+          // Son çare: doğrudan raw_data ifadesiyle ORDER BY'sız id taraması.
+          const rawField = `raw_data->>${jsonKey}`;
+          let rawIdQ = supabase.from("matches").select("id");
+          rawIdQ = rawIdQ.filter(rawField, kodWild.ci ? "ilike" : "like", kodWild.pat);
+          const { data: rawRows, error: rawErr } = await rawIdQ.limit(200000);
+          if (!rawErr) {
+            preFilterColIds.add(colId);
+            idSetsForIntersect.push(
+              ((rawRows as Array<{ id?: unknown }> | null) ?? [])
+                .map((r) => Number(r.id))
+                .filter((n) => Number.isFinite(n))
+            );
+          }
+        }
       }
       continue;
     }

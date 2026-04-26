@@ -31,6 +31,7 @@ import {
   isCfColIdMatchCodeId,
   isRawFiveDigitPaddedKodJsonKey,
   isRawSkorKodEightKey,
+  normalizeFixedWidthCodeFilterInput,
   normalizeFiveDigitPureFilterInput,
   normalizeRawKodCfValue,
   normalizeSevenDigitIdPureFilterInput,
@@ -1807,7 +1808,7 @@ export default function MatchTable() {
         if (!v.trim()) return;
         if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
         if (id === "id" && fid && !opts?.forPicker && !omitPickerFocusCfId) return;
-        let out = v.trim();
+        let out = normalizeFixedWidthCodeFilterInput(id, v);
         if (FIVE_DIGIT_KOD_COL_IDS.has(id)) out = normalizeFiveDigitPureFilterInput(out);
         else if (isCfColIdMatchCodeId(id)) out = normalizeSevenDigitIdPureFilterInput(out);
         else if (id.startsWith("raw_")) out = normalizeRawKodCfValue(id, out);

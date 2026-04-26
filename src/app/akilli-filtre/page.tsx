@@ -57,6 +57,7 @@ const LS_BIDIR = "bidir_filters_v1";
 const LS_COL_CLICK_POS = "om_col_click_pos";
 const LS_DIGIT_POS_MODE = "om_digit_pos_mode";
 const LS_COL_DIGIT_MODE = "om_col_digit_mode";
+const LS_VISIBLE = "om_visible_cols";
 
 function todayIsoLocal(): string {
   const d = new Date();
@@ -266,7 +267,7 @@ export default function AkilliFiltrePage() {
   const [dayLoading, setDayLoading] = useState(false);
   const [dayErr, setDayErr] = useState<string | null>(null);
   const [selectedMatchId, setSelectedMatchId] = useState("");
-  const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([SPECIAL_COMPARE_DAY, "lig_adi"]);
+  const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [showCompareFilters, setShowCompareFilters] = useState(false);
   const [refRow, setRefRow] = useState<Record<string, unknown> | null>(null);
   const [searchErr, setSearchErr] = useState<string | null>(null);
@@ -416,6 +417,8 @@ export default function AkilliFiltrePage() {
       localStorage.setItem(LS_COL_CLICK_POS, JSON.stringify(smart.colClickPos));
       localStorage.setItem(LS_DIGIT_POS_MODE, JSON.stringify(smart.digitPosMode));
       localStorage.setItem(LS_COL_DIGIT_MODE, JSON.stringify(smart.colDigitMode));
+      // Akıllı Filtre'de normal sütun paneli varsayılanı: hiçbir sütun tikli olmasın.
+      localStorage.setItem(LS_VISIBLE, JSON.stringify([]));
       setSearchErr(null);
       setShowMainTable(true);
       setTableKey((k) => k + 1);

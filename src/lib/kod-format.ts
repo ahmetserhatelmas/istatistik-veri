@@ -8,6 +8,53 @@ const MAÇ_KODU_COL_ID = "id";
 const MAÇ_KODU_PAD = 7;
 const OYUN_KODU_PAD = 5;
 
+/**
+ * Kullanıcı `*` ile başlatınca "içerir" yerine kod hanesine soldan 0 pad uygula.
+ * Örn (7 hane): *?? -> 00000??, (5 hane): *3245 -> 03245
+ */
+function normalizeLeadingStarPadInput(v: string, pad: number): string {
+  const t = v.trim();
+  if (!t.startsWith("*")) return t;
+  const rest = t.slice(1).trim();
+  if (!rest) return t;
+  // OR/AND karmaşık ifadelerde mevcut semantiği bozmayalım.
+  if (rest.includes("*") || rest.includes(",") || rest.includes("+")) return t;
+  // Yalnız kod deseni karakterleri: rakam ve '?'.
+  if (!/^[\d?]+$/.test(rest)) return t;
+  if (rest.length > pad) return t;
+  return rest.padStart(pad, "0");
+}
+
+/** Yalnız `?` girildiyse (örn. ???) kod genişliğine soldan 0 pad uygula. */
+function normalizeQuestionOnlyPadInput(v: string, pad: number): string {
+  const t = v.trim();
+  if (!/^\?+$/.test(t)) return t;
+  if (t.length > pad) return t;
+  return t.padStart(pad, "0");
+}
+
+/** Uygun kod sütunları için `?` / `*` başı pad normalizasyonu (4* gibi prefix'i bozmaz). */
+export function normalizeFixedWidthCodeFilterInput(colId: string, v: string): string {
+  const PAD_BY_COL: Record<string, number> = {
+    id: MAÇ_KODU_PAD,
+    kod_ms: OYUN_KODU_PAD,
+    kod_iy: OYUN_KODU_PAD,
+    kod_cs: OYUN_KODU_PAD,
+    kod_au: OYUN_KODU_PAD,
+    // 2 haneli kod benzeri sütunlar
+    mbs: 2,
+    suffix3: 2,
+  };
+  const pad = PAD_BY_COL[colId] ?? (/[_]obktb_\d+$/i.test(colId) ? 2 : 0);
+  if (!pad) return v.trim();
+  const t = v.trim();
+  const qOnlyPad = normalizeQuestionOnlyPadInput(t, pad);
+  if (qOnlyPad !== t) return qOnlyPad;
+  const starPad = normalizeLeadingStarPadInput(t, pad);
+  if (starPad !== t) return starPad;
+  return t;
+}
+
 /** Tablo hücresi: oyun kodu sütunlarında soldan sıfır doldur. */
 export function padFiveDigitKodDisplay(raw: unknown): string {
   if (raw == null || raw === "") return "";
@@ -42,6 +89,10 @@ export function padRawKodNumericDisplay(rawKey: string, raw: unknown): string | 
 /** cf_* değeri: yalnız rakam ve 1–4 hane ise 5 haneye tamamla (API ile uyumlu arama). */
 export function normalizeFiveDigitPureFilterInput(v: string): string {
   const t = v.trim();
+  const qOnlyPad = normalizeQuestionOnlyPadInput(t, OYUN_KODU_PAD);
+  if (qOnlyPad !== t) return qOnlyPad;
+  const starPad = normalizeLeadingStarPadInput(t, OYUN_KODU_PAD);
+  if (starPad !== t) return starPad;
   if (!/^\d+$/.test(t) || t.length >= OYUN_KODU_PAD) return t;
   return t.padStart(OYUN_KODU_PAD, "0");
 }
@@ -49,6 +100,10 @@ export function normalizeFiveDigitPureFilterInput(v: string): string {
 /** Maç kodu (id) filtresi: 1–6 hane saf rakam → 7 haneye tamamla. */
 export function normalizeSevenDigitIdPureFilterInput(v: string): string {
   const t = v.trim();
+  const qOnlyPad = normalizeQuestionOnlyPadInput(t, MAÇ_KODU_PAD);
+  if (qOnlyPad !== t) return qOnlyPad;
+  const starPad = normalizeLeadingStarPadInput(t, MAÇ_KODU_PAD);
+  if (starPad !== t) return starPad;
   if (!/^\d+$/.test(t) || t.length >= MAÇ_KODU_PAD) return t;
   return t.padStart(MAÇ_KODU_PAD, "0");
 }
@@ -79,6 +134,10 @@ export function normalizeRawKodCfValue(colId: string, v: string): string {
   const U = key.toUpperCase();
   if (!/^KOD/.test(U) || /^KODHMS/.test(U)) return v;
   const t = v.trim();
+  const qOnlyPad = normalizeQuestionOnlyPadInput(t, OYUN_KODU_PAD);
+  if (qOnlyPad !== t) return qOnlyPad;
+  const starPad = normalizeLeadingStarPadInput(t, OYUN_KODU_PAD);
+  if (starPad !== t) return starPad;
   if (!/^\d+$/.test(t) || t.length >= OYUN_KODU_PAD) return v;
   return t.padStart(OYUN_KODU_PAD, "0");
 }
