@@ -714,6 +714,27 @@ function normalizeRawKodWildcardInput(jsonKey: string, raw: string): string {
   return `*${rest}`;
 }
 
+function stripLeadingZerosKeepOne(s: string): string {
+  return s.replace(/^0+(?=\d)/, "");
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function tryApplyRawKodNumericExactFallback(
+  query: any,
+  jsonKey: string,
+  normalized: string
+): any | null {
+  if (!isRawFiveDigitPaddedKodJsonKey(jsonKey)) return null;
+  const t = normalized.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const field = `raw_data->>${jsonKey}`;
+  const a = t;
+  const b = stripLeadingZerosKeepOne(t);
+  const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+  if (a === b) return query.eq(field, a);
+  return query.or(`${field}.eq.${q(a)},${field}.eq.${q(b)}`);
+}
+
 /** Maç Sonucu 1 / X / 2 — matches.ms1 / msx / ms2 (şema sütunu; raw_data JSON değil, daha hızlı). */
 const MS_ODDS_DB_COL: Record<string, "ms1" | "msx" | "ms2"> = {
   ms1: "ms1",
@@ -816,6 +837,8 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
   }
   const kodPadOr = tryApplyRawKodPaddedLeadingZeroPostgrestOr(query, jsonKey, normalized);
   if (kodPadOr != null) return kodPadOr;
+  const kodExactOr = tryApplyRawKodNumericExactFallback(query, jsonKey, normalized);
+  if (kodExactOr != null) return kodExactOr;
   return applyGenericFilter(query, `raw_data->>${jsonKey}`, normalized, "prefix");
 }
 
