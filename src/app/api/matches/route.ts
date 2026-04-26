@@ -260,15 +260,16 @@ function isBlankCellOrToken(t: string): boolean {
 }
 
 function postgrestFieldEmptyOrExpr(field: string): string {
-  return `${field}.is.null,${field}.eq.""`;
+  // PostgREST: boş metin `eq.` (tırnaklı `eq.""` bazı katmanlarda yanlış parse olabiliyor)
+  return `${field}.is.null,${field}.eq.`;
 }
 
 function postgrestSkorFieldEmptyOrExpr(field: string): string {
-  return `${field}.is.null,${field}.eq."",${field}.eq."-",${field}.eq."–"`;
+  return `${field}.is.null,${field}.eq.,${field}.eq."-",${field}.eq."–"`;
 }
 
 function postgrestMsOddsEmptyOrExpr(textField: string, numField: string): string {
-  return `${textField}.is.null,${textField}.eq."",${numField}.is.null`;
+  return `${textField}.is.null,${textField}.eq.,${numField}.is.null`;
 }
 
 
@@ -321,6 +322,8 @@ type FilterBranch =
  */
 function parseFilterBranch(p: string, defaultWrap: "prefix" | "contains" = "prefix"): FilterBranch {
   const t = p.trim();
+  // `_` / `_ ` boş hücre — `*`/`?` jokerinden önce (tek `_` jokerde SQL `_` olur)
+  if (isBlankCellOrToken(t)) return { kind: "eq", val: t };
   if (t.startsWith(">=")) return { kind: "gte", val: t.slice(2).trim() };
   if (t.startsWith("<=")) return { kind: "lte", val: t.slice(2).trim() };
   if (t.startsWith("<>")) return { kind: "neq", val: t.slice(2).trim() };
@@ -351,8 +354,18 @@ function branchToOrStr(field: string, b: FilterBranch, plainEqAsIlike = true): s
     return `${field}.ilike.${q(escapeIlikeExactLiteral(b.val))}`;
   }
   switch (b.kind) {
-    case "like":    return `${field}.like.${q(b.pat)}`;
-    case "ilike":   return `${field}.ilike.${q(b.pat)}`;
+    case "like": {
+      const inner = `${field}.like.${q(b.pat)}`;
+      return isOnlyPercentIlikePattern(b.pat)
+        ? `and(${inner},${field}.not.is.null,${field}.neq.)`
+        : inner;
+    }
+    case "ilike": {
+      const inner = `${field}.ilike.${q(b.pat)}`;
+      return isOnlyPercentIlikePattern(b.pat)
+        ? `and(${inner},${field}.not.is.null,${field}.neq.)`
+        : inner;
+    }
     case "eq":      return `${field}.eq.${q(b.val)}`;
     case "neq":     return `${field}.neq.${q(b.val)}`;
     case "gt":      return `${field}.gt.${q(b.val)}`;
@@ -388,6 +401,12 @@ function applyParsedFilterBranch(
   if (b.kind === "eq" && isBlankCellOrToken(b.val)) {
     return query.or(postgrestFieldEmptyOrExpr(field));
   }
+  if (b.kind === "like" || b.kind === "ilike") {
+    if (isOnlyPercentIlikePattern(b.pat)) {
+      const qx = b.kind === "ilike" ? query.ilike(field, b.pat) : query.like(field, b.pat);
+      return qx.not(field, "is", null).neq(field, "");
+    }
+  }
   if (plainEqAsIlike && b.kind === "eq") {
     return query.ilike(field, escapeIlikeExactLiteral(b.val));
   }
@@ -409,7 +428,7 @@ function applyGenericFilter(
   plainEqAsIlike = true
 ): any {
   const t = v.trim();
-  if (t === "_") {
+  if (isBlankCellOrToken(t)) {
     return query.or(postgrestFieldEmptyOrExpr(field));
   }
   const orParts = splitOrParts(v);
@@ -497,7 +516,9 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
       // Joker → _arama metin sütunu
       if (!arama) return q;
       const qx = q[b.kind](arama, b.pat);
-      return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
+      return isOnlyPercentIlikePattern(b.pat)
+        ? qx.not(arama, "is", null).neq(arama, "")
+        : qx;
     }
     if (b.kind === "between") {
       const lo = Number(b.lo), hi = Number(b.hi);
@@ -519,7 +540,9 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
     if (b.kind === "like" || b.kind === "ilike") {
       if (!arama) return "";
       const inner = `${arama}.${b.kind}."${b.pat.replace(/"/g, '""')}"`;
-      return isOnlyPercentIlikePattern(b.pat) ? `and(${inner},${col}.not.is.null)` : inner;
+      return isOnlyPercentIlikePattern(b.pat)
+        ? `and(${inner},${arama}.not.is.null,${arama}.neq.)`
+        : inner;
     }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
     if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
@@ -590,7 +613,9 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
       const pats = [b.pat, ...expandOptionalLeadingPadWildcard(colId, b.pat)];
       if (pats.length === 1) {
         const qx = q[b.kind](arama, b.pat);
-        return isOnlyPercentIlikePattern(b.pat) ? qx.not(col, "is", null) : qx;
+        return isOnlyPercentIlikePattern(b.pat)
+          ? qx.not(arama, "is", null).neq(arama, "")
+          : qx;
       }
       const expr = pats.map((pat) => `${arama}.${b.kind}.${quoteVal(pat)}`).join(",");
       return query.or(expr);
@@ -616,7 +641,9 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
       const pats = [b.pat, ...expandOptionalLeadingPadWildcard(colId, b.pat)];
       const segs = pats.map((pat) => `${arama}.${b.kind}.${quoteVal(pat)}`);
       const inner = segs.length > 1 ? `or(${segs.join(",")})` : segs[0]!;
-      return isOnlyPercentIlikePattern(b.pat) ? `and(${inner},${col}.not.is.null)` : inner;
+      return isOnlyPercentIlikePattern(b.pat)
+        ? `and(${inner},${arama}.not.is.null,${arama}.neq.)`
+        : inner;
     }
     if (b.kind === "between") return `and(${col}.gte.${b.lo},${col}.lte.${b.hi})`;
     if (b.kind === "eq" || b.kind === "neq" || b.kind === "gt" || b.kind === "gte" || b.kind === "lt" || b.kind === "lte") {
@@ -837,7 +864,7 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
     // "*" için kullanıcı beklentisi: boş olmayan hücreler (null ve "" hariç).
     // PostgREST expression alanlarında not(...).neq(...) zinciri beklenmedik daralma
     // yapabildiği için tek OR ifadesinde and(...) olarak veriyoruz.
-    return query.or(`and(${field}.not.is.null,${field}.neq."")`);
+    return query.or(`and(${field}.not.is.null,${field}.neq.)`);
   }
   const kodPadOr = tryApplyRawKodPaddedLeadingZeroPostgrestOr(query, jsonKey, normalized);
   if (kodPadOr != null) return kodPadOr;
@@ -875,6 +902,86 @@ function gunCfValueForSubstringIlike(raw: string): string {
         .join("+"),
     )
     .join(",");
+}
+
+/** PostgREST `imatch` (~*) deseninde özel anlamlı karakterleri kaçır. */
+function escapePostgresRegexForImatch(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * `tarih_tr_gunlu` ≈ "26.04.2026 pazartesi" — kullanıcı `*r` = gün adı **r ile başlasın** ister;
+ * eski davranış `*r` → `%r%` tüm metinde "pazartesi" içindeki `r` yüzünden yanlış pozitifti.
+ * - `*perş`, `*pazar` → tarih + boşluktan sonra önek eşleşmesi (PostgREST `imatch`)
+ * - `paz*`, `cum*` → aynı (sondaki `*` glob önek)
+ * İçinde `*`,`?` karmaşası veya `_` boş → eski ILIKE `gunCfValueForSubstringIlike` yolu.
+ */
+function parseGunWeekdayPrefixImatchPattern(atom: string): string | null {
+  const t = atom.trim();
+  if (!t || isBlankCellOrToken(t)) return null;
+  const lead = /^\*+([^*?+,]+)$/.exec(t);
+  if (lead) {
+    const p = lead[1]!.trim();
+    if (!p) return null;
+    return `^[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{4}\\s+${escapePostgresRegexForImatch(p)}`;
+  }
+  const trail = /^([^*?+,]+)\*+$/.exec(t);
+  if (trail) {
+    const p = trail[1]!.trim();
+    if (!p) return null;
+    return `^[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{4}\\s+${escapePostgresRegexForImatch(p)}`;
+  }
+  return null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyCfGunColumnFilter(query: any, raw: string): any {
+  const field = "tarih_tr_gunlu";
+  const v = raw.trim();
+  if (!v) return query;
+  if (isBlankCellOrToken(v)) {
+    return query.or(postgrestFieldEmptyOrExpr(field));
+  }
+  const orParts = splitOrParts(v);
+  if (!orParts.length) return query;
+
+  const allSimplePrefix = orParts.every((orPart) => {
+    const ands = splitAndParts(orPart);
+    if (!ands.length) return false;
+    return ands.every((ap) => {
+      const t = ap.trim();
+      if (!t) return false;
+      if (isBlankCellOrToken(t)) return false;
+      return parseGunWeekdayPrefixImatchPattern(t) !== null;
+    });
+  });
+
+  if (!allSimplePrefix) {
+    return applyCfTextColumnIlikeFilter(query, field, gunCfValueForSubstringIlike(v));
+  }
+
+  const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+
+  const segments: string[] = [];
+  for (const orPart of orParts) {
+    const ands = splitAndParts(orPart);
+    if (ands.length === 1) {
+      const ap = ands[0]!.trim();
+      const re = parseGunWeekdayPrefixImatchPattern(ap);
+      if (re) segments.push(`${field}.imatch.${q(re)}`);
+    } else {
+      const inner = ands
+        .map((ap) => {
+          const t = ap.trim();
+          const re = parseGunWeekdayPrefixImatchPattern(t);
+          return re ? `${field}.imatch.${q(re)}` : "";
+        })
+        .filter(Boolean);
+      if (inner.length) segments.push(inner.length > 1 ? `and(${inner.join(",")})` : inner[0]!);
+    }
+  }
+  const segf = segments.filter(Boolean);
+  return segf.length ? query.or(segf.join(",")) : query;
 }
 
 /**
@@ -943,7 +1050,10 @@ function branchToOrStrMsOdds(numField: string, textField: string, b: FilterBranc
     return postgrestMsOddsEmptyOrExpr(textField, numField);
   }
   if (b.kind === "like" || b.kind === "ilike") {
-    return `${textField}.${b.kind}.${qstr(b.pat)}`;
+    const inner = `${textField}.${b.kind}.${qstr(b.pat)}`;
+    return isOnlyPercentIlikePattern(b.pat)
+      ? `and(${inner},${textField}.not.is.null,${textField}.neq.)`
+      : inner;
   }
   if (b.kind === "between") {
     const lo = Number(String(b.lo).replace(",", "."));
@@ -1161,9 +1271,9 @@ function spHasNarrowingListFilter(sp: URLSearchParams): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyCfSkorColumnFilter(query: any, col: "sonuc_iy" | "sonuc_ms", raw: string): any {
   const v = String(raw ?? "").trim();
-  const emptyExpr = `${col}.is.null,${col}.eq."",${col}.eq."-",${col}.eq."–"`;
+  const emptyExpr = postgrestSkorFieldEmptyOrExpr(col);
   if (!v) return query;
-  if (v === "_") {
+  if (isBlankCellOrToken(v)) {
     return query.or(emptyExpr);
   }
   const orParts = splitOrParts(v);
@@ -1758,6 +1868,7 @@ export async function GET(req: NextRequest) {
       !isOnlyPercentIlikePattern(kodWild.pat) &&
       isRawFiveDigitPaddedKodJsonKey(jsonKey)
     ) {
+      let kodPreIds: number[] | null = null;
       const { data: idsData, error: kodPadErr } = await supabase.rpc(
         "get_matches_raw_kod_padded_pattern_ids",
         {
@@ -1767,8 +1878,7 @@ export async function GET(req: NextRequest) {
         }
       );
       if (!kodPadErr) {
-        preFilterColIds.add(colId);
-        idSetsForIntersect.push(normalizeRpcIdArray(idsData));
+        kodPreIds = normalizeRpcIdArray(idsData);
       } else {
         // SQL fonksiyonu henüz kurulmadıysa (veya hata verirse) en azından
         // ORDER BY'sız id ön-filtresine düşüp statement timeout riskini azalt.
@@ -1780,8 +1890,7 @@ export async function GET(req: NextRequest) {
           }
         );
         if (!ilikeErr) {
-          preFilterColIds.add(colId);
-          idSetsForIntersect.push(normalizeRpcIdArray(ilikeIds));
+          kodPreIds = normalizeRpcIdArray(ilikeIds);
         } else {
           // Son çare: doğrudan raw_data ifadesiyle ORDER BY'sız id taraması.
           const rawField = `raw_data->>${jsonKey}`;
@@ -1789,14 +1898,17 @@ export async function GET(req: NextRequest) {
           rawIdQ = rawIdQ.filter(rawField, kodWild.ci ? "ilike" : "like", kodWild.pat);
           const { data: rawRows, error: rawErr } = await rawIdQ.limit(200000);
           if (!rawErr) {
-            preFilterColIds.add(colId);
-            idSetsForIntersect.push(
-              ((rawRows as Array<{ id?: unknown }> | null) ?? [])
-                .map((r) => Number(r.id))
-                .filter((n) => Number.isFinite(n))
-            );
+            kodPreIds = ((rawRows as Array<{ id?: unknown }> | null) ?? [])
+              .map((r) => Number(r.id))
+              .filter((n) => Number.isFinite(n));
           }
         }
+      }
+      // Boş id listesiyle prefilter + erken boş dönüş, ana sorgudaki pad/LIKE+match
+      // yolunu (örn. 0* → 02072) tamamen atlıyordu — yalnızca gerçekten id varsa IN uygula.
+      if (kodPreIds !== null && kodPreIds.length > 0) {
+        preFilterColIds.add(colId);
+        idSetsForIntersect.push(kodPreIds);
       }
       continue;
     }
@@ -2052,16 +2164,13 @@ export async function GET(req: NextRequest) {
     query = applyCfSkorColumnFilter(query, "sonuc_ms", sp.get("sonuc_ms")!.trim());
   }
   if (sp.get("hakem")) {
-    const pat = plainOrWildcardIlikePattern(sp.get("hakem")!);
-    if (pat) query = query.ilike("hakem", pat);
+    query = applyCfTextColumnIlikeFilter(query, "hakem", sp.get("hakem")!.trim());
   }
   if (sp.get("suffix4")) {
-    const pat = plainOrWildcardIlikePattern(sp.get("suffix4")!);
-    if (pat) query = query.ilike("mac_suffix4", pat);
+    query = applyCfTextColumnIlikeFilter(query, "mac_suffix4", sp.get("suffix4")!.trim());
   }
   if (sp.get("suffix3")) {
-    const pat = plainOrWildcardIlikePattern(sp.get("suffix3")!);
-    if (pat) query = query.ilike("msmkt_display", pat);
+    query = applyCfTextColumnIlikeFilter(query, "msmkt_display", sp.get("suffix3")!.trim());
   }
 
   // ── Sütun bazlı filtreler (cf_{colId}=değer) ─────────────────────────────
@@ -2089,7 +2198,7 @@ export async function GET(req: NextRequest) {
       continue;
     }
     if (colId === "gun") {
-      query = applyCfTextColumnIlikeFilter(query, "tarih_tr_gunlu", gunCfValueForSubstringIlike(v));
+      query = applyCfGunColumnFilter(query, v);
       continue;
     }
     const msCol = MS_ODDS_DB_COL[colId];
