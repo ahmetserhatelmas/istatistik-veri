@@ -1,7 +1,10 @@
--- obktb_15..25: 2'li kombinasyonlar (15–24) + eksik A+C+D+E (25) için GENERATED STORED sütunlar.
--- ÖNCE: add-okbt-2li-5digit-01-function-update.sql çalıştırılmış olmalı.
--- SONRA: sql/create-matches-suffix-view.sql yeniden çalıştırın (m.* genişlemesi).
--- NOT: ALTER TABLE + STORED 44K satırda birkaç dakika sürebilir — Supabase Editor'da bekleyin.
+-- KULLANMA! Bu dosya çok yavaş — 44K satır × 11 sütun = saatler sürer.
+-- Bunun yerine: add-okbt-2li-5digit-02-computed-functions.sql kullanın.
+-- (Computed column functions — DDL only, anında çalışır)
+--
+-- Aşağıdaki SQL SADECE referans amaçlı bırakıldı, çalıştırmayın.
+
+/*
 
 ALTER TABLE public.matches ADD COLUMN IF NOT EXISTS obktb_15 text
   GENERATED ALWAYS AS ((public.okbt_basamak_toplam(kod_iy::text, 15))::text) STORED;
@@ -25,3 +28,5 @@ ALTER TABLE public.matches ADD COLUMN IF NOT EXISTS obktb_24 text
   GENERATED ALWAYS AS ((public.okbt_basamak_toplam(kod_iy::text, 24))::text) STORED;
 ALTER TABLE public.matches ADD COLUMN IF NOT EXISTS obktb_25 text
   GENERATED ALWAYS AS ((public.okbt_basamak_toplam(kod_iy::text, 25))::text) STORED;
+
+*/
