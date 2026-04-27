@@ -81,5 +81,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.okbt7_basamak_toplam(text, integer) IS
-  'Maç ID gibi 7 haneli kodlarda A-G basamaklarının 41 OKBT toplamından idx (0-40) olanı döner.
-   0-19: curated 3-7'li seçim; 20-40: tüm 2'li kombinasyonlar.';
+  'Mac ID gibi 7 haneli kodlarda A-G basamaklarinin 41 OKBT toplamlarindan idx (0-40) olanini doner. 0-19: curated secim; 20-40: tum 2li kombinasyonlar.';

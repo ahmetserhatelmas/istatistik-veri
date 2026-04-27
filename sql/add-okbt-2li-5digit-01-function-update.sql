@@ -68,5 +68,4 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.okbt_basamak_toplam(text, integer) IS
-  'IY kodundan 5 basamak (A–E) türetir; 26 OKBT toplamından idx (0–25) olanı döner.
-   0–9: 3'li, 10–13: 4'lü, 14: 5'li, 15–24: 2'li, 25: A+C+D+E.';
+  'IY kodundan 5 basamak (A-E) turetir; 26 OKBT toplamlarindan idx (0-25) olanini doner. 0-9: 3lu, 10-13: 4lu, 14: 5li, 15-24: 2li, 25: A+C+D+E.';
