@@ -373,9 +373,8 @@ function cellVal(row: Match, col: ColDef): string {
     const idx = Number(multiOkbtM[2]);
     const src = OKBT_MULTI_SOURCE_MAP[srcId];
     if (src && Number.isInteger(idx) && idx >= 0) {
-      const dbKey = src.id === "macid" ? `macid7_obktb_${idx}` : col.id;
-      // API’de generated kolon geldiyse o kaynak: NULL = `_` / boş hücre. Eski davranışta NULL iken
-      // rowKey’den hesaplanan rakam gösteriliyordu; `9,_` süzümünde küme doğru olsa bile sütunda 8,11… görünüyordu.
+      // DB computed column geliyorsa kullan (macid: m7_obktb_{idx}, diger: {src}_obktb_{idx})
+      const dbKey = src.id === "macid" ? `m7_obktb_${idx}` : col.id;
       if (Object.prototype.hasOwnProperty.call(row, dbKey)) {
         const dbVal = row[dbKey];
         if (dbVal === null || dbVal === undefined || dbVal === "") return "";
@@ -383,10 +382,11 @@ function cellVal(row: Match, col: ColDef): string {
         if (Number.isFinite(n)) return String(Math.round(n));
         return String(dbVal).trim();
       }
+      // Client-side fallback (DB col yoksa)
       if (src.id === "macid") {
         return idx < OKBT_7_IDX_COUNT ? okbt7BasamakHucreDegeri(row[src.rowKey], idx) : "";
       }
-      return idx <= 14 ? okbtBasamakHucreDegeri(row[src.rowKey], idx) : "";
+      return idx < 26 ? okbtBasamakHucreDegeri(row[src.rowKey], idx) : "";
     }
     return "";
   }
@@ -451,7 +451,7 @@ const CELL_VAL_CLIENT_COL_IDS_STATIC = new Set(["suffix4"]);
 /**
  * Bir sütun client-side mı filtrelenmeli?
  * - Statik set (MBS): Oran/raw. MKT / MsMKT: sunucuda `mkt_display` / `msmkt_display` (cf_mbs / cf_suffix3).
- * - `macid_obktb_*`: sunucu `cf_*` + `macid7_obktb_*` ile süzülür; `cellVal` DB alanını kullanır —
+ * - `macid_obktb_*`: `m7_obktb_{idx}` DB computed col; filtre sunucu tarafında.
  *   istemci süzümü kaldırıldı (çift süzüm sayım şeridinde “MBS/OKBT ek süzümü” yanılsamasına yol açıyordu).
  */
 function isCellValClientCol(id: string): boolean {

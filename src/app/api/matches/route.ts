@@ -235,7 +235,7 @@ function flattenRawValue(v: unknown): unknown {
  * Yalnızca `with_okbt=1` parametresiyle istenir (kullanıcı o sütunları gösterdiğinde).
  */
 const OKBT_MULTI_COMPUTED_COLS: string[] = [
-  ...Array.from({ length: 119 }, (_, i) => `macid7_obktb_${i}`),
+  ...Array.from({ length: 119 }, (_, i) => `m7_obktb_${i}`),
   ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"] as const).flatMap((src) =>
     Array.from({ length: 26 }, (_, i) => `${src}_obktb_${i}`),
   ),
@@ -2365,15 +2365,15 @@ export async function GET(req: NextRequest) {
     }
     // Çok kaynaklı OKBT: {srcId}_obktb_{idx}
     // PostgREST computed column filtresi ile doğrudan WHERE'e çeviriyoruz.
-    // - macid (7 haneli): macid7_obktb_{idx}  (sql/add-macid7-obktb-computed-cols.sql)
+    // - macid (7 haneli): m7_obktb_{idx}  (sql/add-okbt-full-7digit-03-m7-functions.sql)
     // - t1i / t2i / kodms / kodiy / kodcs / kodau (5 haneli): {src}_obktb_{idx}
-    //   (sql/add-matches-okbt-multi-computed-col-functions.sql)
+    //   (sql/add-matches-okbt-multi-computed-col-functions.sql + add-okbt-2li-5digit-03)
     // Sayısal + `_` boş + `+` AND sunucuda; `* ?` joker ayrı; kalan karmaşık → istemci.
     const parsedObktb = parseObktbSrcIdx(colId);
     if (parsedObktb) {
       const fnName =
         parsedObktb.src === "macid"
-          ? `macid7_obktb_${parsedObktb.idx}`
+          ? `m7_obktb_${parsedObktb.idx}`
           : `${parsedObktb.src}_obktb_${parsedObktb.idx}`;
       const obktV = normalizeOkbtCfInput(v);
       const obktbGroups = parseObktbServerOrGroups(obktV);

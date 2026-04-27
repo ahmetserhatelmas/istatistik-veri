@@ -22,16 +22,18 @@ export interface OkbtMultiSource {
 }
 
 const ALL_15_IDX = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14] as const;
-const ALL_20_IDX = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19] as const;
+const ALL_26_IDX = Array.from({ length: 26 }, (_, i) => i) as unknown as readonly number[];
+// macid7: 119 kombinasyon (2-6'lı, itertools sırası) — tamamen client-side hesaplama
+const ALL_119_IDX = Array.from({ length: OKBT_7_IDX_COUNT }, (_, i) => i) as unknown as readonly number[];
 
 export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
-  { id: "macid",  dbCol: "id",     rowKey: "id",     group: "Maç ID · OKBT",  indices: ALL_20_IDX },
-  { id: "t1i",    dbCol: "t1i",    rowKey: "t1i",    group: "T1 ID · OKBT",   indices: ALL_15_IDX },
-  { id: "t2i",    dbCol: "t2i",    rowKey: "t2i",    group: "T2 ID · OKBT",   indices: ALL_15_IDX },
-  { id: "kodms",  dbCol: "kod_ms", rowKey: "kod_ms", group: "MS Kod · OKBT",  indices: ALL_15_IDX },
-  { id: "kodiy",  dbCol: "kod_iy", rowKey: "kod_iy", group: "İY Kod · OKBT",  indices: ALL_15_IDX },
-  { id: "kodcs",  dbCol: "kod_cs", rowKey: "kod_cs", group: "ÇŞ Kod · OKBT",  indices: ALL_15_IDX },
-  { id: "kodau",  dbCol: "kod_au", rowKey: "kod_au", group: "A/Ü Kod · OKBT", indices: ALL_15_IDX },
+  { id: "macid",  dbCol: "id",     rowKey: "id",     group: "Maç ID · OKBT",  indices: ALL_119_IDX },
+  { id: "t1i",    dbCol: "t1i",    rowKey: "t1i",    group: "T1 ID · OKBT",   indices: ALL_26_IDX },
+  { id: "t2i",    dbCol: "t2i",    rowKey: "t2i",    group: "T2 ID · OKBT",   indices: ALL_26_IDX },
+  { id: "kodms",  dbCol: "kod_ms", rowKey: "kod_ms", group: "MS Kod · OKBT",  indices: ALL_26_IDX },
+  { id: "kodiy",  dbCol: "kod_iy", rowKey: "kod_iy", group: "İY Kod · OKBT",  indices: ALL_26_IDX },
+  { id: "kodcs",  dbCol: "kod_cs", rowKey: "kod_cs", group: "ÇŞ Kod · OKBT",  indices: ALL_26_IDX },
+  { id: "kodau",  dbCol: "kod_au", rowKey: "kod_au", group: "A/Ü Kod · OKBT", indices: ALL_26_IDX },
 ];
 
 export const OKBT_MULTI_SOURCE_MAP: Record<string, OkbtMultiSource> =
