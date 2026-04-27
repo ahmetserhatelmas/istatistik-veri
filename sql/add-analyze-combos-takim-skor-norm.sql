@@ -58,6 +58,7 @@ DECLARE
   v_json_key     text;
   v_n            int;
 BEGIN
+  SET LOCAL statement_timeout = '55s';
   IF p_dims IS NULL OR array_length(p_dims, 1) IS NULL THEN
     RETURN;
   END IF;
