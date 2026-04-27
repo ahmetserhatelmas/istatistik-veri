@@ -37,6 +37,7 @@ import {
   padRawKodNumericDisplay,
   padSevenDigitMatchIdDisplay,
 } from "@/lib/kod-format";
+import { ardisikSatirCfTarihDegeri, TARIH_ARDISIK_ROW_COUNT } from "@/lib/tarih-ardisik";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -1301,6 +1302,16 @@ export default function MatchTable() {
     });
   }, [applied.tarih_gun, applied.tarih_ay]);
 
+  /** Excel "tarih" ardışık tablosu: kayıtlı cf_tarih tam olarak bir satırsa seçili göster */
+  const tarihArdisikSelRow = useMemo(() => {
+    const t = (colFiltersCommitted.tarih ?? "").trim();
+    if (!t) return "";
+    for (let r = 1; r <= TARIH_ARDISIK_ROW_COUNT; r++) {
+      if (ardisikSatirCfTarihDegeri(r) === t) return String(r);
+    }
+    return "";
+  }, [colFiltersCommitted.tarih]);
+
   function handleTarihPickChange(part: "d" | "m", value: string) {
     const next = { ...tarihPick, [part]: value };
     setTarihPick(next);
@@ -1327,27 +1338,69 @@ export default function MatchTable() {
     });
   }
 
+  /** iddaa "tarih" ardışık tablosu: bir satır = cf_tarih OR (12 hücre DD.MM*) */
+  function applyTarihArdisikSatir(row1Str: string) {
+    const v = row1Str === "" ? "" : ardisikSatirCfTarihDegeri(Number(row1Str));
+    setTarihPick({ d: "", m: "" });
+    setFilters((f) => ({
+      ...f,
+      tarih_gun: "",
+      tarih_ay: "",
+      tarih_yil: "",
+      tarih_from: "",
+      tarih_to: "",
+    }));
+    setApplied((a) => ({
+      ...a,
+      tarih_gun: "",
+      tarih_ay: "",
+      tarih_yil: "",
+      tarih_from: "",
+      tarih_to: "",
+    }));
+    setColFilters((cf) => {
+      const n = { ...cf, tarih: v };
+      commitColFilters(n);
+      return n;
+    });
+  }
+
   function renderTarihGunAyPick() {
     return (
       <div
-        className="flex items-center gap-0.5 flex-wrap justify-center w-full"
+        className="flex flex-col items-stretch gap-0.5 w-full min-w-0"
         title="Gün ve ay (VE) ile tarih_arama süzümü. Metin cf_tarih ile aynı anda kullanmayın. Yalnız ⊞ Hane açıkken burada görünür.">
+        <div className="flex items-center gap-0.5 flex-wrap justify-center w-full">
+          <select
+            value={tarihPick.d}
+            onChange={(e) => handleTarihPickChange("d", e.target.value)}
+            className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
+            <option value="">Gün</option>
+            {TARIH_PICK_GUN.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+          <select
+            value={tarihPick.m}
+            onChange={(e) => handleTarihPickChange("m", e.target.value)}
+            className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
+            <option value="">Ay</option>
+            {TARIH_PICK_AY.map((ay) => (
+              <option key={ay} value={ay}>{ay}</option>
+            ))}
+          </select>
+        </div>
         <select
-          value={tarihPick.d}
-          onChange={(e) => handleTarihPickChange("d", e.target.value)}
-          className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
-          <option value="">Gün</option>
-          {TARIH_PICK_GUN.map((g) => (
-            <option key={g} value={g}>{g}</option>
-          ))}
-        </select>
-        <select
-          value={tarihPick.m}
-          onChange={(e) => handleTarihPickChange("m", e.target.value)}
-          className="tarih-select-mobile max-w-[2.75rem] bg-white border border-gray-500 rounded px-0.5 py-px text-[11px] text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation">
-          <option value="">Ay</option>
-          {TARIH_PICK_AY.map((ay) => (
-            <option key={ay} value={ay}>{ay}</option>
+          value={tarihArdisikSelRow}
+          onChange={(e) => applyTarihArdisikSatir(e.target.value)}
+          className="tarih-select-mobile w-full min-w-0 max-w-full bg-white border border-gray-600 rounded px-0.5 py-px text-[9px] leading-tight text-gray-900 focus:outline-none focus:border-blue-500 touch-manipulation"
+          title="Excel 'tarih' ardışık tablosu: 31 satır; her satır 12 ay (DD.MM*) VEYA ile cf_tarih. Takvimde olmayan günler de desende (kırmızı hücreler)."
+        >
+          <option value="">Ardışık —</option>
+          {Array.from({ length: TARIH_ARDISIK_ROW_COUNT }, (_, i) => (
+            <option key={i + 1} value={String(i + 1)}>
+              Ardışık {i + 1}
+            </option>
           ))}
         </select>
       </div>
