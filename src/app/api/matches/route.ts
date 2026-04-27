@@ -235,9 +235,9 @@ function flattenRawValue(v: unknown): unknown {
  * Yalnızca `with_okbt=1` parametresiyle istenir (kullanıcı o sütunları gösterdiğinde).
  */
 const OKBT_MULTI_COMPUTED_COLS: string[] = [
-  ...Array.from({ length: 20 }, (_, i) => `macid7_obktb_${i}`),
+  ...Array.from({ length: 41 }, (_, i) => `macid7_obktb_${i}`),
   ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"] as const).flatMap((src) =>
-    Array.from({ length: 15 }, (_, i) => `${src}_obktb_${i}`),
+    Array.from({ length: 26 }, (_, i) => `${src}_obktb_${i}`),
   ),
 ];
 
