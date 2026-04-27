@@ -20,24 +20,7 @@ function normalizeDigitRunToFixedWidth(t: string, width: number): string {
   return t;
 }
 
-/**
- * Kullanıcı `*` ile başlatınca "içerir" yerine kod hanesine soldan 0 pad uygula.
- * Örn (7 hane): *?? -> 00000??, (5 hane): *3245 -> 03245
- */
-function normalizeLeadingStarPadInput(v: string, pad: number): string {
-  const t = v.trim();
-  if (!t.startsWith("*")) return t;
-  const rest = t.slice(1).trim();
-  if (!rest) return t;
-  // OR/AND karmaşık ifadelerde mevcut semantiği bozmayalım.
-  if (rest.includes("*") || rest.includes(",") || rest.includes("+")) return t;
-  // Yalnız kod deseni karakterleri: rakam ve '?'.
-  if (!/^[\d?]+$/.test(rest)) return t;
-  if (rest.length > pad) return t;
-  return rest.padStart(pad, "0");
-}
-
-/** * ardından boşluksuz 1–2 haneli saf rakam: sonek joker (*6, *23) — başa 0 dizilmez. */
+/** * ardından boşluksuz 1–2 haneli saf rakam: yalnızca sonek joker (*6, *23); boşluksuz * ile aynı sonek yolu. */
 function isShortDigitSuffixAfterStar(t: string): boolean {
   const s = t.trim();
   if (!s.startsWith("*")) return false;
@@ -47,9 +30,8 @@ function isShortDigitSuffixAfterStar(t: string): boolean {
 }
 
 /**
- * Sabit genişlik cf deseni: `*` sonrası **her boşluk** = bir baştaki 0 hanesi (`* 8528` → `08528`).
- * Boşluksuzsa eksik hane = width − gövde (`*3212` → `03212`, `*???4` → `0???4`).
- * `*6` / `*23` → null (sonek joker yolu).
+ * Sabit genişlik: yalnızca `*` sonrası **boşluklar** açık baş sıfır sayısı (`* 8528` → `08528`, 5 hane).
+ * Boşluksuz `*34`, `*482?` vb. **genişletilmez** — sonek arama olarak kalır (`*` → SQL `%`).
  */
 function expandLeadingStarFixedWidth(t: string, width: number): string | null {
   const s = t.trim();
@@ -64,16 +46,11 @@ function expandLeadingStarFixedWidth(t: string, width: number): string | null {
     i++;
   }
   const body = afterStar.slice(i).replace(/\s/g, "");
-  if (body.length === 0 && spaceZeros === 0) return null;
-  if (body.length > 0 && !/^[0-9?]+$/.test(body)) return null;
-  let zeros = spaceZeros;
-  if (spaceZeros === 0 && body.length > 0) {
-    zeros = width - body.length;
-  } else if (spaceZeros > 0 && body.length === 0) {
-    return null;
-  }
-  if (zeros < 0 || zeros + body.length !== width) return null;
-  return "0".repeat(zeros) + body;
+  if (spaceZeros === 0) return null;
+  if (body.length === 0) return null;
+  if (!/^[0-9?]+$/.test(body)) return null;
+  if (spaceZeros + body.length !== width) return null;
+  return "0".repeat(spaceZeros) + body;
 }
 
 /** Yalnız `?` girildiyse (örn. ???) kod genişliğine soldan 0 pad uygula. */
@@ -106,10 +83,6 @@ export function normalizeFixedWidthCodeFilterInput(colId: string, v: string): st
   if (qOnlyPad !== t) return qOnlyPad;
   const expanded = expandLeadingStarFixedWidth(t, pad);
   if (expanded !== null) return expanded;
-  if (!isShortDigitSuffixAfterStar(t)) {
-    const starPad = normalizeLeadingStarPadInput(t, pad);
-    if (starPad !== t) return starPad;
-  }
   return t;
 }
 
@@ -204,10 +177,6 @@ export function normalizeFiveDigitPureFilterInput(v: string): string {
   const t = v.trim();
   const qOnlyPad = normalizeQuestionOnlyPadInput(t, OYUN_KODU_PAD);
   if (qOnlyPad !== t) return qOnlyPad;
-  if (!isShortDigitSuffixAfterStar(t)) {
-    const starPad = normalizeLeadingStarPadInput(t, OYUN_KODU_PAD);
-    if (starPad !== t) return starPad;
-  }
   if (!/^\d+$/.test(t) || t.length >= OYUN_KODU_PAD) return t;
   return t.padStart(OYUN_KODU_PAD, "0");
 }
@@ -217,10 +186,6 @@ export function normalizeSevenDigitIdPureFilterInput(v: string): string {
   const t = v.trim();
   const qOnlyPad = normalizeQuestionOnlyPadInput(t, MAÇ_KODU_PAD);
   if (qOnlyPad !== t) return qOnlyPad;
-  if (!isShortDigitSuffixAfterStar(t)) {
-    const starPad = normalizeLeadingStarPadInput(t, MAÇ_KODU_PAD);
-    if (starPad !== t) return starPad;
-  }
   if (!/^\d+$/.test(t) || t.length >= MAÇ_KODU_PAD) return t;
   return t.padStart(MAÇ_KODU_PAD, "0");
 }
@@ -263,8 +228,8 @@ export function normalizeRawKodCfValue(colId: string, v: string): string {
 
 /**
  * Tarayıcı `cf_*` gönderimi ve API tarafı için ortak sıra:
- * `* 8528` → bir boşluk = bir baş 0 → `08528`; `*3212` → `03212`; `*???4` → `0???4`;
- * `*6` / `*23` sonek jokeri genişletilmez.
+ * `* 8528` → boşluk sayısı kadar başa 0 → `08528` (sabit genişlik).
+ * Boşluksuz `*34`, `*482?` → olduğu gibi (`*` → `%` sonek arama); saf rakam kısa girdi → pad.
  */
 export function normalizeCfPipelineBeforeApi(colId: string, v: string): string {
   let out = normalizeFixedWidthCodeFilterInput(colId, v);

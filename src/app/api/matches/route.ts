@@ -90,13 +90,29 @@ function ksAnyOrJoinedLength(ids: number[], chunkSize: number): number {
   return buildKsAnyIdInOrParts(ids, chunkSize).join(",").length;
 }
 
+/** Tek `or=(id.in…,…)` parametresi KS_ANY_OR_MAX_LEN içinde kalacak şekilde parçalanabiliyor mu? */
+function ksAnyIdListFitsPostgrestUrl(idsRaw: unknown[]): boolean {
+  const ids = [
+    ...new Set(
+      idsRaw
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n)),
+    ),
+  ] as number[];
+  if (ids.length <= 1) return true;
+  return findKsAnyOrChunkSize(ids) != null;
+}
+
 /**
  * KOD* son N (ks_any_*): RPC çok id döndürünce tek `id.in.(…)` URL’yi taşır.
  * En büyük mümkün `chunkSize` ile `id.in.(chunk)` parçalarını `or` ile birleştirir
  * (PostgREST `or=(a,b,c)` — supabase `.or("a,b,c")` dış parantezi kendisi ekler).
+ *
+ * Parçalanamazsa `null`: tek dev `id.in.(…)` PostgREST/proxy’de 400 Bad Request üretir;
+ * çağıran doğrudan sütun/RPC yoluna düşmelidir.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyKsAnyIdListFilter(query: any, idsRaw: unknown[]): any {
+function applyKsAnyIdListFilter(query: any, idsRaw: unknown[]): any | null {
   const ids = [
     ...new Set(
       idsRaw
@@ -109,11 +125,7 @@ function applyKsAnyIdListFilter(query: any, idsRaw: unknown[]): any {
 
   const bestChunk = findKsAnyOrChunkSize(ids);
   if (bestChunk == null) {
-    // Tüm id’ler `or=(id.in…,…)` içinde 5200 karaktere sığmıyor (≈650+ id). Parçalamak
-    // toplam metni artırdığından bazen hiç çözüm yok; [-1] yerine tek `id.in.(…)`
-    // denenir (URL/proxy sınırı — yine de veri yokundan iyidir; sayım için ayrıca
-    // prefilter’da .in kullanımına bakılır).
-    return query.in("id", ids);
+    return null;
   }
   const parts = buildKsAnyIdInOrParts(ids, bestChunk);
   if (parts.length === 1) return query.in("id", ids);
@@ -153,7 +165,10 @@ async function rpcPaddedKodPatternToQuery(
   if (error) return null;
   const ids = normalizeRpcIdArray(data);
   if (!ids.length) return boxPostgrestChain(query.in("id", [-1]));
-  return boxPostgrestChain(applyKsAnyIdListFilter(query, ids));
+  if (!ksAnyIdListFitsPostgrestUrl(ids)) return null;
+  const chained = applyKsAnyIdListFilter(query, ids);
+  if (chained == null) return null;
+  return boxPostgrestChain(chained);
 }
 
 /** id / kod_*: tek atom `*23` → `%23`; padlenmiş metin üzerinde (5 veya 7 hane). */
@@ -1948,7 +1963,8 @@ export async function GET(req: NextRequest) {
       }
       // Boş id listesiyle prefilter + erken boş dönüş, ana sorgudaki pad/LIKE+match
       // yolunu (örn. 0* → 02072) tamamen atlıyordu — yalnızca gerçekten id varsa IN uygula.
-      if (kodPreIds !== null && kodPreIds.length > 0) {
+      // Çok geniş eşleşme (*64 vb.): id listesi URL’ye sığmazsa tek dev id.in → 400; ön-filtreyi atla.
+      if (kodPreIds !== null && kodPreIds.length > 0 && ksAnyIdListFitsPostgrestUrl(kodPreIds)) {
         preFilterColIds.add(colId);
         idSetsForIntersect.push(kodPreIds);
       }
@@ -1959,13 +1975,16 @@ export async function GET(req: NextRequest) {
     if (!ilikePattern) continue; // OR/AND karmaşığı → eski yol
     if (isOnlyPercentIlikePattern(ilikePattern)) continue; // "*" gibi tümü-eşleşen desenlerde RPC ön-filtreleme yapma
 
-    preFilterColIds.add(colId);
     // get_matches_raw_ilike_ids: ORDER BY olmadan trgm index kullanır
     const { data: idsData } = await supabase.rpc("get_matches_raw_ilike_ids", {
       json_key: jsonKey,
       ilike_pattern: ilikePattern,
     });
-    idSetsForIntersect.push(normalizeRpcIdArray(idsData));
+    const ilikeIds = normalizeRpcIdArray(idsData);
+    if (ilikeIds.length > 0 && ksAnyIdListFitsPostgrestUrl(ilikeIds)) {
+      preFilterColIds.add(colId);
+      idSetsForIntersect.push(ilikeIds);
+    }
   }
 
   // Birden fazla leading-wildcard kolonu: AND semantiği → kesişim (intersection)
@@ -1983,8 +2002,15 @@ export async function GET(req: NextRequest) {
    * `planned` / istatistik tabanlı sayım — seçici filtrede (KOD `*9` vb.) sık 1.000’e
    * yakın yanlış toplam (Supabase db-max-rows + tahmin eşiği). Tarama / ks_any /
    * cf_* varken de `exact` kullan; ağır yalnızca ham raw joker + id ön-filtre yokken.
+   *
+   * Ön-filtre id listesi URL’ye sığmayacak kadar genişse (*64 vb.) id IN uygulanmaz;
+   * bu durumda da ham cf ile tam tarama → planned.
    */
-  const rawCfWithoutIdPrefilter = hasAnyRawCfParam && preFilteredIds === null;
+  const rawCfWithoutIdPrefilter =
+    hasAnyRawCfParam &&
+    (preFilteredIds === null ||
+      preFilteredIds.length === 0 ||
+      !ksAnyIdListFitsPostgrestUrl(preFilteredIds));
   const countMode: "exact" | "planned" = rawCfWithoutIdPrefilter ? "planned" : "exact";
 
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
@@ -2004,7 +2030,13 @@ export async function GET(req: NextRequest) {
   if (preFilteredIds !== null) {
     // Tek `id=in.(…)` çok uzun URL → proxy/PostgREST kesintisi; toplam sayım ~1000’de takılıyordu.
     // ks_any ile aynı: parçalı in + or (KS_ANY_OR_MAX_LEN).
-    query = applyKsAnyIdListFilter(query, preFilteredIds);
+    const idFiltered = applyKsAnyIdListFilter(query, preFilteredIds);
+    if (idFiltered == null) {
+      preFilterColIds.clear();
+      preFilteredIds = null;
+    } else {
+      query = idFiltered;
+    }
   }
   if (ksAnyJoinSpec) {
     query = query
@@ -2353,7 +2385,18 @@ export async function GET(req: NextRequest) {
     if (ksAnyFilterIds.length === 0) {
       query = query.in("id", [-1]);
     } else {
-      query = applyKsAnyIdListFilter(query, ksAnyFilterIds);
+      const ksQ = applyKsAnyIdListFilter(query, ksAnyFilterIds);
+      if (ksQ == null) {
+        return NextResponse.json(
+          {
+            error:
+              "KOD sonek eşleşmesi çok geniş; sonuç id listesi istek URL sınırına sığmıyor. Üstte tarih aralığı ile daraltın veya farklı sonek deneyin.",
+            code: "KS_ANY_URL_LIMIT",
+          },
+          { status: 413 }
+        );
+      }
+      query = ksQ;
     }
   }
 
