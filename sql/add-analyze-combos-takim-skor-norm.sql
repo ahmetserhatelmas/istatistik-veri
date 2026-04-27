@@ -82,7 +82,7 @@ BEGIN
       v_select_parts := array_append(
         v_select_parts,
         format(
-          $s$lpad(right(abs((regexp_replace(coalesce(raw_data->>%L, ''), '[^0-9]', '', 'g')))::bigint)::text, %s), %s, '0')$s$,
+          $s$lpad(right(regexp_replace(coalesce(raw_data->>%L, ''), '[^0-9]', '', 'g'), %s), %s, '0')$s$,
           v_json_key,
           v_n,
           v_n
@@ -119,7 +119,7 @@ BEGIN
 
       v_select_parts := array_append(
         v_select_parts,
-        format('lpad(right(abs(%I::text), %s), %s, ''0'')', v_col, v_n, v_n)
+        format('lpad(right(%I::text, %s), %s, ''0'')', v_col, v_n, v_n)
       );
 
       v_null_parts := array_append(
