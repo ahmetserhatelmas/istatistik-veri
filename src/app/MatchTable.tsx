@@ -368,7 +368,7 @@ function cellVal(row: Match, col: ColDef): string {
     return "";
   }
   // Çok kaynaklı OKBT: önce tablodan gelen generated değer (cf_* ile aynı kaynak), yoksa rowKey’den hesap
-  const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(col.id);
+  const multiOkbtM = /^([a-z][a-z0-9]*)_obktb_(\d+)$/.exec(col.id);
   if (multiOkbtM) {
     const srcId = multiOkbtM[1]!;
     const idx = Number(multiOkbtM[2]);

@@ -1420,19 +1420,19 @@ const KS_REF_OK = new Set(["id", "kod_ms", "kod_iy", "kod_cs", "kod_au"]);
 const KS_N_OK = new Set([3, 4, 5]);
 
 // ── OKBT sunucu-tarafı filtresi (basit sayısal ifadeler) ─────────────────────
-// Kaynak → max idx (5-haneli: 0..14, Maç ID 7-haneli: 0..19)
+// Kaynak → max idx (columns.ts / okbt-basamak-toplamlari ile aynı)
 const OKBT_SRC_MAX_IDX: Record<string, number> = {
-  macid: 19,
-  t1i: 14,
-  t2i: 14,
-  kodms: 14,
-  kodiy: 14,
-  kodcs: 14,
-  kodau: 14,
+  macid: 118,
+  t1i: 25,
+  t2i: 25,
+  kodms: 25,
+  kodiy: 25,
+  kodcs: 25,
+  kodau: 25,
 };
 
 function parseObktbSrcIdx(colId: string): { src: string; idx: number } | null {
-  const m = /^([a-z][a-z0-9]*)_obktb_(\d{1,2})$/.exec(colId);
+  const m = /^([a-z][a-z0-9]*)_obktb_(\d{1,3})$/.exec(colId);
   if (!m) return null;
   const src = m[1]!;
   const idx = Number(m[2]);
