@@ -11,8 +11,12 @@ SET statement_timeout = 0;
 SET lock_timeout = '5min';
 
 ALTER TABLE public.matches
-  ADD COLUMN IF NOT EXISTS t1i_arama text GENERATED ALWAYS AS (t1i::text) STORED,
-  ADD COLUMN IF NOT EXISTS t2i_arama text GENERATED ALWAYS AS (t2i::text) STORED;
+  ADD COLUMN IF NOT EXISTS t1i_arama text GENERATED ALWAYS AS (
+    CASE WHEN t1i IS NULL THEN '' ELSE lpad(t1i::text, 5, '0') END
+  ) STORED,
+  ADD COLUMN IF NOT EXISTS t2i_arama text GENERATED ALWAYS AS (
+    CASE WHEN t2i IS NULL THEN '' ELSE lpad(t2i::text, 5, '0') END
+  ) STORED;
 
-COMMENT ON COLUMN public.matches.t1i_arama IS 'API: bidir_takimid (ev) jokerli arama — t1i metin.';
-COMMENT ON COLUMN public.matches.t2i_arama IS 'API: bidir_takimid (dep) jokerli arama — t2i metin.';
+COMMENT ON COLUMN public.matches.t1i_arama IS 'API: bidir_takimid (ev) jokerli — t1i 5 hane soldan 0 (UI *? ile uyum).';
+COMMENT ON COLUMN public.matches.t2i_arama IS 'API: bidir_takimid (dep) jokerli — t2i 5 hane soldan 0 (UI *? ile uyum).';

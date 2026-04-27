@@ -22,21 +22,18 @@ import {
 } from "@/lib/columns";
 import { readMbsFromOranRecord } from "@/lib/oran-api";
 import { okbtBasamakHucreDegeri, okbt7BasamakHucreDegeri, OKBT_7_IDX_COUNT } from "@/lib/okbt-basamak-toplamlari";
-import { normalizeOkbtCfInput } from "@/lib/okbt-wildcard-server-expand";
 import { supabase } from "@/lib/supabase/client";
 import { teamContainsIlikePattern } from "@/lib/matches-ilike";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
 import { buildDigitPosPattern, isHaneSeparator, type DigitPosMode } from "@/lib/digit-pos-pattern";
 import {
   FIVE_DIGIT_KOD_COL_IDS,
-  isCfColIdMatchCodeId,
+  isRawEightDigitKodJsonKey,
   isRawFiveDigitPaddedKodJsonKey,
-  isRawSkorKodEightKey,
-  normalizeFixedWidthCodeFilterInput,
-  normalizeFiveDigitPureFilterInput,
-  normalizeRawKodCfValue,
-  normalizeSevenDigitIdPureFilterInput,
+  normalizeCfPipelineBeforeApi,
+  PAD_ID_COL_IDS,
   padFiveDigitKodDisplay,
+  padIdNumericDisplay,
   padRawKodNumericDisplay,
   padSevenDigitMatchIdDisplay,
 } from "@/lib/kod-format";
@@ -206,8 +203,9 @@ function normalizeFilterAtom(atom: string): string {
   return t;
 }
 
-function evalClientFilterAtom(cellVal: string, atom: string): boolean {
-  const t = normalizeFilterAtom(atom);
+function evalClientFilterAtom(cellVal: string, atom: string, colId?: string): boolean {
+  const atomNorm = colId ? normalizeCfPipelineBeforeApi(colId, atom) : atom;
+  const t = normalizeFilterAtom(atomNorm);
   if (!t) return true;
   if (t.startsWith(">=")) {
     const r = toFilterNum(t.slice(2));
@@ -264,7 +262,7 @@ function evalScoreColFilter(cellVal: string, rawPattern: string): boolean {
     const andParts = orPart.split("+").map((s) => s.trim()).filter(Boolean);
     if (!andParts.length) return true;
     if (andParts.length !== 1) {
-      return andParts.every((atom) => evalClientFilterAtom(cellVal, atom));
+      return andParts.every((atom) => evalClientFilterAtom(cellVal, atom, undefined));
     }
     const tokenRaw = andParts[0]!;
     if (tokenRaw === "_" || tokenRaw === " _" || tokenRaw === "_ ") {
@@ -296,7 +294,7 @@ function evalClientColFilter(cellVal: string, rawPattern: string, colId?: string
         if (atom === "_" || atom === " _" || atom === "_ ") {
           return isBlankGenericCell(cellVal);
         }
-        return evalClientFilterAtom(cellVal, atom);
+        return evalClientFilterAtom(cellVal, atom, colId);
       }),
   );
 }
@@ -408,6 +406,13 @@ function cellVal(row: Match, col: ColDef): string {
     const rawK = row[col.key] ?? null;
     const padded = padRawKodNumericDisplay(String(col.key), rawK);
     if (padded !== null) return padded;
+    const five = padIdNumericDisplay(rawK, 5);
+    if (five !== "" && /^\d+$/.test(String(rawK ?? "").trim())) return five;
+  }
+
+  if (PAD_ID_COL_IDS.has(col.id)) {
+    const rawId = row[col.key] ?? null;
+    return padFiveDigitKodDisplay(rawId);
   }
 
   const raw = row[col.key] ?? null;
@@ -556,7 +561,8 @@ function isDigitClickCol(col: ColDef): boolean {
  */
 function digitClickTemplate(col: ColDef): string {
   if (col.id === "id") return "#######";               // 7 haneli maç kodu
-  if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "#####"; // 5 haneli oyun kodu
+  if (["kod_ms","kod_iy","kod_cs","kod_au"].includes(col.id)) return "#####"; // 5 haneli oyun kodu (A–E)
+  if (PAD_ID_COL_IDS.has(col.id)) return "#####";    // lig_id, sezon_id, t1i… ⊞ yalnız A–E
   if (col.id === "sonuc_iy" || col.id === "sonuc_ms") return "#-#";           // skor: X-Y
   if (col.id === "saat") return "##:##";                // 20:00
   if (col.id === "mbs") return "##";                    // MKT: iki basamak (H / A / B)
@@ -566,11 +572,13 @@ function digitClickTemplate(col: ColDef): string {
   if (ODDS_GROUPS.has(col.group)) return "#.##";
   // OKBT multi sütunları: 2 haneli toplam
   if (/_obktb_\d+$/.test(col.id)) return "##";
-  // Ham veri KOD*: skor kodu (KODHMS…) 8 hane; diğer KOD* 5 hane; geri kalan metin 6 kutu
+  // Ham veri KOD*: KODHMS / KODSK 8 hane şablonu; diğer KOD* 5 hane; geri kalan metin 6 kutu
   if (col.group === RAW_API_GROUP) {
     const k = String(col.key ?? "");
-    if (isRawSkorKodEightKey(k)) return "########";
+    if (isRawEightDigitKodJsonKey(k)) return "########";
     if (/^KOD/i.test(k)) return "#####";
+    // cellVal’de 5 haneye padlenen ham ID anahtarları — ⊞ A–E
+    if (/^(LIGID|ALTLIGID|SEZONID|T1I|T2I)$/i.test(k.trim())) return "#####";
   }
   // Metin sütunları (lig adı, takımlar, gün vb.) — soldan 6 hane
   return "######";
@@ -1807,12 +1815,7 @@ export default function MatchTable() {
         if (!v.trim()) return;
         if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
         if (id === "id" && fid && !opts?.forPicker && !omitPickerFocusCfId) return;
-        let out = normalizeFixedWidthCodeFilterInput(id, v);
-        if (FIVE_DIGIT_KOD_COL_IDS.has(id)) out = normalizeFiveDigitPureFilterInput(out);
-        else if (isCfColIdMatchCodeId(id)) out = normalizeSevenDigitIdPureFilterInput(out);
-        else if (id.startsWith("raw_")) out = normalizeRawKodCfValue(id, out);
-        else if (/^[a-z][a-z0-9]*_obktb_\d+$/i.test(id)) out = normalizeOkbtCfInput(out);
-        p.set(`cf_${id}`, out);
+        p.set(`cf_${id}`, normalizeCfPipelineBeforeApi(id, v));
       });
       if (!opts?.forPicker && fid && !omitPickerFocusCfId) p.set("cf_id", fid);
       // Panel KOD son hane filtresi: herhangi bir KOD sütunu eşleşen satırlar

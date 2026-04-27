@@ -17,7 +17,11 @@ import {
   type OkbtWildcardExpand,
 } from "@/lib/okbt-wildcard-server-expand";
 import { parsePlainSkorTokenWithBlankSuffix } from "@/lib/score-filter-parse";
-import { isRawFiveDigitPaddedKodJsonKey } from "@/lib/kod-format";
+import {
+  isRawFiveDigitPaddedKodJsonKey,
+  normalizeCfPipelineBeforeApi,
+  rawKodJsonWildcardPadLen,
+} from "@/lib/kod-format";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
@@ -32,6 +36,44 @@ export const maxDuration = 300;
  * Daha derin sayfalar için tarih/lig ile küçültün veya cursor-tabanlı sayfalama ekleyin.
  */
 const MAX_RANGE_OFFSET = 100_000;
+
+/**
+ * GET + select(..., { count }) ile gelen count bazen (özellikle uzun select / gateway)
+ * 1000’de takılı kalabiliyor. Aynı filtre URL’siyle HEAD + Prefer: count=… ile
+ * Content-Range üst bilgisindeki toplam satır sayısı (PostgREST resmi yolu).
+ */
+type PostgrestUrlCarrier = { url: URL; headers: Headers };
+
+async function postgrestHeadRowCount(
+  q: PostgrestUrlCarrier,
+  countPrefer: "exact" | "planned"
+): Promise<number | null> {
+  const sk = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  if (!sk) return null;
+  const url = new URL(q.url.toString());
+  url.searchParams.delete("offset");
+  url.searchParams.delete("limit");
+  url.searchParams.delete("order");
+  const headers = new Headers();
+  headers.set("apikey", sk);
+  headers.set("Authorization", `Bearer ${sk}`);
+  headers.set("Prefer", `count=${countPrefer}`);
+  headers.set("Accept", "application/json");
+  const profile = q.headers.get("Accept-Profile") ?? q.headers.get("accept-profile");
+  if (profile) headers.set("Accept-Profile", profile);
+  try {
+    const res = await fetch(url.toString(), { method: "HEAD", headers });
+    if (!res.ok) return null;
+    const cr = res.headers.get("content-range") ?? res.headers.get("Content-Range");
+    if (!cr) return null;
+    const tail = cr.split("/")[1]?.trim();
+    if (!tail || tail === "*") return null;
+    const n = parseInt(tail, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 
 /** PostgREST `or=(…)` parametresi — proxy / sunucu URL sınırı için üst sınır (güvenli marj). */
 const KS_ANY_OR_MAX_LEN = 5200;
@@ -66,10 +108,69 @@ function applyKsAnyIdListFilter(query: any, idsRaw: unknown[]): any {
   if (ids.length === 1) return query.in("id", ids);
 
   const bestChunk = findKsAnyOrChunkSize(ids);
-  if (bestChunk == null) return query.in("id", [-1]);
+  if (bestChunk == null) {
+    // Tüm id’ler `or=(id.in…,…)` içinde 5200 karaktere sığmıyor (≈650+ id). Parçalamak
+    // toplam metni artırdığından bazen hiç çözüm yok; [-1] yerine tek `id.in.(…)`
+    // denenir (URL/proxy sınırı — yine de veri yokundan iyidir; sayım için ayrıca
+    // prefilter’da .in kullanımına bakılır).
+    return query.in("id", ids);
+  }
   const parts = buildKsAnyIdInOrParts(ids, bestChunk);
   if (parts.length === 1) return query.in("id", ids);
   return query.or(parts.join(","));
+}
+
+type MatchesServiceClient = ReturnType<typeof createServiceClient>;
+
+/**
+ * PostgREST filtre zinciri `.then` ile thenable olduğundan, `async` fonksiyondan doğrudan `return builder`
+ * zinciri **erken çalıştırır** ve `{ data, error }` döner (`.order` kaybolur). Taşımak için kutula.
+ */
+const POSTGREST_CHAIN_BOX = Symbol.for("oranexcel.postgrestChain");
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function boxPostgrestChain(q: any): any {
+  return { [POSTGREST_CHAIN_BOX]: true as const, q };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function unboxPostgrestChain(x: any): any {
+  if (x != null && typeof x === "object" && (x as Record<symbol, unknown>)[POSTGREST_CHAIN_BOX] === true) {
+    return (x as { q: any }).q;
+  }
+  return x;
+}
+
+/** Padlenmiş KOD eşleşmesi: RPC id listesi → ana sorguda id IN / or(id.in…). Hata → null (üst katman düşer). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function rpcPaddedKodPatternToQuery(
+  query: any,
+  supabase: MatchesServiceClient,
+  rpc: "get_matches_raw_kod_padded_pattern_ids" | "get_matches_schema_kod_padded_pattern_ids",
+  args: Record<string, unknown>
+): Promise<any | null> {
+  const { data, error } = await supabase.rpc(rpc, args);
+  if (error) return null;
+  const ids = normalizeRpcIdArray(data);
+  if (!ids.length) return boxPostgrestChain(query.in("id", [-1]));
+  return boxPostgrestChain(applyKsAnyIdListFilter(query, ids));
+}
+
+/** id / kod_*: tek atom `*23` → `%23`; padlenmiş metin üzerinde (5 veya 7 hane). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function tryApplySchemaKodPaddedSuffixRpc(
+  query: any,
+  supabase: MatchesServiceClient,
+  schemaCol: "id" | "kod_ms" | "kod_iy" | "kod_cs" | "kod_au",
+  rawFilterValue: string
+): Promise<any | null> {
+  const suf = getSimplePaddedKodSuffixWildcard(rawFilterValue);
+  if (!suf) return null;
+  return rpcPaddedKodPatternToQuery(query, supabase, "get_matches_schema_kod_padded_pattern_ids", {
+    col: schemaCol,
+    pattern: suf.pat,
+    case_insensitive: suf.ci,
+  });
 }
 
 /** `id.in.(chunk)` OR zinciri PostgREST URL sınırına sığacak bir chunk boyutu var mı? */
@@ -222,14 +323,11 @@ const CODE_PAD_WIDTH: Record<string, number> = {
 };
 
 /**
- * *_arama sütunları bazı kurulumlarda pad'siz olabilir (örn. 9714).
- * Kullanıcı 5-hane wildcard yazdığında (örn. ___14) baştaki pad hanesi opsiyonel olsun:
- * ___14 -> __14 -> _14 -> 14
+ * Pad'li wildcard (SQL `_` / `0` başı) depoda kısa metinle (örn. 6529) eşleşsin diye
+ * baştaki `_` veya `0` adım adım kırpılmış ek desenler (kod_* _arama + raw_data KOD*).
  */
-function expandOptionalLeadingPadWildcard(colId: string, pattern: string): string[] {
+function expandOptionalLeadingPadPattern(pattern: string, width: number): string[] {
   if (pattern.includes("%")) return [];
-  const width = CODE_PAD_WIDTH[colId];
-  if (!width) return [];
   const out: string[] = [];
   let cur = pattern;
   for (let i = 0; i < width - 1; i++) {
@@ -241,6 +339,17 @@ function expandOptionalLeadingPadWildcard(colId: string, pattern: string): strin
     out.push(cur);
   }
   return out;
+}
+
+/**
+ * *_arama sütunları bazı kurulumlarda pad'siz olabilir (örn. 9714).
+ * Kullanıcı 5-hane wildcard yazdığında (örn. ___14) baştaki pad hanesi opsiyonel olsun:
+ * ___14 -> __14 -> _14 -> 14
+ */
+function expandOptionalLeadingPadWildcard(colId: string, pattern: string): string[] {
+  const w = CODE_PAD_WIDTH[colId];
+  if (!w) return [];
+  return expandOptionalLeadingPadPattern(pattern, w);
 }
 
 /** "," → OR parçalarına böl. */
@@ -425,7 +534,9 @@ function applyGenericFilter(
   field: string,
   v: string,
   defaultWrap: "prefix" | "contains" = "prefix",
-  plainEqAsIlike = true
+  plainEqAsIlike = true,
+  /** raw_data KOD* / KODSK: depoda pad'siz metin; baştaki 0/_ jokerini kademeli kırp. */
+  optionalLeadingPadWidth: number | null = null
 ): any {
   const t = v.trim();
   if (isBlankCellOrToken(t)) {
@@ -442,7 +553,21 @@ function applyGenericFilter(
       if (isBlankCellOrToken(ap)) {
         return query.or(postgrestFieldEmptyOrExpr(field));
       }
-      return applyParsedFilterBranch(query, field, parseFilterBranch(ap, defaultWrap), plainEqAsIlike);
+      const b = parseFilterBranch(ap, defaultWrap);
+      if (
+        optionalLeadingPadWidth != null &&
+        (b.kind === "like" || b.kind === "ilike") &&
+        !isOnlyPercentIlikePattern(b.pat)
+      ) {
+        const extras = expandOptionalLeadingPadPattern(b.pat, optionalLeadingPadWidth);
+        if (extras.length) {
+          const pats = [b.pat, ...extras];
+          const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
+          const expr = pats.map((pat) => `${field}.${b.kind}.${q(pat)}`).join(",");
+          return query.or(expr);
+        }
+      }
+      return applyParsedFilterBranch(query, field, b, plainEqAsIlike);
     }
     const andExprs = andParts.map((ap) => {
       if (isBlankCellOrToken(ap)) return postgrestFieldEmptyOrExpr(field);
@@ -476,7 +601,8 @@ function applyGenericFilter(
 
 /**
  * cf_* tam sayı sütunları: sadece rakam → .eq; * ? joker → GENERATED *_arama üzerinde ilike.
- * PostgREST yatay filtrede integer::text cast yok (t1i_arama ile aynı desen; sql/add-matches-integer-id-arama-columns.sql).
+ * *_arama değerleri şema ID sütunlarında 5 hane lpad olmalı (UI sabit genişlik); aksi halde
+ * örn. *?497 → 0_497 deseni ham "2497" metninde eşleşmez. sql/alter-matches-integer-arama-lpad5.sql
  */
 const INTEGER_CF_ILIKE_ARAMA: Record<string, string> = {
   lig_id: "lig_id_arama",
@@ -725,6 +851,16 @@ function getSimpleRawJsonWildcardPattern(
 }
 
 /**
+ * Tek OR / tek AND atomunda UI `*23` → SQL `%23` gibi **LIKE deseni % ile başlayan** sonek jokeri.
+ * Padlenmiş metin üzerinde eşleşme (ham KOD* ve şema kod kolonları) için RPC’ye uygun.
+ */
+function getSimplePaddedKodSuffixWildcard(v: string): { pat: string; ci: boolean } | null {
+  const wild = getSimpleRawJsonWildcardPattern(v.trim(), "prefix");
+  if (!wild || isOnlyPercentIlikePattern(wild.pat) || !wild.pat.startsWith("%")) return null;
+  return { pat: wild.pat, ci: wild.ci };
+}
+
+/**
  * KOD* alanlarında baştaki `?` dizisi (örn. `???4`) tam-prefix LIKE üretip çok pahalı
  * olabiliyor. Kullanıcı beklentisi genelde "sonu 4 olanlar" olduğundan `*4`e yumuşat.
  */
@@ -818,13 +954,13 @@ function resolveRawCfJsonKey(colId: string, mergedRawCf: Record<string, string>)
  * LIKE deseni `0%`, `00%`, … (yaln başta sıfır + %) → 5 haneye padlenince o sıfırlarla başlayan
  * kısa saf rakam hücreleri (örn. 2072). RPC kurulmadan PostgREST `match` (~) ile tamamlanır.
  */
-function rawKodLeadingZeroPercentToShortDigitRegex(pat: string): string | null {
+function rawKodLeadingZeroPercentToShortDigitRegex(pat: string, padLen: number): string | null {
   if (pat.startsWith("%") || !pat.endsWith("%") || pat.length < 2) return null;
   const zeros = pat.slice(0, -1);
   if (!/^0+$/.test(zeros)) return null;
   const m = zeros.length;
-  if (m >= 5) return null;
-  const maxLen = 5 - m;
+  if (m >= padLen) return null;
+  const maxLen = padLen - m;
   if (maxLen < 1) return null;
   return `^[0-9]{1,${maxLen}}$`;
 }
@@ -836,10 +972,11 @@ function tryApplyRawKodPaddedLeadingZeroPostgrestOr(
   v: string
 ): any | null {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return null;
-  if (!isRawFiveDigitPaddedKodJsonKey(jsonKey)) return null;
+  const padLen = rawKodJsonWildcardPadLen(jsonKey);
+  if (padLen == null) return null;
   const wild = getSimpleRawJsonWildcardPattern(v.trim(), "prefix");
   if (!wild || isOnlyPercentIlikePattern(wild.pat)) return null;
-  const reShort = rawKodLeadingZeroPercentToShortDigitRegex(wild.pat);
+  const reShort = rawKodLeadingZeroPercentToShortDigitRegex(wild.pat, padLen);
   if (!reShort) return null;
   const field = `raw_data->>${jsonKey}`;
   const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '""')}"`;
@@ -852,13 +989,16 @@ function tryApplyRawKodPaddedLeadingZeroPostgrestOr(
 }
 
 /**
- * Ham veri (raw_data) alan filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
- * Sade değer → tam eşleşme; * ? ile desen araması.
+ * Ham veri (raw_data) alan filtresi — normalize sonrası çekirdek (sync).
+ * `*23` → `%23` sonek jokeri: padlenmiş eşleşme için `applyRawJsonPathIlikeFilterAsync` kullanılır.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
-function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
+function applyRawJsonPathIlikeFilterNormalized(
+  query: any,
+  jsonKey: string,
+  normalized: string
+): any {
   if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
-  const normalized = normalizeRawKodWildcardInput(jsonKey, v);
   if (normalized.trim() === "*") {
     const field = `raw_data->>${jsonKey}`;
     // "*" için kullanıcı beklentisi: boş olmayan hücreler (null ve "" hariç).
@@ -870,7 +1010,41 @@ function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): an
   if (kodPadOr != null) return kodPadOr;
   const kodExactOr = tryApplyRawKodNumericExactFallback(query, jsonKey, normalized);
   if (kodExactOr != null) return kodExactOr;
-  return applyGenericFilter(query, `raw_data->>${jsonKey}`, normalized, "prefix");
+  const padW = rawKodJsonWildcardPadLen(jsonKey);
+  return applyGenericFilter(query, `raw_data->>${jsonKey}`, normalized, "prefix", true, padW);
+}
+
+/**
+ * Ham veri (raw_data) alan filtresi — OR/AND/karşılaştırma/aralık/joker destekli.
+ * Sade değer → tam eşleşme; * ? ile desen araması (sync yol; pad sonek için Async tercih edilir).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+function applyRawJsonPathIlikeFilter(query: any, jsonKey: string, v: string): any {
+  if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return query;
+  const normalized = normalizeRawKodWildcardInput(jsonKey, v);
+  return applyRawJsonPathIlikeFilterNormalized(query, jsonKey, normalized);
+}
+
+/** `*5` / `*23` → padlenmiş ham KOD* metninde LIKE (RPC); yoksa sync çekirdek. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- PostgREST zinciri
+async function applyRawJsonPathIlikeFilterAsync(
+  query: any,
+  supabase: MatchesServiceClient,
+  jsonKey: string,
+  v: string
+): Promise<any> {
+  if (!SAFE_RAW_JSON_KEY.test(jsonKey)) return boxPostgrestChain(query);
+  const normalized = normalizeRawKodWildcardInput(jsonKey, v);
+  const suf = getSimplePaddedKodSuffixWildcard(normalized);
+  if (suf && isRawFiveDigitPaddedKodJsonKey(jsonKey)) {
+    const qRpc = await rpcPaddedKodPatternToQuery(query, supabase, "get_matches_raw_kod_padded_pattern_ids", {
+      json_key: jsonKey,
+      pattern: suf.pat,
+      case_insensitive: suf.ci,
+    });
+    if (qRpc != null) return qRpc;
+  }
+  return boxPostgrestChain(applyRawJsonPathIlikeFilterNormalized(query, jsonKey, normalized));
 }
 
 /**
@@ -1161,103 +1335,6 @@ function isPlainSkorToken(t: string): boolean {
   if (!s) return false;
   if (s.includes("*") || s.includes("?")) return false;
   return PLAIN_SKOR_TOKEN_RE.test(s);
-}
-
-/** Virgül-VEYA / +-VE ile bile yalnızca düz skor tokenları mı (exact count gerekir). */
-function isPlainSkorFilterValue(raw: string): boolean {
-  const orParts = splitOrParts(raw.trim());
-  if (!orParts.length) return false;
-  for (const orPart of orParts) {
-    const andParts = splitAndParts(orPart);
-    if (!andParts.length) return false;
-    for (const ap of andParts) {
-      if (!isPlainSkorToken(ap)) return false;
-    }
-  }
-  return true;
-}
-
-function plainSkorFilterHasBlankAtom(raw: string): boolean {
-  const orParts = splitOrParts(raw.trim());
-  for (const orPart of orParts) {
-    for (const ap of splitAndParts(orPart)) {
-      if (isBlankCellOrToken(ap)) return true;
-    }
-  }
-  return false;
-}
-
-/** Düz İY/MS skoru → PostgREST planned count sapmasın diye exact count. */
-function spRequestsPlainSkorExactCount(sp: URLSearchParams): boolean {
-  const candidates = [sp.get("sonuc_ms"), sp.get("sonuc_iy"), sp.get("cf_sonuc_ms"), sp.get("cf_sonuc_iy")];
-  for (const v of candidates) {
-    const t = v?.trim();
-    if (!t) continue;
-    if (plainSkorFilterHasBlankAtom(t)) continue;
-    if (isPlainSkorFilterValue(t)) return true;
-  }
-  return false;
-}
-
-/**
- * Saat sütunu (saat_arama): planned sayım seçici ILIKE / prefix desenlerde çok küçük
- * kalabiliyor (örn. gerçek on binlerce satır varken total ~ yüzlerce) → sayfalama erken biter.
- * Prefix / tam eşleşme btree (text_pattern_ops) ile exact count genelde kabul edilebilir.
- */
-function spRequestsSaatExactCount(sp: URLSearchParams): boolean {
-  return Boolean(sp.get("cf_saat")?.trim());
-}
-
-/**
- * cf_tarih dışında herhangi bir cf_* parametresi varken planned sayım,
- * istatistik tahminine yakın kalabiliyor (örn. cf_t1=Midtjylland → gerçek 161 satır
- * varken ~263 gösterimi, boş 3. sayfa). Sayfalama doğru olsun diye exact count.
- * Yalnız cf_tarih iken planned kalır (geniş tarama + ağır COUNT riski).
- */
-function spRequestsCfOtherThanTarih(sp: URLSearchParams): boolean {
-  for (const [k, v] of sp.entries()) {
-    if (!k.startsWith("cf_") || !String(v ?? "").trim()) continue;
-    if (k === "cf_tarih") continue;
-    return true;
-  }
-  return false;
-}
-
-/**
- * cf_tarih dışındaki URL parametreleriyle küçük sonuç kümesi beklenirken planned sayım
- * (ör. cf_tarih + bidir_takim_ev, veya yalnız üst `takim=` / `ks_any_*`) toplamı şişirir.
- * cf_tarih tek başına burada yok — o durumda planned kalmaya devam eder.
- */
-function spHasNarrowingListFilter(sp: URLSearchParams): boolean {
-  const keys = [
-    "bidir_takim_ev",
-    "bidir_takim_dep",
-    "bidir_takim",
-    "bidir_takimid_ev",
-    "bidir_takimid_dep",
-    "bidir_takimid",
-    "bidir_hakem",
-    "bidir_ant_ev",
-    "bidir_ant_dep",
-    "bidir_ant",
-    "bidir_personel",
-    "takim",
-    "lig",
-    "alt_lig",
-    "hakem",
-    "sonuc_iy",
-    "sonuc_ms",
-    "suffix3",
-    "suffix4",
-    "tarama_q",
-    "ks_any_suffix",
-    "oynanmamis",
-  ];
-  for (const k of keys) {
-    if (String(sp.get(k) ?? "").trim()) return true;
-  }
-  if (String(sp.get("ks_ref") ?? "").trim() && String(sp.get("ks_suffix") ?? "").trim()) return true;
-  return false;
 }
 
 /**
@@ -1674,13 +1751,6 @@ export async function GET(req: NextRequest) {
   const tarihFiltParts = cfTarihRaw
     ? splitTarihOrPatterns(normalizeTarihFilterInput(cfTarihRaw))
     : [];
-  let hasAnyCfParam = false;
-  for (const [k, v] of sp.entries()) {
-    if (k.startsWith("cf_") && v.trim()) {
-      hasAnyCfParam = true;
-      break;
-    }
-  }
 
   const ksRef = sp.get("ks_ref")?.trim() ?? "";
   const ksN = Number(sp.get("ks_n"));
@@ -1707,31 +1777,14 @@ export async function GET(req: NextRequest) {
   const ksAnyN = Number(sp.get("ks_any_n") ?? 3);
   let ksAnyFilterIds: number[] | null = null;
 
-  /**
-   * Ağır filtrelerde exact COUNT ikinci tam tarama yapar → zaman aşımı; planned yaklaşık sayım.
-   * Düz İY/MS skoru (ör. 4-2) varken planned toplam SQL COUNT ile uyuşmayabiliyor → exact zorunlu.
-   */
   const taramaQRaw = sp.get("tarama_q")?.trim() ?? "";
   const taramaQActive = taramaQRaw.length > 0;
-
-  /** OKBT basamak filtresi (cf_*_obktb_*) seçici → planned count sayfa-satır düzeyine düşer.
-   *  Filtreliyken gerçek toplamı göstermek için exact zorla (performans pratikte sorun değil: idx var). */
-  const hasObktbCfParam = (() => {
-    for (const k of sp.keys()) {
-      if (!k.startsWith("cf_")) continue;
-      const colId = k.slice(3);
-      if (/^[a-z][a-z0-9]*_obktb_\d+$/.test(colId) && (sp.get(k) ?? "").trim()) return true;
-    }
-    return false;
-  })();
 
   const supabase = createServiceClient();
   const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
   /**
-   * Raw JSON kolonları timeout'a en yatkın bölge:
-   * - joker (*, ?), OR/AND (, +), boş token (_) gibi ifadeler
-   * - hatta sade değerlerde bile exact COUNT ikinci pahalı tarama üretebilir
-   * Bu nedenle raw cf_* varken count'u planned tutup sorguyu akıcı bırakıyoruz.
+   * Ham raw_data cf_*: id ön-filtresi yoksa exact COUNT tam tablo taranabilir → planned.
+   * Ön-filtre (RPC id listesi / trgm) ile daraldıysa exact hem güvenli hem doğru toplam (UI “1.000 maç” yanılsaması olmaz).
    */
   const hasAnyRawCfParam = (() => {
     for (const [k, v] of sp.entries()) {
@@ -1744,20 +1797,6 @@ export async function GET(req: NextRequest) {
     }
     return false;
   })();
-  const forceExactCount =
-    !hasAnyRawCfParam &&
-    (
-      spRequestsPlainSkorExactCount(sp) ||
-      spRequestsSaatExactCount(sp) ||
-      hasObktbCfParam ||
-      spRequestsCfOtherThanTarih(sp) ||
-      spHasNarrowingListFilter(sp)
-    );
-  const countMode = forceExactCount
-    ? ("exact" as const)
-    : tarihFiltParts.length > 0 || (useKsView && !pickStub) || hasAnyCfParam || !!ksAnySuffixRaw || taramaQActive || hasAnyRawCfParam
-      ? ("planned" as const)
-      : ("exact" as const);
 
   const ksAnyTarih = ksAnyRpcTarihBounds(sp);
 
@@ -1859,7 +1898,10 @@ export async function GET(req: NextRequest) {
     const colId = k.slice(3);
     const jsonKey = resolveRawCfJsonKey(colId, mergedRawCf);
     if (!jsonKey) continue;
-    const trimmed = normalizeRawKodWildcardInput(jsonKey, v.trim());
+    const trimmed = normalizeRawKodWildcardInput(
+      jsonKey,
+      normalizeCfPipelineBeforeApi(colId, v.trim())
+    );
 
     // KOD* (KODHMS hariç): ham JSON metni padlenmeden joker aranıyordu (ör. 0* → 2072 kaçıyordu).
     const kodWild = getSimpleRawJsonWildcardPattern(trimmed, "prefix");
@@ -1937,6 +1979,14 @@ export async function GET(req: NextRequest) {
     preFilteredIds = combined;
   }
 
+  /**
+   * `planned` / istatistik tabanlı sayım — seçici filtrede (KOD `*9` vb.) sık 1.000’e
+   * yakın yanlış toplam (Supabase db-max-rows + tahmin eşiği). Tarama / ks_any /
+   * cf_* varken de `exact` kullan; ağır yalnızca ham raw joker + id ön-filtre yokken.
+   */
+  const rawCfWithoutIdPrefilter = hasAnyRawCfParam && preFilteredIds === null;
+  const countMode: "exact" | "planned" = rawCfWithoutIdPrefilter ? "planned" : "exact";
+
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
   const selectCols = pickStub ? PICK_STUB_COLS : DB_COLS;
   let selectListStr = selectCols.join(",");
@@ -1952,7 +2002,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ data: [], page, limit, total: 0, totalPages: 0 });
   }
   if (preFilteredIds !== null) {
-    query = query.in("id", preFilteredIds);
+    // Tek `id=in.(…)` çok uzun URL → proxy/PostgREST kesintisi; toplam sayım ~1000’de takılıyordu.
+    // ks_any ile aynı: parçalı in + or (KS_ANY_OR_MAX_LEN).
+    query = applyKsAnyIdListFilter(query, preFilteredIds);
   }
   if (ksAnyJoinSpec) {
     query = query
@@ -2192,7 +2244,7 @@ export async function GET(req: NextRequest) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
     if (colId === "tarih") continue;
-    const v = val.trim();
+    const v = normalizeCfPipelineBeforeApi(colId, val.trim());
     if (colId === "saat") {
       query = applyCfSaatColumnFilter(query, v);
       continue;
@@ -2209,7 +2261,15 @@ export async function GET(req: NextRequest) {
     const def = DB_COL_MAP[colId];
     if (def) {
       if (CODE_ILIKE_ARAMA[colId]) {
-        query = applyCodeColumnPatternFilter(query, colId, v);
+        const paddedRpc = unboxPostgrestChain(
+          await tryApplySchemaKodPaddedSuffixRpc(
+            query,
+            supabase,
+            def.col as "id" | "kod_ms" | "kod_iy" | "kod_cs" | "kod_au",
+            v
+          ),
+        );
+        query = paddedRpc ?? applyCodeColumnPatternFilter(query, colId, v);
         continue;
       }
     if (def.mode === "ilike") {
@@ -2223,7 +2283,10 @@ export async function GET(req: NextRequest) {
     } else if (def.mode === "eq") {
         // id (bigint) için özel: sayıya çevir; tam sayı kimlik sütunlarında joker → ::text ilike
       if (def.col === "id") {
-          query = applyGenericFilter(query, def.col, v, "prefix", false);
+          const paddedRpc = unboxPostgrestChain(
+            await tryApplySchemaKodPaddedSuffixRpc(query, supabase, "id", v),
+          );
+          query = paddedRpc ?? applyGenericFilter(query, def.col, v, "prefix", false);
         } else if (INTEGER_EQ_CF_COLS.has(def.col)) {
           query = applyCfIntegerEqColumnFilter(query, def.col, v);
       } else {
@@ -2278,7 +2341,7 @@ export async function GET(req: NextRequest) {
     const jsonKey = resolveRawCfJsonKey(colId, mergedRawCf);
     if (jsonKey) {
       if (preFilterColIds.has(colId)) continue; // leading-wildcard → zaten id IN ile filtrelendi
-      query = applyRawJsonPathIlikeFilter(query, jsonKey, v);
+      query = unboxPostgrestChain(await applyRawJsonPathIlikeFilterAsync(query, supabase, jsonKey, v));
     }
   }
 
@@ -2302,6 +2365,10 @@ export async function GET(req: NextRequest) {
     const enDash = "\u2013";
     query = query.or(`sonuc_ms.is.null,sonuc_ms.eq.-,sonuc_ms.eq.${enDash}`);
   }
+
+  const headTotal = pickStub
+    ? null
+    : await postgrestHeadRowCount(query as unknown as PostgrestUrlCarrier, countMode);
 
   const orderTarihAsc = pickStub;
   const { data, count, error } = await query
@@ -2543,12 +2610,27 @@ export async function GET(req: NextRequest) {
   // (ör. saat_arama ILIKE '21' → gerçekte 0) çok sapabiliyor. İlk sayfa boşsa
   // ve sonraki sayfa olamaz (offset=0, satır yok) → total'i 0 olarak döndür ki
   // UI'de "yaklaşık X maç" yanılsaması olmasın.
-  let total = count ?? 0;
+  let total = headTotal ?? count ?? 0;
+  // Supabase projeleri varsayılan `db-max-rows = 1000` (Dashboard → Settings →
+  // API → Max Rows). Bu sınırla `count=exact` bile 1.000’de takılır ve `*6` gibi
+  // jokerlerde toplam yanlış görünür. RPC ön-filtre `preFilteredIds.length` ise
+  // KOD* deseni için **kesin** eşleşme sayısıdır. Toplam 0 veya tam 1.000’de
+  // takılıysa ve ön-filtre tavanı bundan büyükse onu kullan; tarih/lig/skor
+  // gibi daraltıcı filtreler GET `count`’u zaten 1.000’in altına çekerse o
+  // değeri olduğu gibi bırak (gerçek alt küme).
+  const preFilterCount = preFilteredIds !== null ? preFilteredIds.length : null;
+  if (
+    preFilterCount !== null &&
+    preFilterCount > total &&
+    (total === 0 || total === 1000)
+  ) {
+    total = preFilterCount;
+  }
   if (pickStub) {
     total = rows.length;
   } else if (rows.length === 0 && page === 1) {
     total = 0;
-  } else if (countMode === "planned") {
+  } else if (countMode === "planned" && headTotal === null) {
     // planned tahmin << gerçek olduğunda (özellikle son sayfa dışında) en azından
     // elimizdeki satırları yansıtacak kadar yüksek tutalım.
     const minTotal = (page - 1) * limit + rows.length;

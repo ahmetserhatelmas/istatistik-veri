@@ -12,6 +12,9 @@ AS $$
     WHEN j IS NULL OR k IS NULL OR NOT (j ? k) THEN ''
     WHEN NULLIF(btrim(j->>k), '') IS NULL THEN ''
     WHEN upper(k) LIKE 'KODHMS%' THEN btrim(j->>k)
+    WHEN upper(k) = 'KODSK' AND btrim(j->>k) ~ '^[0-9]+$' AND length(btrim(j->>k)) < 8
+      THEN lpad((btrim(j->>k))::bigint::text, 8, '0')
+    WHEN upper(k) = 'KODSK' THEN btrim(j->>k)
     WHEN upper(k) NOT LIKE 'KOD%' THEN btrim(j->>k)
     WHEN btrim(j->>k) !~ '^[0-9]+$' THEN btrim(j->>k)
     WHEN length(btrim(j->>k)) >= 5 THEN btrim(j->>k)
@@ -20,7 +23,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.raw_json_kod_pad5_compare_text(jsonb, text) IS
-  'raw_data KOD* (KODHMS hariç) saf rakam alanını 5 haneye padleyerek metin döndürür — ham veri cf joker filtresi ile uyum.';
+  'raw_data KOD* (KODHMS ham): KODSK saf rakam <8 → 8 hane; diğer KOD* <5 → 5 hane — ham veri cf joker filtresi ile uyum.';
 
 CREATE OR REPLACE FUNCTION public.get_matches_raw_kod_padded_pattern_ids(
   json_key text,

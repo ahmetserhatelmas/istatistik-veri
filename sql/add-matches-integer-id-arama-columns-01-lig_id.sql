@@ -5,6 +5,8 @@ SET statement_timeout = 0;
 SET lock_timeout = '10min';
 
 ALTER TABLE public.matches
-  ADD COLUMN IF NOT EXISTS lig_id_arama text GENERATED ALWAYS AS (COALESCE(lig_id::text, '')) STORED;
+  ADD COLUMN IF NOT EXISTS lig_id_arama text GENERATED ALWAYS AS (
+    CASE WHEN lig_id IS NULL THEN '' ELSE lpad(lig_id::text, 5, '0') END
+  ) STORED;
 
-COMMENT ON COLUMN public.matches.lig_id_arama IS 'API: cf_lig_id jokerli — lig_id metin.';
+COMMENT ON COLUMN public.matches.lig_id_arama IS 'API: cf_lig_id jokerli — lig_id 5 hane soldan 0.';

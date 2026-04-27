@@ -2,6 +2,13 @@
 -- Çalıştır: Supabase SQL Editor veya psql
 -- İndeksler: sql/add-matches-suffix-expression-indexes.sql
 -- matches’a yeni sütun eklendiyse (örn. sql/add-matches-code-arama-columns.sql, sql/add-matches-okbt-basamak-generated-cols.sql, sql/add-matches-mkt-display-from-id.sql, sql/add-matches-msmkt-display-from-kod-ms.sql + backfill): bu dosyayı yeniden çalıştırın ki m.* güncellensin.
+--
+-- Büyük `matches` + CREATE VIEW: panel / varsayılan statement_timeout iptal edebilir.
+-- psql "SSL SYSCALL / Operation timed out": sunucu hâlâ çalışırken istemci TCP koptu olabilir.
+-- Önce pg_views ile görünüm var mı bakın; yoksa URI sonuna (mevcut ? varsa &) ekleyin:
+--   keepalives=1&keepalives_idle=60&keepalives_interval=10&keepalives_count=10
+SET statement_timeout = 0;
+SET lock_timeout = '10min';
 
 CREATE OR REPLACE FUNCTION public.matches_sfx_mod(v bigint, modulus bigint)
 RETURNS bigint
