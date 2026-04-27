@@ -1823,12 +1823,19 @@ export default function MatchTable() {
         p.set("ks_any_suffix", anyKodSuffix.digits);
         p.set("ks_any_n", String(anyKodSuffix.n));
       }
+      // OKBT computed cols (~125 sütun = 12.500 PG fonksiyon/istek) varsayılan OFF.
+      // Yalnızca kullanıcı o sütunları visible ya da filtrelemişse with_okbt=1 gönder.
+      const needsOkbt =
+        [...visibleIds].some((id) => /obktb/i.test(id)) ||
+        Object.entries(dbColFiltersApplied).some(([id, v]) => /obktb/i.test(id) && v?.trim());
+      p.set("with_okbt", needsOkbt ? "1" : "0");
       return p;
     },
     [
       applied,
       dbColFiltersApplied,
       focusMatchId,
+      visibleIds,
       bidirFilters.takim.ev.committed,
       bidirFilters.takim.dep.committed,
       bidirFilters.takimid.ev.committed,
@@ -2062,10 +2069,7 @@ export default function MatchTable() {
     p.set("page", String(page));
     p.set("limit", String(MATCHES_PAGE_SIZE));
     try {
-      const [res, syncRes] = await Promise.all([
-        fetch(`/api/matches?${p}`),
-        fetch("/api/sync-status"),
-      ]);
+      const res = await fetch(`/api/matches?${p}`);
       const json: ApiResponse = await res.json();
       if (matchesFetchGenRef.current !== myGen) return;
       if (!res.ok) {
@@ -2086,12 +2090,13 @@ export default function MatchTable() {
       // Dar filtre sonrası toplam sayfa küçülürken sayfa eski kalırsa API boş sayfa döner → "Veri yok"
       if (tp > 0 && page > tp) setPage(tp);
       else if (tp === 0 && page !== 1) setPage(1);
-      if (syncRes.ok) {
-        const s = (await syncRes.json()) as { lastSyncAt?: string | null };
-        if (matchesFetchGenRef.current === myGen) {
-        setLastSyncAt(s.lastSyncAt ?? null);
-      }
-      }
+      // Son senkron zamanı tablo yükünü bekletmesin (matches geldikten sonra güncellenir).
+      void fetch("/api/sync-status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((s: { lastSyncAt?: string | null } | null) => {
+          if (matchesFetchGenRef.current === myGen && s) setLastSyncAt(s.lastSyncAt ?? null);
+        })
+        .catch(() => {});
     } catch {
       if (matchesFetchGenRef.current === myGen) {
         setMatches([]);

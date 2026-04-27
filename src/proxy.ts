@@ -14,6 +14,22 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function proxy(req: NextRequest) {
   let res = NextResponse.next({ request: req });
+  const p = req.nextUrl.pathname;
+  if (
+    p === "/api/matches" ||
+    p === "/api/matches/raw-keys" ||
+    p === "/api/sync-status" ||
+    p === "/api/balance"
+  ) {
+    return res;
+  }
+
+  // Oturum cookie'si yoksa Supabase'e ağ çağrısı yapma: ilk yük ve public istekler
+  // DNS/ağ dalgalanmasında 20-30sn proxy beklemesine düşebiliyor.
+  const hasSbAuthCookie = req.cookies
+    .getAll()
+    .some((c) => c.name.startsWith("sb-") && c.name.includes("auth-token"));
+  if (!hasSbAuthCookie) return res;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

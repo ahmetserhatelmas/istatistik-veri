@@ -228,7 +228,12 @@ function flattenRawValue(v: unknown): unknown {
   return v;
 }
 
-/** PostgREST select: `cf_*_obktb_*` WHERE ile aynı generated ifadeler (satırda değer dönsün). */
+/**
+ * PostgREST select: `cf_*_obktb_*` WHERE ile aynı generated ifadeler (satırda değer dönsün).
+ * NOT: Her satır için PostgreSQL fonksiyon çağrısı yapar.
+ * 100 satır × 125 col = 12.500 fonksiyon çağrısı → ~10sn ek gecikme.
+ * Yalnızca `with_okbt=1` parametresiyle istenir (kullanıcı o sütunları gösterdiğinde).
+ */
 const OKBT_MULTI_COMPUTED_COLS: string[] = [
   ...Array.from({ length: 20 }, (_, i) => `macid7_obktb_${i}`),
   ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"] as const).flatMap((src) =>
@@ -236,7 +241,7 @@ const OKBT_MULTI_COMPUTED_COLS: string[] = [
   ),
 ];
 
-const DB_COLS = [
+const DB_COLS_BASE = [
   "id","tarih","saat","saat_arama","tarih_tr_gunlu",
   "lig_kodu","lig_adi","lig_id",
   "alt_lig_adi","alt_lig_id",
@@ -252,9 +257,15 @@ const DB_COLS = [
   "mac_suffix4","mac_suffix3","mac_suffix2",
   "sport_turu","bookmaker_id",
   "raw_data",
+];
+
+const DB_COLS_OKBT_EXTRA = [
   ...OKBT_BASAMAK_LABELS.map((_, i) => `obktb_${i}`),
   ...OKBT_MULTI_COMPUTED_COLS,
 ];
+
+/** Varsayılan: OKBT sütunları dahil (geriye dönük uyumluluk). `with_okbt=0` ile azaltılır. */
+const DB_COLS = [...DB_COLS_BASE, ...DB_COLS_OKBT_EXTRA];
 
 /** pick=stb: hafif satır — kayıtlı filtre + oynanmamış maç seçici listesi (raw_data yok). */
 const PICK_STUB_COLS = [
@@ -2011,10 +2022,19 @@ export async function GET(req: NextRequest) {
     (preFilteredIds === null ||
       preFilteredIds.length === 0 ||
       !ksAnyIdListFitsPostgrestUrl(preFilteredIds));
-  const countMode: "exact" | "planned" = rawCfWithoutIdPrefilter ? "planned" : "exact";
+  const hasAnyFilter = (() => {
+    for (const [k, v] of sp.entries()) {
+      if (!v?.trim()) continue;
+      if (k === 'page' || k === 'limit' || k === 'with_okbt') continue;
+      return true;
+    }
+    return false;
+  })();
+  const countMode: 'exact' | 'planned' = (!hasAnyFilter || rawCfWithoutIdPrefilter) ? 'planned' : 'exact';
 
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
-  const selectCols = pickStub ? PICK_STUB_COLS : DB_COLS;
+  const withOkbt = sp.get("with_okbt") !== "0";
+  const selectCols = pickStub ? PICK_STUB_COLS : (withOkbt ? DB_COLS : DB_COLS_BASE);
   let selectListStr = selectCols.join(",");
   if (ksAnyJoinSpec) {
     selectListStr = `${selectListStr},match_raw_kod_suffix!inner(n,suffix)`;
@@ -2409,9 +2429,15 @@ export async function GET(req: NextRequest) {
     query = query.or(`sonuc_ms.is.null,sonuc_ms.eq.-,sonuc_ms.eq.${enDash}`);
   }
 
-  const headTotal = pickStub
-    ? null
-    : await postgrestHeadRowCount(query as unknown as PostgrestUrlCarrier, countMode);
+  // Sayım (HEAD) ile sayfalı veri (GET) sırayı bekletmesin: URL anlık kopyalanır,
+  // GET zinciri order/range ile aynı nesneyi güncellemeden önce HEAD başlar.
+  const headCarrier: PostgrestUrlCarrier = {
+    url: new URL((query as unknown as { url: URL }).url.toString()),
+    headers: (query as unknown as { headers: Headers }).headers,
+  };
+  const headPromise = pickStub
+    ? Promise.resolve<number | null>(null)
+    : postgrestHeadRowCount(headCarrier, countMode);
 
   const orderTarihAsc = pickStub;
   const { data, count, error } = await query
@@ -2423,6 +2449,7 @@ export async function GET(req: NextRequest) {
     .range(offset, offset + limit - 1);
 
   if (error) {
+    await headPromise.catch(() => {});
     const e = error as { message?: string; details?: string; hint?: string; code?: string };
     const msg = [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
     const statementTimeout =
@@ -2636,6 +2663,8 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json({ error: e.message ?? "Bilinmeyen hata", detail: msg, code: e.code }, { status: 500 });
   }
+
+  const headTotal = await headPromise;
 
   type RawRow = Record<string, unknown>;
   const rows = ((data as unknown) as RawRow[] || []).map((row: RawRow) => {
