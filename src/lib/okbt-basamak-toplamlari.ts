@@ -70,33 +70,51 @@ export function okbtBasamakHucreDegeri(kodRaw: unknown, index: number): string {
 
 // ── 7 basamaklı (Maç ID ABCDEFG) ───────────────────────────────────────────
 
-/** Sütun başlıkları: 7 haneli ID için A–G kombinasyonları.
- *  0–19: mevcut curated seçim (3–7'li)
- * 20–40: tüm 2'li kombinasyonlar (21 adet) — yeni
+/** Sütun başlıkları: 7 haneli ID (A–G) için tüm kombinasyonlar — itertools sırası.
+ * 2'li (21, idx 0–20) → 3'lü (35, 21–55) → 4'lü (35, 56–90) → 5'li (21, 91–111) → 6'lı (7, 112–118)
+ * Toplam: 119 kombinasyon
  */
 export const OKBT_7_BASAMAK_LABELS = [
-  // 3-toplam: A/B + X + G (0–4)
-  "A+B+G", "A+C+G", "A+D+G", "A+E+G", "A+F+G",
-  // 3-toplam: ardışık orta/son (5–9)
-  "B+C+D", "B+D+E", "C+D+E", "D+E+F", "E+F+G",
-  // 4-toplam: ardışık pencereler (10–13)
-  "A+B+C+D", "B+C+D+E", "C+D+E+F", "D+E+F+G",
-  // 5-toplam (14–16)
-  "A+B+C+D+E", "B+C+D+E+F", "C+D+E+F+G",
-  // 6-toplam (17–18)
-  "A+B+C+D+E+F", "B+C+D+E+F+G",
-  // 7-toplam (19)
-  "A+B+C+D+E+F+G",
-  // 2'li: tüm C(7,2)=21 kombinasyon (20–40)
+  // 2'li (21 adet, idx 0-20)
   "A+B", "A+C", "A+D", "A+E", "A+F", "A+G",
   "B+C", "B+D", "B+E", "B+F", "B+G",
   "C+D", "C+E", "C+F", "C+G",
   "D+E", "D+F", "D+G",
-  "E+F", "E+G",
-  "F+G",
+  "E+F", "E+G", "F+G",
+  // 3'lü (35 adet, idx 21-55)
+  "A+B+C", "A+B+D", "A+B+E", "A+B+F", "A+B+G",
+  "A+C+D", "A+C+E", "A+C+F", "A+C+G",
+  "A+D+E", "A+D+F", "A+D+G",
+  "A+E+F", "A+E+G", "A+F+G",
+  "B+C+D", "B+C+E", "B+C+F", "B+C+G",
+  "B+D+E", "B+D+F", "B+D+G",
+  "B+E+F", "B+E+G", "B+F+G",
+  "C+D+E", "C+D+F", "C+D+G",
+  "C+E+F", "C+E+G", "C+F+G",
+  "D+E+F", "D+E+G", "D+F+G", "E+F+G",
+  // 4'lü (35 adet, idx 56-90)
+  "A+B+C+D", "A+B+C+E", "A+B+C+F", "A+B+C+G",
+  "A+B+D+E", "A+B+D+F", "A+B+D+G",
+  "A+B+E+F", "A+B+E+G", "A+B+F+G",
+  "A+C+D+E", "A+C+D+F", "A+C+D+G",
+  "A+C+E+F", "A+C+E+G", "A+C+F+G",
+  "A+D+E+F", "A+D+E+G", "A+D+F+G", "A+E+F+G",
+  "B+C+D+E", "B+C+D+F", "B+C+D+G",
+  "B+C+E+F", "B+C+E+G", "B+C+F+G",
+  "B+D+E+F", "B+D+E+G", "B+D+F+G", "B+E+F+G",
+  "C+D+E+F", "C+D+E+G", "C+D+F+G", "C+E+F+G", "D+E+F+G",
+  // 5'li (21 adet, idx 91-111)
+  "A+B+C+D+E", "A+B+C+D+F", "A+B+C+D+G",
+  "A+B+C+E+F", "A+B+C+E+G", "A+B+C+F+G",
+  "A+B+D+E+F", "A+B+D+E+G", "A+B+D+F+G", "A+B+E+F+G",
+  "A+C+D+E+F", "A+C+D+E+G", "A+C+D+F+G", "A+C+E+F+G", "A+D+E+F+G",
+  "B+C+D+E+F", "B+C+D+E+G", "B+C+D+F+G", "B+C+E+F+G", "B+D+E+F+G", "C+D+E+F+G",
+  // 6'lı (7 adet, idx 112-118)
+  "A+B+C+D+E+F", "A+B+C+D+E+G", "A+B+C+D+F+G",
+  "A+B+C+E+F+G", "A+B+D+E+F+G", "A+C+D+E+F+G", "B+C+D+E+F+G",
 ] as const;
 
-export const OKBT_7_IDX_COUNT = OKBT_7_BASAMAK_LABELS.length; // 41
+export const OKBT_7_IDX_COUNT = OKBT_7_BASAMAK_LABELS.length; // 119
 
 function parseKod7Basamak(kodRaw: unknown): [number,number,number,number,number,number,number] | null {
   const digits = String(kodRaw ?? "").replace(/\D/g, "");
@@ -112,20 +130,43 @@ export function okbt7BasamakToplamlari(kodRaw: unknown): number[] | null {
   if (!p) return null;
   const [A,B,C,D,E,F,G] = p;
   return [
-    // Mevcut curated seçim (0–19)
-    A+B+G, A+C+G, A+D+G, A+E+G, A+F+G,
-    B+C+D, B+D+E, C+D+E, D+E+F, E+F+G,
-    A+B+C+D, B+C+D+E, C+D+E+F, D+E+F+G,
-    A+B+C+D+E, B+C+D+E+F, C+D+E+F+G,
-    A+B+C+D+E+F, B+C+D+E+F+G,
-    A+B+C+D+E+F+G,
-    // Tüm 2'li kombinasyonlar C(7,2)=21 (20–40)
+    // 2'li (idx 0-20)
     A+B, A+C, A+D, A+E, A+F, A+G,
     B+C, B+D, B+E, B+F, B+G,
     C+D, C+E, C+F, C+G,
     D+E, D+F, D+G,
-    E+F, E+G,
-    F+G,
+    E+F, E+G, F+G,
+    // 3'lü (idx 21-55)
+    A+B+C, A+B+D, A+B+E, A+B+F, A+B+G,
+    A+C+D, A+C+E, A+C+F, A+C+G,
+    A+D+E, A+D+F, A+D+G,
+    A+E+F, A+E+G, A+F+G,
+    B+C+D, B+C+E, B+C+F, B+C+G,
+    B+D+E, B+D+F, B+D+G,
+    B+E+F, B+E+G, B+F+G,
+    C+D+E, C+D+F, C+D+G,
+    C+E+F, C+E+G, C+F+G,
+    D+E+F, D+E+G, D+F+G, E+F+G,
+    // 4'lü (idx 56-90)
+    A+B+C+D, A+B+C+E, A+B+C+F, A+B+C+G,
+    A+B+D+E, A+B+D+F, A+B+D+G,
+    A+B+E+F, A+B+E+G, A+B+F+G,
+    A+C+D+E, A+C+D+F, A+C+D+G,
+    A+C+E+F, A+C+E+G, A+C+F+G,
+    A+D+E+F, A+D+E+G, A+D+F+G, A+E+F+G,
+    B+C+D+E, B+C+D+F, B+C+D+G,
+    B+C+E+F, B+C+E+G, B+C+F+G,
+    B+D+E+F, B+D+E+G, B+D+F+G, B+E+F+G,
+    C+D+E+F, C+D+E+G, C+D+F+G, C+E+F+G, D+E+F+G,
+    // 5'li (idx 91-111)
+    A+B+C+D+E, A+B+C+D+F, A+B+C+D+G,
+    A+B+C+E+F, A+B+C+E+G, A+B+C+F+G,
+    A+B+D+E+F, A+B+D+E+G, A+B+D+F+G, A+B+E+F+G,
+    A+C+D+E+F, A+C+D+E+G, A+C+D+F+G, A+C+E+F+G, A+D+E+F+G,
+    B+C+D+E+F, B+C+D+E+G, B+C+D+F+G, B+C+E+F+G, B+D+E+F+G, C+D+E+F+G,
+    // 6'lı (idx 112-118)
+    A+B+C+D+E+F, A+B+C+D+E+G, A+B+C+D+F+G,
+    A+B+C+E+F+G, A+B+D+E+F+G, A+C+D+E+F+G, B+C+D+E+F+G,
   ];
 }
 
