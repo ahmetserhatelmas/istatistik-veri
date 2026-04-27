@@ -1824,11 +1824,22 @@ export default function MatchTable() {
         p.set("ks_any_n", String(anyKodSuffix.n));
       }
       // OKBT computed cols (~125 sütun = 12.500 PG fonksiyon/istek) varsayılan OFF.
-      // Yalnızca kullanıcı o sütunları visible ya da filtrelemişse with_okbt=1 gönder.
-      const needsOkbt =
-        [...visibleIds].some((id) => /obktb/i.test(id)) ||
-        Object.entries(dbColFiltersApplied).some(([id, v]) => /obktb/i.test(id) && v?.trim());
-      p.set("with_okbt", needsOkbt ? "1" : "0");
+      // Sadece görünen veya filtrelenen OKBT sütun ID'lerini gönder → API yalnızca onları seçer.
+      const okbtColIds = Array.from(
+        new Set([
+          ...[...visibleIds].filter((id) => /obktb/i.test(id)),
+          ...Object.entries(dbColFiltersApplied)
+            .filter(([id, v]) => /obktb/i.test(id) && v?.trim())
+            .map(([id]) => id),
+        ])
+      );
+      if (okbtColIds.length > 0) p.set("okbt_cols", okbtColIds.join(","));
+      // raw_data büyük JSONB — raw_* sütun görünür veya filtreli değilse çekme.
+      // ◉ KOD paneli raw_data'ya bakar; raw_* yokken paneli açmak boş gelir (kabul edilebilir).
+      const needsRawData =
+        [...visibleIds].some((id) => id.startsWith("raw_")) ||
+        Object.entries(dbColFiltersApplied).some(([id, v]) => id.startsWith("raw_") && v?.trim());
+      if (!needsRawData) p.set("skip_raw_data", "1");
       return p;
     },
     [

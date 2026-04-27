@@ -1807,7 +1807,11 @@ export async function GET(req: NextRequest) {
   const taramaQActive = taramaQRaw.length > 0;
 
   const supabase = createServiceClient();
-  const mergedRawCf = buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase));
+  // rawKeyUnion RPC sıralı bekleniyor; cf_raw_* filtre yoksa tamamen atla.
+  const hasCfRawParams = [...sp.keys()].some((k) => k.startsWith('cf_'));
+  const mergedRawCf = hasCfRawParams
+    ? buildMergedRawCfColToJsonKey(await fetchRawDataKeyUnion(supabase))
+    : {};
   /**
    * Ham raw_data cf_*: id ön-filtresi yoksa exact COUNT tam tablo taranabilir → planned.
    * Ön-filtre (RPC id listesi / trgm) ile daraldıysa exact hem güvenli hem doğru toplam (UI “1.000 maç” yanılsaması olmaz).
@@ -2025,7 +2029,7 @@ export async function GET(req: NextRequest) {
   const hasAnyFilter = (() => {
     for (const [k, v] of sp.entries()) {
       if (!v?.trim()) continue;
-      if (k === 'page' || k === 'limit' || k === 'with_okbt') continue;
+      if (k === 'page' || k === 'limit' || k === 'with_okbt' || k === 'okbt_cols' || k === 'skip_raw_data') continue;
       return true;
     }
     return false;
@@ -2033,8 +2037,19 @@ export async function GET(req: NextRequest) {
   const countMode: 'exact' | 'planned' = (!hasAnyFilter || rawCfWithoutIdPrefilter) ? 'planned' : 'exact';
 
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
-  const withOkbt = sp.get("with_okbt") !== "0";
-  const selectCols = pickStub ? PICK_STUB_COLS : (withOkbt ? DB_COLS : DB_COLS_BASE);
+  // Sadece istenen OKBT col'ları seç (whitelist ile doğrula). with_okbt=1 eskiyle uyumluluk için korunur.
+  const OKBT_EXTRA_SET = new Set(DB_COLS_OKBT_EXTRA);
+  const okbtColsParam = sp.get("okbt_cols");
+  const withOkbt = sp.get("with_okbt") !== "0"; // geriye dönük uyumluluk
+  const requestedOkbtCols: string[] = okbtColsParam
+    ? okbtColsParam.split(",").map((s) => s.trim()).filter((c) => OKBT_EXTRA_SET.has(c))
+    : withOkbt && !okbtColsParam // eski with_okbt=1, okbt_cols yoksa tam liste (eski istemciler)
+    ? DB_COLS_OKBT_EXTRA
+    : [];
+  // raw_data büyük JSONB (eski satırlarda 900+ key); raw_* sütun/filtre yoksa çekme.
+  const skipRawData = sp.get("skip_raw_data") === "1";
+  const baseColsFiltered = skipRawData ? DB_COLS_BASE.filter((c) => c !== "raw_data") : DB_COLS_BASE;
+  const selectCols = pickStub ? PICK_STUB_COLS : [...baseColsFiltered, ...requestedOkbtCols];
   let selectListStr = selectCols.join(",");
   if (ksAnyJoinSpec) {
     selectListStr = `${selectListStr},match_raw_kod_suffix!inner(n,suffix)`;
@@ -2435,7 +2450,9 @@ export async function GET(req: NextRequest) {
     url: new URL((query as unknown as { url: URL }).url.toString()),
     headers: (query as unknown as { headers: Headers }).headers,
   };
-  const headPromise = pickStub
+  // planned modda HEAD extra round-trip; count GET yanıtında zaten geliyor.
+  // Free-tier'da paralel bağlantı havuzu sınırlı: bir istek kazanımı yeterli.
+  const headPromise = (pickStub || countMode === 'planned')
     ? Promise.resolve<number | null>(null)
     : postgrestHeadRowCount(headCarrier, countMode);
 
