@@ -43,7 +43,7 @@ CREATE OR REPLACE FUNCTION analyze_combos(
 )
 RETURNS TABLE(combo text, cnt bigint, ids bigint[])
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 SET search_path = public
 AS $$
