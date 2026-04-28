@@ -236,7 +236,14 @@ function flattenRawValue(v: unknown): unknown {
  */
 const OKBT_MULTI_COMPUTED_COLS: string[] = [
   ...Array.from({ length: 119 }, (_, i) => `m7_obktb_${i}`),
-  ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"] as const).flatMap((src) =>
+  ...(["t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau",
+    // Ham veri (raw_data) OKBT kaynakları
+    "kodig", "kodikys", "kodiyau05", "kodiyau15", "kodiyau25", "kodiyms", "kodkg",
+    "kodmsau15", "kodmsau25", "kodmsau35", "kodmsau45", "kodsk", "kodtc", "kodtg",
+    "koddau05", "koddau15", "koddau25", "koddau35", "koddcgoy",
+    "kodeau05", "kodeau15", "kodeau25", "kodeau35",
+    "kodhms11", "kodhms12", "kodhms21", "kodhms22",
+  ] as const).flatMap((src) =>
     Array.from({ length: 26 }, (_, i) => `${src}_obktb_${i}`),
   ),
 ];
@@ -549,6 +556,41 @@ function applyParsedFilterBranch(
 }
 
 /**
+ * AND bölümlerinde aynı "içerir" deseni (*A*) N kez tekrarlanırsa tek *A*A*...*A* formuna
+ * dönüştürür → ILIKE '%A%A%' → "en az N kez geçmeli" semantiği.
+ * Örnek: ["*1*", "*1*", "*2*"] → ["*1*1*", "*2*"]
+ * Sadece *...* (hem başı hem sonu * olan) desenler birleştirilir; diğerleri olduğu gibi kalır.
+ */
+function consolidateRepeatedAndParts(parts: string[]): string[] {
+  const counts = new Map<string, number>();
+  const firstOrig = new Map<string, string>();
+  for (const p of parts) {
+    const norm = p.trim().toLowerCase();
+    if (!counts.has(norm)) {
+      counts.set(norm, 0);
+      firstOrig.set(norm, p.trim());
+    }
+    counts.set(norm, counts.get(norm)! + 1);
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const p of parts) {
+    const norm = p.trim().toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    const count = counts.get(norm)!;
+    const orig = firstOrig.get(norm)!;
+    if (count > 1 && orig.startsWith("*") && orig.endsWith("*") && orig.length > 2) {
+      const inner = orig.slice(1, -1);
+      result.push("*" + Array(count).fill(inner).join("*") + "*");
+    } else {
+      for (let i = 0; i < count; i++) result.push(orig);
+    }
+  }
+  return result;
+}
+
+/**
  * Genel filtre uygulayıcı: "," → OR, "+" → AND.
  * field: PostgREST sütun ifadesi (ör: "lig_adi", "raw_data->>KODAU45")
  * defaultWrap: * ? desenlerinde like / ilike seçimi
@@ -573,7 +615,7 @@ function applyGenericFilter(
 
   if (orParts.length === 1) {
     // Tek OR → AND zincirleri: tek atom doğrudan; çoklu atom PostgREST and(...) ile (boş `_` dahil)
-    const andParts = splitAndParts(orParts[0]!);
+    const andParts = consolidateRepeatedAndParts(splitAndParts(orParts[0]!));
     if (andParts.length === 1) {
       const ap = andParts[0]!;
       if (isBlankCellOrToken(ap)) {
@@ -605,7 +647,7 @@ function applyGenericFilter(
   // Birden fazla OR → or() ifadesi
   const segments: string[] = [];
   for (const orPart of orParts) {
-    const andParts = splitAndParts(orPart);
+    const andParts = consolidateRepeatedAndParts(splitAndParts(orPart));
     if (andParts.length === 1) {
       const ap0 = andParts[0]!;
       if (isBlankCellOrToken(ap0)) {
@@ -711,7 +753,7 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   };
 
   if (orParts.length === 1) {
-    const ands = splitAndParts(orParts[0]!);
+    const ands = consolidateRepeatedAndParts(splitAndParts(orParts[0]!));
     if (ands.length === 1) {
       return applyOne(query, ands[0]!);
     }
@@ -725,7 +767,7 @@ function applyCfIntegerEqColumnFilter(query: any, col: string, v: string): any {
   }
 
   const segments = orParts.map((orPart) => {
-    const ands = splitAndParts(orPart);
+    const ands = consolidateRepeatedAndParts(splitAndParts(orPart));
     if (ands.length === 1) return branchStr(ands[0]!);
     const exprs = ands
       .map((ap) => {
@@ -817,7 +859,7 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   }
 
   if (orParts.length === 1) {
-    const ands = splitAndParts(orParts[0]!);
+    const ands = consolidateRepeatedAndParts(splitAndParts(orParts[0]!));
     if (ands.length === 1) {
       return applyOne(query, ands[0]!);
     }
@@ -831,7 +873,7 @@ function applyCodeColumnPatternFilter(query: any, colId: string, v: string): any
   }
 
   const segments = orParts.map((orPart) => {
-    const ands = splitAndParts(orPart);
+    const ands = consolidateRepeatedAndParts(splitAndParts(orPart));
     if (ands.length === 1) return branchStr(ands[0]!);
     const exprs = ands
       .map((ap) => {
@@ -1423,12 +1465,13 @@ const KS_N_OK = new Set([3, 4, 5]);
 // Kaynak → max idx (columns.ts / okbt-basamak-toplamlari ile aynı)
 const OKBT_SRC_MAX_IDX: Record<string, number> = {
   macid: 118,
-  t1i: 25,
-  t2i: 25,
-  kodms: 25,
-  kodiy: 25,
-  kodcs: 25,
-  kodau: 25,
+  t1i: 25, t2i: 25, kodms: 25, kodiy: 25, kodcs: 25, kodau: 25,
+  // Ham veri (raw_data) kaynakları
+  kodig: 25, kodikys: 25, kodiyau05: 25, kodiyau15: 25, kodiyau25: 25, kodiyms: 25, kodkg: 25,
+  kodmsau15: 25, kodmsau25: 25, kodmsau35: 25, kodmsau45: 25, kodsk: 25, kodtc: 25, kodtg: 25,
+  koddau05: 25, koddau15: 25, koddau25: 25, koddau35: 25, koddcgoy: 25,
+  kodeau05: 25, kodeau15: 25, kodeau25: 25, kodeau35: 25,
+  kodhms11: 25, kodhms12: 25, kodhms21: 25, kodhms22: 25,
 };
 
 function parseObktbSrcIdx(colId: string): { src: string; idx: number } | null {
@@ -1578,7 +1621,7 @@ function tryExpandOkbtMixedWildOr(obktV: string): OkbtWildcardExpand | null {
 
   const union = new Set<number>();
   for (const orPart of orParts) {
-    const andParts = splitAndParts(orPart);
+    const andParts = consolidateRepeatedAndParts(splitAndParts(orPart));
     if (!andParts.length) return null;
     let andSet: Set<number> | null = null;
     for (const apRaw of andParts) {
@@ -2142,6 +2185,8 @@ export async function GET(req: NextRequest) {
   // ── Çift yönlü (⇄) arama ────────────────────────────────────────────────────
   const bidirTakimEv = sp.get("bidir_takim_ev")?.trim() ?? "";
   const bidirTakimDep = sp.get("bidir_takim_dep")?.trim() ?? "";
+  const bidirTakimHer = sp.get("bidir_takim_her")?.trim() ?? "";
+  const bidirTakimH2h = sp.get("bidir_takim_h2h") === "1";
   const bidirTakimLegacy = sp.get("bidir_takim")?.trim();
 
   /** Tek takim sütunu için genel filtre (contains modu). */
@@ -2149,9 +2194,45 @@ export async function GET(req: NextRequest) {
     query = applyGenericFilter(query, col, raw, "contains");
   };
 
-  if (bidirTakimEv || bidirTakimDep) {
-    if (bidirTakimEv) applyBidirTakimIlikes("t1", bidirTakimEv);
-    if (bidirTakimDep) applyBidirTakimIlikes("t2", bidirTakimDep);
+  /** ILIKE deseni string → PostgREST or() segment */
+  const takimIlikeSegment = (col: "t1" | "t2", raw: string): string => {
+    const pat = plainOrWildcardIlikePattern(raw.trim());
+    return `${col}.ilike."${pat.replace(/"/g, '""')}"`;
+  };
+
+  if (bidirTakimEv || bidirTakimDep || bidirTakimHer) {
+    if (bidirTakimH2h && bidirTakimEv && bidirTakimDep) {
+      // H2H: (t1 ILIKE ev AND t2 ILIKE dep) OR (t1 ILIKE dep AND t2 ILIKE ev)
+      const dir1 = [takimIlikeSegment("t1", bidirTakimEv), takimIlikeSegment("t2", bidirTakimDep)];
+      const dir2 = [takimIlikeSegment("t1", bidirTakimDep), takimIlikeSegment("t2", bidirTakimEv)];
+      query = query.or(`and(${dir1.join(",")}),and(${dir2.join(",")})`);
+    } else {
+      if (bidirTakimEv) applyBidirTakimIlikes("t1", bidirTakimEv);
+      if (bidirTakimDep) applyBidirTakimIlikes("t2", bidirTakimDep);
+    }
+    if (bidirTakimHer) {
+      // Ev+Dep: takım t1 VEYA t2'de OR arama (bidir)
+      const orParts = splitOrParts(bidirTakimHer);
+      const orSegments = orParts.flatMap((orPart) => {
+        const andParts = consolidateRepeatedAndParts(splitAndParts(orPart));
+        const buildContainsPat = (p: string) => plainOrWildcardIlikePattern(p);
+        if (andParts.length === 1) {
+          const pat = buildContainsPat(andParts[0]!);
+          const esc = pat.replace(/"/g, '""');
+          return [`t1.ilike."${esc}"`, `t2.ilike."${esc}"`];
+        }
+        const t1andExprs = andParts.map((ap) => {
+          const pat = buildContainsPat(ap);
+          return `t1.ilike."${pat.replace(/"/g, '""')}"`;
+        });
+        const t2andExprs = andParts.map((ap) => {
+          const pat = buildContainsPat(ap);
+          return `t2.ilike."${pat.replace(/"/g, '""')}"`;
+        });
+        return [`and(${t1andExprs.join(",")})`, `and(${t2andExprs.join(",")})`];
+      });
+      if (orSegments.length) query = query.or(orSegments.join(","));
+    }
   } else if (bidirTakimLegacy) {
     const mode = sp.get("bidir_takim_mode") || "ikisi";
     if (mode === "ev") {
@@ -2186,6 +2267,7 @@ export async function GET(req: NextRequest) {
 
   const bidirTakimidEv = sp.get("bidir_takimid_ev")?.trim() ?? "";
   const bidirTakimidDep = sp.get("bidir_takimid_dep")?.trim() ?? "";
+  const bidirTakimidH2h = sp.get("bidir_takimid_h2h") === "1";
   const bidirTakimidLegacy = sp.get("bidir_takimid")?.trim();
 
   /** Takım ID sütunu — sayısal karşılaştırma/aralık/OR/AND destekli. */
@@ -2195,8 +2277,32 @@ export async function GET(req: NextRequest) {
   };
 
   if (bidirTakimidEv || bidirTakimidDep) {
-    if (bidirTakimidEv) applyBidirTakimidSide("ev", bidirTakimidEv);
-    if (bidirTakimidDep) applyBidirTakimidSide("dep", bidirTakimidDep);
+    if (bidirTakimidH2h && bidirTakimidEv && bidirTakimidDep) {
+      // H2H: (t1i=A AND t2i=B) OR (t1i=B AND t2i=A)
+      const toIntSegments = (raw: string, col: string): string[] => {
+        const b = parseFilterBranch(raw.trim(), "prefix");
+        if (b.kind === "like" || b.kind === "ilike") {
+          const aramaCol = col === "t1i" ? "t1i_arama" : "t2i_arama";
+          return [`${aramaCol}.${b.kind}."${b.pat.replace(/"/g, '""')}"`];
+        }
+        const val = (b as { val: string }).val;
+        const n = Number(val);
+        if (Number.isFinite(n)) return [`${col}.eq.${n}`];
+        return [];
+      };
+      const evAsT1 = toIntSegments(bidirTakimidEv, "t1i");
+      const depAsT2 = toIntSegments(bidirTakimidDep, "t2i");
+      const evAsT2 = toIntSegments(bidirTakimidEv, "t2i");
+      const depAsT1 = toIntSegments(bidirTakimidDep, "t1i");
+      const dir1 = [...evAsT1, ...depAsT2];
+      const dir2 = [...depAsT1, ...evAsT2];
+      if (dir1.length && dir2.length) {
+        query = query.or(`and(${dir1.join(",")}),and(${dir2.join(",")})`);
+      }
+    } else {
+      if (bidirTakimidEv) applyBidirTakimidSide("ev", bidirTakimidEv);
+      if (bidirTakimidDep) applyBidirTakimidSide("dep", bidirTakimidDep);
+    }
   } else if (bidirTakimidLegacy) {
     const mode = sp.get("bidir_takimid_mode") || "ikisi";
     if (mode === "ev") {

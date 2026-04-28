@@ -34,6 +34,34 @@ export const OKBT_MULTI_SOURCES: OkbtMultiSource[] = [
   { id: "kodiy",  dbCol: "kod_iy", rowKey: "kod_iy", group: "İY Kod · OKBT",  indices: ALL_26_IDX },
   { id: "kodcs",  dbCol: "kod_cs", rowKey: "kod_cs", group: "ÇŞ Kod · OKBT",  indices: ALL_26_IDX },
   { id: "kodau",  dbCol: "kod_au", rowKey: "kod_au", group: "A/Ü Kod · OKBT", indices: ALL_26_IDX },
+  // Ham veri (raw_data) OKBT kaynakları — rowKey "__raw_KEY" → row.raw_data['KEY'] fallback
+  { id: "kodig",     dbCol: "raw_data", rowKey: "__raw_KODIG",     group: "KODIG · OKBT",     indices: ALL_26_IDX },
+  { id: "kodikys",   dbCol: "raw_data", rowKey: "__raw_KODIKYS",   group: "KODIKYS · OKBT",   indices: ALL_26_IDX },
+  { id: "kodiyau05", dbCol: "raw_data", rowKey: "__raw_KODIYAU05", group: "KODIYAU05 · OKBT", indices: ALL_26_IDX },
+  { id: "kodiyau15", dbCol: "raw_data", rowKey: "__raw_KODIYAU15", group: "KODIYAU15 · OKBT", indices: ALL_26_IDX },
+  { id: "kodiyau25", dbCol: "raw_data", rowKey: "__raw_KODIYAU25", group: "KODIYAU25 · OKBT", indices: ALL_26_IDX },
+  { id: "kodiyms",   dbCol: "raw_data", rowKey: "__raw_KODIYMS",   group: "KODIYMS · OKBT",   indices: ALL_26_IDX },
+  { id: "kodkg",     dbCol: "raw_data", rowKey: "__raw_KODKG",     group: "KODKG · OKBT",     indices: ALL_26_IDX },
+  { id: "kodmsau15", dbCol: "raw_data", rowKey: "__raw_KODMSAU15", group: "KODMSAU15 · OKBT", indices: ALL_26_IDX },
+  { id: "kodmsau25", dbCol: "raw_data", rowKey: "__raw_KODMSAU25", group: "KODMSAU25 · OKBT", indices: ALL_26_IDX },
+  { id: "kodmsau35", dbCol: "raw_data", rowKey: "__raw_KODMSAU35", group: "KODMSAU35 · OKBT", indices: ALL_26_IDX },
+  { id: "kodmsau45", dbCol: "raw_data", rowKey: "__raw_KODMSAU45", group: "KODMSAU45 · OKBT", indices: ALL_26_IDX },
+  { id: "kodsk",     dbCol: "raw_data", rowKey: "__raw_KODSK",     group: "KODSK · OKBT",     indices: ALL_26_IDX },
+  { id: "kodtc",     dbCol: "raw_data", rowKey: "__raw_KODTC",     group: "KODTC · OKBT",     indices: ALL_26_IDX },
+  { id: "kodtg",     dbCol: "raw_data", rowKey: "__raw_KODTG",     group: "KODTG · OKBT",     indices: ALL_26_IDX },
+  { id: "koddau05",  dbCol: "raw_data", rowKey: "__raw_KODDAU05",  group: "KODDAU05 · OKBT",  indices: ALL_26_IDX },
+  { id: "koddau15",  dbCol: "raw_data", rowKey: "__raw_KODDAU15",  group: "KODDAU15 · OKBT",  indices: ALL_26_IDX },
+  { id: "koddau25",  dbCol: "raw_data", rowKey: "__raw_KODDAU25",  group: "KODDAU25 · OKBT",  indices: ALL_26_IDX },
+  { id: "koddau35",  dbCol: "raw_data", rowKey: "__raw_KODDAU35",  group: "KODDAU35 · OKBT",  indices: ALL_26_IDX },
+  { id: "koddcgoy",  dbCol: "raw_data", rowKey: "__raw_KODDCGOY",  group: "KODDCGOY · OKBT",  indices: ALL_26_IDX },
+  { id: "kodeau05",  dbCol: "raw_data", rowKey: "__raw_KODEAU05",  group: "KODEAU05 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodeau15",  dbCol: "raw_data", rowKey: "__raw_KODEAU15",  group: "KODEAU15 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodeau25",  dbCol: "raw_data", rowKey: "__raw_KODEAU25",  group: "KODEAU25 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodeau35",  dbCol: "raw_data", rowKey: "__raw_KODEAU35",  group: "KODEAU35 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodhms11",  dbCol: "raw_data", rowKey: "__raw_KODHMS11",  group: "KODHMS11 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodhms12",  dbCol: "raw_data", rowKey: "__raw_KODHMS12",  group: "KODHMS12 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodhms21",  dbCol: "raw_data", rowKey: "__raw_KODHMS21",  group: "KODHMS21 · OKBT",  indices: ALL_26_IDX },
+  { id: "kodhms22",  dbCol: "raw_data", rowKey: "__raw_KODHMS22",  group: "KODHMS22 · OKBT",  indices: ALL_26_IDX },
 ];
 
 export const OKBT_MULTI_SOURCE_MAP: Record<string, OkbtMultiSource> =
@@ -241,7 +269,15 @@ export const ALL_COLS: ColDef[] = [
   { id: "kod_au",  label: "A/Ü Kod", key: "kod_au",  dbCol: true, group: "Diğer", width: 72 },
 
   // ── Çok kaynaklı OKBT (tüm kaynaklar; macid 7 hane A–G) ─────────────────────
-  ...buildOkbtMultiColsForSources(["macid", "t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau"]),
+  ...buildOkbtMultiColsForSources([
+    "macid", "t1i", "t2i", "kodms", "kodiy", "kodcs", "kodau",
+    // Ham veri (raw_data) OKBT kaynakları
+    "kodig", "kodikys", "kodiyau05", "kodiyau15", "kodiyau25", "kodiyms", "kodkg",
+    "kodmsau15", "kodmsau25", "kodmsau35", "kodmsau45", "kodsk", "kodtc", "kodtg",
+    "koddau05", "koddau15", "koddau25", "koddau35", "koddcgoy",
+    "kodeau05", "kodeau15", "kodeau25", "kodeau35",
+    "kodhms11", "kodhms12", "kodhms21", "kodhms22",
+  ]),
 ];
 
 /** API / DB alan adlarını karşılaştırmak (T1ANTRENOR ↔ t1_antrenor) */

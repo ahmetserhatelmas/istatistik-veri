@@ -387,6 +387,12 @@ function cellVal(row: Match, col: ColDef): string {
       if (src.id === "macid") {
         return idx < OKBT_7_IDX_COUNT ? okbt7BasamakHucreDegeri(row[src.rowKey], idx) : "";
       }
+      // Ham veri (raw_data) OKBT: rowKey "__raw_KEY" formatında → row.raw_data['KEY']
+      if (src.rowKey.startsWith("__raw_")) {
+        const rawKey = src.rowKey.slice(6);
+        const rawData = row["raw_data"] as Record<string, unknown> | null | undefined;
+        return idx < 26 ? okbtBasamakHucreDegeri(rawData?.[rawKey], idx) : "";
+      }
       return idx < 26 ? okbtBasamakHucreDegeri(row[src.rowKey], idx) : "";
     }
     return "";
@@ -974,10 +980,11 @@ const TARIH_PICK_AY = Array.from({ length: 12 }, (_, i) => String(i + 1).padStar
 /** Eski localStorage / preset: tek kutu + mode */
 type BidirPersonelMode = "hakem" | "ant" | "all";
 
-/** Ev / dep ayrı: ikisi doluysa VE (Barcelona ev + Real dep). Yalnız ev veya yalnız dep da mümkün. */
+/** Ev / dep ayrı + ikisi (her): ev → t1 filtresi, dep → t2 filtresi, her → t1 VEYA t2 filtresi. */
 interface BidirTeamPairState {
   ev:  { pattern: string; committed: string };
   dep: { pattern: string; committed: string };
+  her: { pattern: string; committed: string };
 }
 
 /** Hakem; ev TD; dep TD; ev+dep TD (OR, bidir_ant) — dolu olanlar VE ile birleşir. */
@@ -992,12 +999,15 @@ interface BidirPersonelLanesState {
 interface BidirFiltersState {
   takim:    BidirTeamPairState;
   takimid:  BidirTeamPairState;
+  /** T-ID Ev+Dep her iki yönde OR: (t1i=A AND t2i=B) OR (t1i=B AND t2i=A) */
+  takimidH2h: boolean;
   personel: BidirPersonelLanesState;
 }
 
 const BIDIR_INIT: BidirFiltersState = {
-  takim:    { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
-  takimid:  { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" } },
+  takim:    { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" }, her: { pattern: "", committed: "" } },
+  takimid:  { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" }, her: { pattern: "", committed: "" } },
+  takimidH2h: false,
   personel: {
     hakem: { pattern: "", committed: "" },
     antEv: { pattern: "", committed: "" },
@@ -1016,9 +1026,10 @@ function migrateBidirV1ToTeamPair(o: {
   committed: string;
   mode: BidirTakimModeV1;
 }): BidirTeamPairState {
-  if (o.mode === "ev") return { ev: { pattern: o.pattern, committed: o.committed }, dep: { pattern: "", committed: "" } };
-  if (o.mode === "dep") return { ev: { pattern: "", committed: "" }, dep: { pattern: o.pattern, committed: o.committed } };
-  return { ev: { pattern: o.pattern, committed: o.committed }, dep: { pattern: "", committed: "" } };
+  const z = { pattern: "", committed: "" };
+  if (o.mode === "ev") return { ev: { pattern: o.pattern, committed: o.committed }, dep: { ...z }, her: { ...z } };
+  if (o.mode === "dep") return { ev: { ...z }, dep: { pattern: o.pattern, committed: o.committed }, her: { ...z } };
+  return { ev: { pattern: o.pattern, committed: o.committed }, dep: { ...z }, her: { ...z } };
 }
 
 function migratePersonelV1(o: {
@@ -1077,11 +1088,15 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
   if (!raw || typeof raw !== "object") return BIDIR_INIT;
   const p = raw as Record<string, unknown>;
   const tak = p.takim;
+  const z = { pattern: "", committed: "" };
+  const fillHer = (pair: BidirTeamPairState): BidirTeamPairState =>
+    "her" in pair ? pair : { ...pair, her: { ...z } };
   if (tak && typeof tak === "object" && "ev" in tak && "dep" in tak) {
     const b = raw as Partial<BidirFiltersState>;
     return {
-      takim: b.takim ?? BIDIR_INIT.takim,
-      takimid: b.takimid ?? BIDIR_INIT.takimid,
+      takim: fillHer(b.takim ?? BIDIR_INIT.takim),
+      takimid: fillHer(b.takimid ?? BIDIR_INIT.takimid),
+      takimidH2h: b.takimidH2h ?? false,
       personel: normalizePersonelLanes(b.personel),
     };
   }
@@ -1101,6 +1116,7 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
     return {
       takim: migrateBidirV1ToTeamPair(v1.takim),
       takimid: migrateBidirV1ToTeamPair(v1.takimid),
+      takimidH2h: false,
       personel: normalizePersonelLanes(v1.personel),
     };
   }
@@ -1482,12 +1498,16 @@ export default function MatchTable() {
   const refMatchDropdownRef = useRef<HTMLDivElement>(null);
   const [takimSuggestEv, setTakimSuggestEv] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
   const [takimSuggestDep, setTakimSuggestDep] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
+  const [takimSuggestHer, setTakimSuggestHer] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
   const takimEvTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const takimDepTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const takimHerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const takimEvDropdownRef = useRef<HTMLDivElement>(null);
   const takimDepDropdownRef = useRef<HTMLDivElement>(null);
+  const takimHerDropdownRef = useRef<HTMLDivElement>(null);
   const takimSuggestEvGenRef = useRef(0);
   const takimSuggestDepGenRef = useRef(0);
+  const takimSuggestHerGenRef = useRef(0);
   const [personelSuggestHakem, setPersonelSuggestHakem] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
   const [personelSuggestAntEv, setPersonelSuggestAntEv] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
   const [personelSuggestAntDep, setPersonelSuggestAntDep] = useState<TakimSuggestLaneState>(TAKIM_SUGGEST_INIT);
@@ -1515,7 +1535,7 @@ export default function MatchTable() {
   useEffect(() => { lsSet(LS_SHOW_BIDIR, showBidirRow); }, [showBidirRow]);
 
   /** pattern → committed (Enter basmadan çıkınca da API’ye gitsin; Dep’in “çalışmıyor” görünümü çoğunlukla bundandı). */
-  const commitBidirLaneOnBlur = useCallback((side: "takim" | "takimid", lane: "ev" | "dep") => {
+  const commitBidirLaneOnBlur = useCallback((side: "takim" | "takimid", lane: "ev" | "dep" | "her") => {
     setBidirFilters((prev) => {
       const b = prev[side][lane];
       const next = b.pattern.trim();
@@ -1536,12 +1556,17 @@ export default function MatchTable() {
     const pat = buildRefPattern(match, field, positions, digitPosMode);
     if (!pat) return;
     if (field === "t1i" || field === "t2i") {
+      // Her iki T-ID'yi doldur; H2H başlangıçta kapalı (yön korunur, kullanıcı isterse açar)
+      const patEv  = buildRefPattern(match, "t1i", positions, digitPosMode);
+      const patDep = buildRefPattern(match, "t2i", positions, digitPosMode);
       setBidirFilters((prev) => ({
         ...prev,
-        takimid:
-          field === "t1i"
-            ? { ...prev.takimid, ev: { pattern: pat, committed: pat } }
-            : { ...prev.takimid, dep: { pattern: pat, committed: pat } },
+        takimid: {
+          ...prev.takimid,
+          ...(patEv  ? { ev:  { pattern: patEv,  committed: patEv  } } : {}),
+          ...(patDep ? { dep: { pattern: patDep, committed: patDep } } : {}),
+        },
+        takimidH2h: false,
       }));
     } else {
       const colId = REF_FIELD_TO_COL_ID[field];
@@ -1566,11 +1591,22 @@ export default function MatchTable() {
     setRefMatch((prev) => ({ ...prev, loading: true, isOpen: true }));
     try {
       const p = new URLSearchParams({ limit: "20" });
-      const num = Number(q.trim());
-      if (!isNaN(num) && q.trim().length > 3) {
-        p.set("cf_id", q.trim());
+      const trimmed = q.trim();
+      const num = Number(trimmed);
+      if (!isNaN(num) && trimmed.length > 3) {
+        // Sayısal → maç ID ile ara
+        p.set("cf_id", trimmed);
       } else {
-        p.set("takim", q.trim());
+        // "t1 - t2" veya "t1 vs t2" formatı → H2H arama
+        const sepMatch = trimmed.match(/^(.+?)\s*[-–—]\s*(.+)$/) ?? trimmed.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+        if (sepMatch) {
+          p.set("bidir_takim_ev", sepMatch[1]!.trim());
+          p.set("bidir_takim_dep", sepMatch[2]!.trim());
+          p.set("bidir_takim_h2h", "1");
+        } else {
+          // Tek takım adı → her iki yönde ara (Ev+Dep OR)
+          p.set("bidir_takim_her", trimmed);
+        }
       }
       const res = await fetch(`/api/matches?${p}`);
       const json: ApiResponse = await res.json();
@@ -1580,9 +1616,9 @@ export default function MatchTable() {
     }
   }, []);
 
-  const searchTakimSuggest = useCallback(async (q: string, lane: "ev" | "dep") => {
-    const genRef = lane === "ev" ? takimSuggestEvGenRef : takimSuggestDepGenRef;
-    const setLane = lane === "ev" ? setTakimSuggestEv : setTakimSuggestDep;
+  const searchTakimSuggest = useCallback(async (q: string, lane: "ev" | "dep" | "her") => {
+    const genRef = lane === "ev" ? takimSuggestEvGenRef : lane === "dep" ? takimSuggestDepGenRef : takimSuggestHerGenRef;
+    const setLane = lane === "ev" ? setTakimSuggestEv : lane === "dep" ? setTakimSuggestDep : setTakimSuggestHer;
     if (!q.trim()) {
       setLane(TAKIM_SUGGEST_INIT);
       return;
@@ -1655,6 +1691,9 @@ export default function MatchTable() {
       }
       if (takimDepDropdownRef.current && !takimDepDropdownRef.current.contains(t)) {
         setTakimSuggestDep((prev) => ({ ...prev, open: false }));
+      }
+      if (takimHerDropdownRef.current && !takimHerDropdownRef.current.contains(t)) {
+        setTakimSuggestHer((prev) => ({ ...prev, open: false }));
       }
       if (personelHakemDropdownRef.current && !personelHakemDropdownRef.current.contains(t)) {
         setPersonelSuggestHakem((prev) => ({ ...prev, open: false }));
@@ -1844,12 +1883,15 @@ export default function MatchTable() {
       // bidir_* önce: çok cf_ ile uzun URL’de proxy kesintisi riskini azaltır
       const te = bidirFilters.takim.ev.committed.trim();
       const td = bidirFilters.takim.dep.committed.trim();
+      const th = bidirFilters.takim.her.committed.trim();
       if (te) p.set("bidir_takim_ev", te);
       if (td) p.set("bidir_takim_dep", td);
+      if (th) p.set("bidir_takim_her", th);
       const tie = bidirFilters.takimid.ev.committed.trim();
       const tid = bidirFilters.takimid.dep.committed.trim();
       if (tie) p.set("bidir_takimid_ev", tie);
       if (tid) p.set("bidir_takimid_dep", tid);
+      if (bidirFilters.takimidH2h && tie && tid) p.set("bidir_takimid_h2h", "1");
       const ph = bidirFilters.personel.hakem.committed.trim();
       const pEv = bidirFilters.personel.antEv.committed.trim();
       const pDep = bidirFilters.personel.antDep.committed.trim();
@@ -1902,8 +1944,10 @@ export default function MatchTable() {
       visibleIds,
       bidirFilters.takim.ev.committed,
       bidirFilters.takim.dep.committed,
+      bidirFilters.takim.her.committed,
       bidirFilters.takimid.ev.committed,
       bidirFilters.takimid.dep.committed,
+      bidirFilters.takimidH2h,
       bidirFilters.personel.hakem.committed,
       bidirFilters.personel.antEv.committed,
       bidirFilters.personel.antDep.committed,
@@ -1920,6 +1964,7 @@ export default function MatchTable() {
         db: dbColFiltersApplied,
         te: bidirFilters.takim.ev.committed,
         td: bidirFilters.takim.dep.committed,
+        th: bidirFilters.takim.her.committed,
         tie: bidirFilters.takimid.ev.committed,
         tid: bidirFilters.takimid.dep.committed,
         ph: bidirFilters.personel.hakem.committed,
@@ -1933,9 +1978,10 @@ export default function MatchTable() {
       dbColFiltersApplied,
       bidirFilters.takim.ev.committed,
       bidirFilters.takim.dep.committed,
+      bidirFilters.takim.her.committed,
       bidirFilters.takimid.ev.committed,
       bidirFilters.takimid.dep.committed,
-      bidirFilters.personel.hakem.committed,
+      bidirFilters.takimidH2h,      bidirFilters.personel.hakem.committed,
       bidirFilters.personel.antEv.committed,
       bidirFilters.personel.antDep.committed,
       bidirFilters.personel.antHer.committed,
@@ -2269,6 +2315,7 @@ export default function MatchTable() {
 
     const te = bidirFilters.takim.ev.committed.trim();
     const td = bidirFilters.takim.dep.committed.trim();
+    const th = bidirFilters.takim.her.committed.trim();
     const legacyTakim = (applied.takim ?? "").trim();
 
     let takim_ev_ilike: string | undefined;
@@ -2285,6 +2332,9 @@ export default function MatchTable() {
     } else if (te && td) {
       takim_ev_ilike = teamContainsIlikePattern(te) ?? undefined;
       takim_dep_ilike = teamContainsIlikePattern(td) ?? undefined;
+      swap_skor_all = false;
+    } else if (th) {
+      takim_or_ilike = teamContainsIlikePattern(th) ?? undefined;
       swap_skor_all = false;
     } else if (legacyTakim) {
       takim_or_ilike = teamContainsIlikePattern(legacyTakim) ?? undefined;
@@ -2316,6 +2366,7 @@ export default function MatchTable() {
     applied.takim,
     bidirFilters.takim.ev.committed,
     bidirFilters.takim.dep.committed,
+    bidirFilters.takim.her.committed,
   ]);
 
   /** Skor combo'sunu cell filtrelerine uygular + recent listesine ekler */
@@ -2403,7 +2454,7 @@ export default function MatchTable() {
     }
     // ⇄ çift yönlü satır
     if (p.bidirFilters && typeof p.bidirFilters === "object") {
-      setBidirFilters(p.bidirFilters as BidirFiltersState);
+      setBidirFilters(normalizeBidirFromUnknown(p.bidirFilters));
     } else {
       setBidirFilters(BIDIR_INIT);
     }
@@ -2469,6 +2520,7 @@ export default function MatchTable() {
     setColDigitMode({});
     takimSuggestEvGenRef.current += 1;
     takimSuggestDepGenRef.current += 1;
+    takimSuggestHerGenRef.current += 1;
     personelHakemGenRef.current += 1;
     personelAntEvGenRef.current += 1;
     personelAntDepGenRef.current += 1;
@@ -2479,6 +2531,8 @@ export default function MatchTable() {
     takimEvTimerRef.current = null;
     if (takimDepTimerRef.current) clearTimeout(takimDepTimerRef.current);
     takimDepTimerRef.current = null;
+    if (takimHerTimerRef.current) clearTimeout(takimHerTimerRef.current);
+    takimHerTimerRef.current = null;
     if (personelHakemTimerRef.current) clearTimeout(personelHakemTimerRef.current);
     personelHakemTimerRef.current = null;
     if (personelAntEvTimerRef.current) clearTimeout(personelAntEvTimerRef.current);
@@ -2491,6 +2545,7 @@ export default function MatchTable() {
     setRefMatch(REF_MATCH_INIT);
     setTakimSuggestEv(TAKIM_SUGGEST_INIT);
     setTakimSuggestDep(TAKIM_SUGGEST_INIT);
+    setTakimSuggestHer(TAKIM_SUGGEST_INIT);
     setPersonelSuggestHakem(TAKIM_SUGGEST_INIT);
     setPersonelSuggestAntEv(TAKIM_SUGGEST_INIT);
     setPersonelSuggestAntDep(TAKIM_SUGGEST_INIT);
@@ -3291,8 +3346,106 @@ export default function MatchTable() {
               </div>
             </div>
 
+            {/* Takım adı — Ev+Dep (her ikisinde OR arama) */}
+            <div
+              className="relative flex items-center gap-0.5 rounded border border-orange-300 bg-orange-50 px-0.5"
+              ref={takimHerDropdownRef}
+              title="Ev+Dep: takım hem ev hem dep pozisyonunda aranır (OR).">
+              <span className="text-[9px] text-orange-600 pl-0.5 shrink-0 font-medium">Ev+Dep</span>
+              <input
+                value={bidirFilters.takim.her.pattern}
+                onChange={(e) => {
+                  const q = e.target.value;
+                  setBidirFilters((prev) => ({
+                    ...prev,
+                    takim: { ...prev.takim, her: { ...prev.takim.her, pattern: q } },
+                  }));
+                  if (takimHerTimerRef.current) clearTimeout(takimHerTimerRef.current);
+                  takimHerTimerRef.current = setTimeout(() => searchTakimSuggest(q, "her"), 350);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    setTakimSuggestHer(TAKIM_SUGGEST_INIT);
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takim: { ...prev.takim, her: { ...prev.takim.her, committed: prev.takim.her.pattern } },
+                    }));
+                    setPage(1);
+                  } else if (e.key === "Escape") {
+                    setTakimSuggestHer(TAKIM_SUGGEST_INIT);
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takim: { ...prev.takim, her: { pattern: "", committed: "" } },
+                    }));
+                    setPage(1);
+                  }
+                }}
+                onBlur={() => {
+                  setBidirFilters((prev) => {
+                    const b = prev.takim.her;
+                    const next = b.pattern.trim();
+                    if (next === b.committed.trim()) return prev;
+                    return { ...prev, takim: { ...prev.takim, her: { ...b, committed: next } } };
+                  });
+                  setPage(1);
+                }}
+                onFocus={() => {
+                  if (takimSuggestHer.teamNames.length) setTakimSuggestHer((prev) => ({ ...prev, open: true }));
+                }}
+                placeholder="Ara…"
+                className={`w-[5.5rem] min-w-[4.5rem] border-0 rounded py-0.5 text-[11px] focus:outline-none focus:ring-0 bg-transparent ${
+                  bidirFilters.takim.her.committed ? "text-orange-800 font-medium" : "text-gray-900"
+                }`}
+              />
+              {(bidirFilters.takim.her.pattern || bidirFilters.takim.her.committed) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTakimSuggestHer(TAKIM_SUGGEST_INIT);
+                    setBidirFilters((prev) => ({
+                      ...prev,
+                      takim: { ...prev.takim, her: { pattern: "", committed: "" } },
+                    }));
+                    setPage(1);
+                  }}
+                  className="text-gray-400 hover:text-gray-800 px-0.5 text-[11px]"
+                  title="Ev+Dep temizle">
+                  ×
+                </button>
+              )}
+              {takimSuggestHer.open && (
+                <div
+                  className="absolute left-0 top-full mt-0.5 z-[200] w-72 max-h-48 overflow-y-auto bg-white border border-gray-300 rounded shadow-lg"
+                  onMouseDown={(e) => e.preventDefault()}>
+                  {takimSuggestHer.loading && (
+                    <div className="px-2 py-1.5 text-[11px] text-gray-500">Aranıyor…</div>
+                  )}
+                  {!takimSuggestHer.loading && takimSuggestHer.teamNames.length === 0 && (
+                    <div className="px-2 py-1.5 text-[11px] text-gray-400">Sonuç yok</div>
+                  )}
+                  {!takimSuggestHer.loading &&
+                    takimSuggestHer.teamNames.map((name, i) => (
+                      <button
+                        key={`her-${i}-${name}`}
+                        type="button"
+                        className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-50 transition truncate border-b border-gray-100"
+                        onClick={() => {
+                          setTakimSuggestHer(TAKIM_SUGGEST_INIT);
+                          setBidirFilters((prev) => ({
+                            ...prev,
+                            takim: { ...prev.takim, her: { pattern: name, committed: name } },
+                          }));
+                          setPage(1);
+                        }}>
+                        <span className="text-gray-800">{name}</span>
+                      </button>
+                    ))}
+                </div>
+              )}
+            </div>
+
             {/* Takım ID — ev / dep ayrı (t1i / t2i) */}
-            <div className="flex items-center gap-1 flex-wrap" title="Ev: t1i. Dep: t2i. İkisi: her iki ID şartı (VE).">
+            <div className="flex items-center gap-1 flex-wrap" title="Ev: t1i. Dep: t2i. H2H aktifken: (Ev=A ve Dep=B) VEYA (Ev=B ve Dep=A).">
               <span className="text-gray-600 shrink-0">T-ID</span>
               <div className="flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5">
                 <span className="text-[9px] text-gray-500 pl-0.5 shrink-0">Ev</span>
@@ -3388,6 +3541,23 @@ export default function MatchTable() {
                   </button>
                 )}
               </div>
+              {/* H2H toggle — sadece her iki T-ID doluysa göster */}
+              {(bidirFilters.takimid.ev.committed && bidirFilters.takimid.dep.committed) && (
+                <button
+                  type="button"
+                  title={bidirFilters.takimidH2h ? "H2H aktif: her iki yön gösteriliyor. Kapat → sadece Ev=A ve Dep=B." : "H2H: iki takım arasındaki tüm karşılaşmalar (her iki yön)"}
+                  onClick={() => {
+                    setBidirFilters((prev) => ({ ...prev, takimidH2h: !prev.takimidH2h }));
+                    setPage(1);
+                  }}
+                  className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition ${
+                    bidirFilters.takimidH2h
+                      ? "bg-purple-600 text-white border-purple-700"
+                      : "bg-white text-gray-500 border-gray-300 hover:bg-purple-50 hover:text-purple-700"
+                  }`}>
+                  H2H
+                </button>
+              )}
             </div>
 
             {/* Personel — hakem; ev / dep TD ayrı; Ev+Dep OR kutusu; yazarken öneri, tablo seçim veya Enter ile */}

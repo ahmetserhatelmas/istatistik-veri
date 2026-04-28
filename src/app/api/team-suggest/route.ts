@@ -21,12 +21,12 @@ export async function GET(req: NextRequest) {
   }
 
   const q = req.nextUrl.searchParams.get("q")?.trim() ?? "";
-  const lane = req.nextUrl.searchParams.get("lane") === "dep" ? "dep" : "ev";
+  const laneRaw = req.nextUrl.searchParams.get("lane") ?? "ev";
+  const lane = laneRaw === "dep" ? "dep" : laneRaw === "her" ? "her" : "ev";
   if (!q || q.length > 80) {
     return NextResponse.json({ teams: [] as string[] });
   }
 
-  const col = lane === "dep" ? "t2" : "t1";
   const cleaned = sanitizeSuggestQuery(q);
   if (!cleaned) {
     return NextResponse.json({ teams: [] as string[] });
@@ -34,6 +34,27 @@ export async function GET(req: NextRequest) {
   const pat = `%${cleaned}%`;
 
   const supabase = createServiceClient();
+
+  if (lane === "her") {
+    // t1 ve t2'den birleşik öneri (OR arama için)
+    const [r1, r2] = await Promise.all([
+      supabase.from("matches").select("t1").ilike("t1", pat).not("t1", "is", null).limit(800),
+      supabase.from("matches").select("t2").ilike("t2", pat).not("t2", "is", null).limit(800),
+    ]);
+    const set = new Set<string>();
+    for (const row of r1.data ?? []) {
+      const v = (row as Record<string, unknown>)["t1"];
+      if (typeof v === "string" && v.trim()) set.add(v.trim());
+    }
+    for (const row of r2.data ?? []) {
+      const v = (row as Record<string, unknown>)["t2"];
+      if (typeof v === "string" && v.trim()) set.add(v.trim());
+    }
+    const teams = [...set].sort((a, b) => a.localeCompare(b, "tr", { sensitivity: "base" })).slice(0, 60);
+    return NextResponse.json({ teams });
+  }
+
+  const col = lane === "dep" ? "t2" : "t1";
   const { data, error } = await supabase
     .from("matches")
     .select(col)
