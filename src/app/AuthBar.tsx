@@ -1,11 +1,13 @@
 "use client";
 
 /**
- * AuthBar — header'a yerleşen kompakt oturum widget'ı.
+ * AuthBar — oturum widget'ı.
  *
- * Davranış:
- *   • Oturum yok → "Giriş" butonu → popover'da email+şifre ile giriş / kayıt ol
- *   • Oturum var → avatar (baş harf) + email truncate + "Çıkış" butonu
+ * `variant="header"` (varsayılan):
+ *   • Oturum yok → "Giriş" → popover: e-posta + şifre + şifremi sıfırla
+ *   • Oturum var → avatar + çıkış
+ *
+ * `variant="gate"`: Ana sayfa giriş duvarı — tam ekran kart (kayıt yok).
  *
  * Popover `createPortal(document.body)` + yüksek z-index: tablo sticky başlık
  * ve yükleme örtüsünün (z-75) üstünde kalır.
@@ -14,7 +16,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase/client";
-import { ADMIN_EMAIL } from "@/lib/auth/access";
 import { recordSessionRevAfterLogin, storageKeySessionRev } from "@/app/SessionRevGuard";
 
 type Status = "idle" | "sending" | "sent" | "error";
@@ -42,7 +43,16 @@ function formatAuthErrorForUser(raw: string): string {
   return raw.trim() || "Bilinmeyen hata.";
 }
 
-export function AuthBar() {
+export type AuthBarVariant = "header" | "gate";
+
+export function AuthBar({
+  variant = "header",
+  /** Ana sayfa kapısı: üst bileşen oturumu zaten çözdüyse ikinci “Yükleniyor” gösterme */
+  gateHydrated = false,
+}: {
+  variant?: AuthBarVariant;
+  gateHydrated?: boolean;
+}) {
   const [user, setUser] = useState<User | null>(null);
   const [approved, setApproved] = useState<boolean>(false);
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
@@ -50,7 +60,6 @@ export function AuthBar() {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"login" | "register">("login");
   const [status, setStatus] = useState<Status>("idle");
   const [msg, setMsg] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -186,35 +195,6 @@ export function AuthBar() {
     }
   }, [email, password]);
 
-  const register = useCallback(async () => {
-    const e = email.trim().toLowerCase();
-    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-      setStatus("error");
-      setMsg("Geçerli bir e-posta adresi girin.");
-      return;
-    }
-    if (password.length < 8) {
-      setStatus("error");
-      setMsg("Şifre en az 8 karakter olmalı.");
-      return;
-    }
-    setStatus("sending");
-    setMsg(null);
-    const res = await fetch("/api/auth/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: e, password }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.ok) {
-      setStatus("error");
-      setMsg(json.error ?? "Kayıt başarısız");
-    } else {
-      setStatus("sent");
-      setMsg(json.message ?? "Kayıt alındı. Admin onayı bekleniyor.");
-    }
-  }, [email, password]);
-
   /** Onaylı hesaplara e-posta ile sıfırlama linki; tıklayınca `/auth/callback` → `/auth/update-password`. */
   const requestReset = useCallback(async () => {
     const e = email.trim().toLowerCase();
@@ -240,6 +220,65 @@ export function AuthBar() {
     setMsg(json.message ?? "Sıfırlama bağlantısı gönderildi. E-postanı kontrol et.");
   }, [email]);
 
+  const loginFormInner = (
+    <>
+      <div className="text-[10px] text-gray-500 mb-2 leading-snug">
+        E-posta ve şifre ile giriş yap. Hesap onaylı değilse girişe izin verilmez.
+      </div>
+      <input
+        type="email"
+        inputMode="email"
+        autoComplete="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void login();
+        }}
+        placeholder="ornek@eposta.com"
+        className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
+        style={{ WebkitTextFillColor: "#111827" }}
+        disabled={status === "sending"}
+      />
+      <input
+        type="password"
+        autoComplete="current-password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void login();
+        }}
+        placeholder="Şifre (en az 8 karakter)"
+        className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
+        style={{ WebkitTextFillColor: "#111827" }}
+        disabled={status === "sending"}
+      />
+      <button
+        type="button"
+        onClick={() => void login()}
+        disabled={status === "sending"}
+        className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
+        {status === "sending" ? "İşleniyor…" : "Giriş yap"}
+      </button>
+      <button
+        type="button"
+        onClick={() => void requestReset()}
+        disabled={status === "sending"}
+        className="mt-2 w-full text-[11px] text-indigo-700 hover:text-indigo-900 underline disabled:opacity-50">
+        Şifremi sıfırla
+      </button>
+      {msg && (
+        <div
+          className={`mt-2 text-[10px] rounded px-2 py-1 text-left leading-snug ${
+            status === "error"
+              ? "bg-red-50 text-red-700 border border-red-200 max-h-44 overflow-y-auto"
+              : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+          }`}>
+          {msg}
+        </div>
+      )}
+    </>
+  );
+
   const signOut = useCallback(async () => {
     const { data: s } = await supabase.auth.getSession();
     const uid = s.session?.user?.id;
@@ -249,6 +288,34 @@ export function AuthBar() {
     setIsAdmin(false);
     setOpen(false);
   }, []);
+
+  if (variant === "gate") {
+    if (!ready && !gateHydrated) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-slate-100 text-sm text-slate-600">
+          Yükleniyor…
+        </div>
+      );
+    }
+    if (user) return null;
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-slate-100 to-slate-200 px-4 py-10">
+        <div className="mb-6 text-center">
+          <h1 className="text-lg font-semibold tracking-tight text-slate-900">Oranexcel</h1>
+          <p className="mt-1 text-xs text-slate-600">İddaa veri ve filtreleme — devam etmek için giriş yapın</p>
+        </div>
+        <div
+          className="w-full max-w-sm rounded-xl border border-slate-300 bg-white p-5 text-gray-900 shadow-xl [color-scheme:light]"
+          role="dialog"
+          aria-labelledby="auth-gate-title">
+          <h2 id="auth-gate-title" className="mb-3 text-sm font-semibold text-slate-800">
+            Giriş yap
+          </h2>
+          {loginFormInner}
+        </div>
+      </div>
+    );
+  }
 
   const portal =
     open &&
@@ -290,76 +357,9 @@ export function AuthBar() {
           ) : (
             <>
               <div id="authbar-popover-title" className="text-xs font-semibold text-gray-800 mb-1">
-                {mode === "login" ? "Giriş yap" : "Kayıt ol"}
+                Giriş yap
               </div>
-              <div className="text-[10px] text-gray-500 mb-2 leading-snug">
-                {mode === "login"
-                  ? "E-posta ve şifre ile giriş yap. Hesap onaylı değilse girişe izin verilmez."
-                  : `Kayıt sonrası admin (${ADMIN_EMAIL}) onayı beklenir.`}
-              </div>
-              <div className="mb-2 flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => setMode("login")}
-                  className={`flex-1 rounded border px-2 py-1 text-[11px] ${mode === "login" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-700 border-gray-300"}`}>
-                  Giriş yap
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("register")}
-                  className={`flex-1 rounded border px-2 py-1 text-[11px] ${mode === "register" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-gray-700 border-gray-300"}`}>
-                  Kayıt ol
-                </button>
-              </div>
-              <input
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
-                placeholder="ornek@eposta.com"
-                className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
-                style={{ WebkitTextFillColor: "#111827" }}
-                disabled={status === "sending"}
-              />
-              <input
-                type="password"
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void (mode === "login" ? login() : register()); }}
-                placeholder="Şifre (en az 8 karakter)"
-                className="mb-2 w-full rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 caret-gray-900 shadow-sm placeholder:text-slate-500 [color-scheme:light]"
-                style={{ WebkitTextFillColor: "#111827" }}
-                disabled={status === "sending"}
-              />
-              <button
-                type="button"
-                onClick={() => void (mode === "login" ? login() : register())}
-                disabled={status === "sending"}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs px-2 py-1.5 rounded">
-                {status === "sending" ? "İşleniyor…" : mode === "login" ? "Giriş yap" : "Kayıt ol"}
-              </button>
-              {mode === "login" && (
-                <button
-                  type="button"
-                  onClick={() => void requestReset()}
-                  disabled={status === "sending"}
-                  className="mt-2 w-full text-[11px] text-indigo-700 hover:text-indigo-900 underline disabled:opacity-50">
-                  Şifremi sıfırla
-                </button>
-              )}
-              {msg && (
-                <div
-                  className={`mt-2 text-[10px] rounded px-2 py-1 text-left leading-snug ${
-                    status === "error"
-                      ? "bg-red-50 text-red-700 border border-red-200 max-h-44 overflow-y-auto"
-                      : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  }`}>
-                  {msg}
-                </div>
-              )}
+              {loginFormInner}
             </>
           )}
         </div>
@@ -407,7 +407,6 @@ export function AuthBar() {
           setStatus("idle");
           setMsg(null);
           setPassword("");
-          setMode("login");
         }}
         className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-1 rounded font-medium">
         Giriş

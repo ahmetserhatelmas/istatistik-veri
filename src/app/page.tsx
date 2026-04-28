@@ -1,9 +1,7 @@
 "use client";
 
-import dynamic from "next/dynamic";
-
-const MatchTable = dynamic(() => import("./MatchTable"), { ssr: false });
+import { MatchTableGate } from "./MatchTableGate";
 
 export default function Page() {
-  return <MatchTable />;
+  return <MatchTableGate />;
 }
