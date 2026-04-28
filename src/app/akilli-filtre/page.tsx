@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
-import { ALL_COLS, type ColDef } from "@/lib/columns";
+import { ALL_COLS, OKBT_MULTI_SOURCES, type ColDef } from "@/lib/columns";
 import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
 
 type SavedFilter = {
@@ -30,6 +30,11 @@ type MatchesApiResponse = {
 };
 
 type CompareOption = { id: string; label: string };
+
+/** Ana tablodaki OKBT sütun id’leri: `kodms_obktb_0` vb. */
+function isOkbtCompareColId(id: string): boolean {
+  return /^[a-z][a-z0-9]*_obktb_\d+$/i.test(id);
+}
 
 const MatchTable = dynamic(() => import("../MatchTable"), { ssr: false });
 
@@ -281,15 +286,45 @@ export default function AkilliFiltrePage() {
     () => dayMatches.find((m) => String(m.id) === selectedMatchId) ?? null,
     [dayMatches, selectedMatchId],
   );
-  const compareOptions = useMemo<CompareOption[]>(() => {
+  const { comparePlainOptions, compareOkbtByGroup, allCompareOptionIds } = useMemo(() => {
     const seen = new Set<string>();
-    const out: CompareOption[] = [{ id: SPECIAL_COMPARE_DAY, label: "Tarih günü (dd)" }];
+    const plain: CompareOption[] = [{ id: SPECIAL_COMPARE_DAY, label: "Tarih günü (dd)" }];
+    const groupMap = new Map<string, CompareOption[]>();
+
     for (const c of ALL_COLS) {
       if (seen.has(c.id)) continue;
       seen.add(c.id);
-      out.push({ id: c.id, label: c.label });
+      if (isOkbtCompareColId(c.id)) {
+        const g = c.group.trim() || "OKBT";
+        const arr = groupMap.get(g) ?? [];
+        arr.push({ id: c.id, label: c.label });
+        groupMap.set(g, arr);
+      } else {
+        plain.push({ id: c.id, label: c.label });
+      }
     }
-    return out;
+
+    const okbtByGroup: { group: string; options: CompareOption[] }[] = [];
+    const orderedGroupNames = OKBT_MULTI_SOURCES.map((s) => s.group);
+    for (const g of orderedGroupNames) {
+      const opts = groupMap.get(g);
+      if (opts?.length) okbtByGroup.push({ group: g, options: opts });
+      groupMap.delete(g);
+    }
+    for (const [group, options] of groupMap) {
+      if (options.length) okbtByGroup.push({ group, options });
+    }
+
+    const allIds: string[] = [...plain.map((o) => o.id)];
+    for (const { options } of okbtByGroup) {
+      for (const o of options) allIds.push(o.id);
+    }
+
+    return {
+      comparePlainOptions: plain,
+      compareOkbtByGroup: okbtByGroup,
+      allCompareOptionIds: allIds,
+    };
   }, []);
   const hasAnyCriteria = useMemo(
     () => Boolean(selectedSaved) || selectedCompareIds.length > 0,
@@ -510,7 +545,7 @@ export default function AkilliFiltrePage() {
                     <div className="shrink-0 flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => setSelectedCompareIds(compareOptions.map((o) => o.id))}
+                        onClick={() => setSelectedCompareIds([...allCompareOptionIds])}
                         className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] text-slate-700 hover:bg-slate-50"
                         title="Tüm normal filtre alanlarını seç">
                         Hepsini seç
@@ -524,25 +559,62 @@ export default function AkilliFiltrePage() {
                       </button>
                     </div>
                   </div>
-                  <div className="grid max-h-48 gap-1 overflow-y-auto pr-1 sm:grid-cols-2 lg:grid-cols-3">
-                    {compareOptions.map((opt) => {
-                      const checked = selectedCompareIds.includes(opt.id);
-                      return (
-                        <label key={opt.id} className="flex items-center gap-1 text-xs text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => {
-                              setSelectedCompareIds((prev) => {
-                                if (e.target.checked) return [...prev, opt.id];
-                                return prev.filter((x) => x !== opt.id);
-                              });
-                            }}
-                          />
-                          <span>{opt.label}</span>
-                        </label>
-                      );
-                    })}
+                  <div className="max-h-[min(70vh,32rem)] space-y-4 overflow-y-auto pr-1">
+                    <div>
+                      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                        Genel sütunlar
+                      </h3>
+                      <p className="mb-2 text-[10px] text-slate-500">
+                        Maç kodu, lig, skor vb.; OKBT (basamak toplamları) aşağıda kaynağına göre gruplu.
+                      </p>
+                      <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+                        {comparePlainOptions.map((opt) => {
+                          const checked = selectedCompareIds.includes(opt.id);
+                          return (
+                            <label key={opt.id} className="flex items-center gap-1 text-xs text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  setSelectedCompareIds((prev) => {
+                                    if (e.target.checked) return [...prev, opt.id];
+                                    return prev.filter((x) => x !== opt.id);
+                                  });
+                                }}
+                              />
+                              <span>{opt.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {compareOkbtByGroup.map(({ group, options }) => (
+                      <div key={group} className="rounded-md border border-slate-200 bg-slate-50/80 p-2">
+                        <h3 className="mb-2 border-b border-slate-200 pb-1 text-[11px] font-semibold text-slate-800">
+                          {group}
+                        </h3>
+                        <div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
+                          {options.map((opt) => {
+                            const checked = selectedCompareIds.includes(opt.id);
+                            return (
+                              <label key={opt.id} className="flex items-center gap-1 text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    setSelectedCompareIds((prev) => {
+                                      if (e.target.checked) return [...prev, opt.id];
+                                      return prev.filter((x) => x !== opt.id);
+                                    });
+                                  }}
+                                />
+                                <span className="font-mono text-[11px]">{opt.label}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
