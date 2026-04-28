@@ -1089,13 +1089,26 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
   const p = raw as Record<string, unknown>;
   const tak = p.takim;
   const z = { pattern: "", committed: "" };
-  const fillHer = (pair: BidirTeamPairState): BidirTeamPairState =>
-    "her" in pair ? pair : { ...pair, her: { ...z } };
+  const lane = (x: unknown): { pattern: string; committed: string } => {
+    if (x && typeof x === "object" && "pattern" in x && "committed" in x) {
+      const o = x as { pattern: unknown; committed: unknown };
+      return { pattern: String(o.pattern ?? ""), committed: String(o.committed ?? "") };
+    }
+    return { ...z };
+  };
+  /** Kayıtlı JSON'da `her` eksik olabilir; spread + `"her" in pair` daraltması Vercel TS'te hata veriyordu. */
+  const fillHer = (pair: unknown): BidirTeamPairState => {
+    if (!pair || typeof pair !== "object") {
+      return { ev: { ...z }, dep: { ...z }, her: { ...z } };
+    }
+    const o = pair as Record<string, unknown>;
+    return { ev: lane(o.ev), dep: lane(o.dep), her: lane(o.her) };
+  };
   if (tak && typeof tak === "object" && "ev" in tak && "dep" in tak) {
     const b = raw as Partial<BidirFiltersState>;
     return {
-      takim: fillHer(b.takim ?? BIDIR_INIT.takim),
-      takimid: fillHer(b.takimid ?? BIDIR_INIT.takimid),
+      takim: fillHer(b.takim),
+      takimid: fillHer(b.takimid),
       takimidH2h: b.takimidH2h ?? false,
       personel: normalizePersonelLanes(b.personel),
     };
