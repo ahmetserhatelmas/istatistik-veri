@@ -1112,6 +1112,7 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
     const b = raw as Partial<BidirFiltersState>;
     return {
       takim: fillHer(b.takim),
+      takimH2h: b.takimH2h ?? false,
       takimid: fillHer(b.takimid),
       takimidH2h: b.takimidH2h ?? false,
       personel: normalizePersonelLanes(b.personel),
@@ -1132,6 +1133,7 @@ function normalizeBidirFromUnknown(raw: unknown): BidirFiltersState {
     };
     return {
       takim: migrateBidirV1ToTeamPair(v1.takim),
+      takimH2h: false,
       takimid: migrateBidirV1ToTeamPair(v1.takimid),
       takimidH2h: false,
       personel: normalizePersonelLanes(v1.personel),
