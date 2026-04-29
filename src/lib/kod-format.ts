@@ -194,6 +194,18 @@ export function isCfColIdFiveDigitKod(colId: string): boolean {
   return FIVE_DIGIT_KOD_COL_IDS.has(colId);
 }
 
+/**
+ * Hane seçimi (⊞) için referans değeri, sütunun şablon genişliğine pad eder.
+ * Örnek: kod_ms "8687" → "08687" (5 hane), id "2830731" → "2830731" (7 hane).
+ * Böylece [4,5] pozisyonları "son 2 hane" olarak doğru çalışır.
+ */
+export function padValueForDigitPattern(colId: string, raw: string): string {
+  if (FIVE_DIGIT_KOD_COL_IDS.has(colId)) return padFiveDigitKodDisplay(raw);
+  if (colId === MAÇ_KODU_COL_ID) return padSevenDigitMatchIdDisplay(raw);
+  if (PAD_ID_COL_IDS.has(colId)) return padIdNumericDisplay(raw, OYUN_KODU_PAD);
+  return raw;
+}
+
 export function isCfColIdMatchCodeId(colId: string): boolean {
   return colId === MAÇ_KODU_COL_ID;
 }

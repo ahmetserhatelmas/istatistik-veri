@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { ALL_COLS, OKBT_MULTI_SOURCES, type ColDef } from "@/lib/columns";
 import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
+import { padValueForDigitPattern } from "@/lib/kod-format";
 
 type SavedFilter = {
   id: string;
@@ -246,7 +247,7 @@ function buildSmartTableState(
       const v = readReferenceValue(selectedRefRow, colId, colById);
       if (!v) continue;
       const mode = colDigitMode[colId] ?? digitPosMode;
-      const pat = buildDigitPosPattern(v, positions, mode);
+      const pat = buildDigitPosPattern(padValueForDigitPattern(colId, v), positions, mode);
       if (pat) colFiltersOut[colId] = pat;
     }
   }
@@ -274,6 +275,7 @@ export default function AkilliFiltrePage() {
   const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [showCompareFilters, setShowCompareFilters] = useState(false);
   const [refRow, setRefRow] = useState<Record<string, unknown> | null>(null);
+  const [refRowLoading, setRefRowLoading] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [showMainTable, setShowMainTable] = useState(false);
   const [tableKey, setTableKey] = useState(0);
@@ -414,25 +416,34 @@ export default function AkilliFiltrePage() {
   useEffect(() => {
     if (!selectedMatchId) {
       setRefRow(null);
+      setRefRowLoading(false);
       setShowMainTable(false);
       return;
     }
     let cancelled = false;
+    setRefRowLoading(true);
+    setRefRow(null);
+    // id ile doğrudan eşleşme; ayrıca selectedDayMatch'teki stub veriyi de fallback olarak dene.
     const p = new URLSearchParams({ cf_id: selectedMatchId, page: "1", limit: "1" });
     fetch(`/api/matches?${p.toString()}`)
       .then((r) => r.json())
       .then((json: MatchesApiResponse) => {
         if (cancelled) return;
         const first = (json.data ?? [])[0] ?? null;
-        setRefRow(first);
+        setRefRow(first ?? (selectedDayMatch as Record<string, unknown> | null));
+        setRefRowLoading(false);
       })
       .catch(() => {
-        if (!cancelled) setRefRow(null);
+        if (!cancelled) {
+          // API başarısız olursa stub veriyle devam et (sınırlı alan ama colClickPos için yeterli).
+          setRefRow(selectedDayMatch as Record<string, unknown> | null);
+          setRefRowLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedMatchId]);
+  }, [selectedMatchId, selectedDayMatch]);
 
   useEffect(() => {
     if (!selectedDayMatch || !refRow || !hasAnyCriteria) {
@@ -480,47 +491,49 @@ export default function AkilliFiltrePage() {
           </div>
         ) : (
           <>
-            <div className="grid gap-2 rounded border border-slate-200 bg-white p-3 sm:grid-cols-3">
-              <label className="text-xs text-slate-700">
-                Tarih (tek gün)
-                <input
-                  type="date"
-                  value={dayIso}
-                  onChange={(e) => setDayIso(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                />
-              </label>
-              <label className="text-xs text-slate-700">
-                Kayıtlı filtre
-                <select
-                  value={savedId}
-                  onChange={(e) => setSavedId(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                >
-                  <option value="">— Kayıtlı filtre seç —</option>
-                  {filters.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs text-slate-700">
-                O günün maçları
-                <select
-                  value={selectedMatchId}
-                  onChange={(e) => setSelectedMatchId(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                  disabled={dayLoading || dayMatches.length === 0}
-                >
-                  <option value="">— Maç seç —</option>
-                  {dayMatches.map((m) => (
-                    <option key={m.id} value={String(m.id)}>
-                      {formatDayMatchLabel(m)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div className="rounded border border-slate-200 bg-white p-3">
+              <div className="flex w-full max-w-md flex-col items-stretch gap-3">
+                <label className="text-xs text-slate-700">
+                  Tarih (tek gün)
+                  <input
+                    type="date"
+                    value={dayIso}
+                    onChange={(e) => setDayIso(e.target.value)}
+                    className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
+                <label className="text-xs text-slate-700">
+                  Kayıtlı filtre
+                  <select
+                    value={savedId}
+                    onChange={(e) => setSavedId(e.target.value)}
+                    className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="">— Kayıtlı filtre seç —</option>
+                    {filters.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-700">
+                  O günün maçları
+                  <select
+                    value={selectedMatchId}
+                    onChange={(e) => setSelectedMatchId(e.target.value)}
+                    className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                    disabled={dayLoading || dayMatches.length === 0}
+                  >
+                    <option value="">— Maç seç —</option>
+                    {dayMatches.map((m) => (
+                      <option key={m.id} value={String(m.id)}>
+                        {formatDayMatchLabel(m)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </div>
 
             <div className="rounded border border-slate-200 bg-white">
@@ -629,7 +642,15 @@ export default function AkilliFiltrePage() {
 
             {!selectedMatchId || !refRow || !hasAnyCriteria || !showMainTable ? (
               <div className="rounded border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
-                Sonuç görmek için maç seçin ve kayıtlı/normal filtreden en az birini işaretleyin.
+                {refRowLoading
+                  ? "Maç verisi yükleniyor…"
+                  : !selectedMatchId
+                  ? "Sonuç görmek için maç seçin ve kayıtlı/normal filtreden en az birini işaretleyin."
+                  : !refRow
+                  ? "Seçilen maç verisi yüklenemedi. Lütfen tekrar deneyin."
+                  : !hasAnyCriteria
+                  ? "Kayıtlı filtre veya normal filtreden en az birini seçin."
+                  : "Filtre uygulanıyor…"}
               </div>
             ) : (
               <div className="rounded border border-slate-200 bg-white overflow-hidden">

@@ -36,6 +36,7 @@ import {
   padIdNumericDisplay,
   padRawKodNumericDisplay,
   padSevenDigitMatchIdDisplay,
+  padValueForDigitPattern,
 } from "@/lib/kod-format";
 import { ardisikSatirCfTarihDegeri, TARIH_ARDISIK_ROW_COUNT } from "@/lib/tarih-ardisik";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
@@ -998,6 +999,8 @@ interface BidirPersonelLanesState {
 
 interface BidirFiltersState {
   takim:    BidirTeamPairState;
+  /** Takım adı Ev+Dep her iki yönde OR: (t1=A AND t2=B) OR (t1=B AND t2=A) */
+  takimH2h: boolean;
   takimid:  BidirTeamPairState;
   /** T-ID Ev+Dep her iki yönde OR: (t1i=A AND t2i=B) OR (t1i=B AND t2i=A) */
   takimidH2h: boolean;
@@ -1006,6 +1009,7 @@ interface BidirFiltersState {
 
 const BIDIR_INIT: BidirFiltersState = {
   takim:    { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" }, her: { pattern: "", committed: "" } },
+  takimH2h: false,
   takimid:  { ev: { pattern: "", committed: "" }, dep: { pattern: "", committed: "" }, her: { pattern: "", committed: "" } },
   takimidH2h: false,
   personel: {
@@ -1569,17 +1573,21 @@ export default function MatchTable() {
     const pat = buildRefPattern(match, field, positions, digitPosMode);
     if (!pat) return;
     if (field === "t1i" || field === "t2i") {
-      // Her iki T-ID'yi doldur; H2H başlangıçta kapalı (yön korunur, kullanıcı isterse açar)
+      // T-ID tabanlı H2H: kadın/erkek ligleri ayrı tutulur, ID'ye özgüdür.
       const patEv  = buildRefPattern(match, "t1i", positions, digitPosMode);
       const patDep = buildRefPattern(match, "t2i", positions, digitPosMode);
+      const emptyLane = { pattern: "", committed: "" };
       setBidirFilters((prev) => ({
         ...prev,
         takimid: {
-          ...prev.takimid,
-          ...(patEv  ? { ev:  { pattern: patEv,  committed: patEv  } } : {}),
-          ...(patDep ? { dep: { pattern: patDep, committed: patDep } } : {}),
+          ev:  patEv  ? { pattern: patEv,  committed: patEv  } : prev.takimid.ev,
+          dep: patDep ? { pattern: patDep, committed: patDep } : prev.takimid.dep,
+          her: emptyLane,
         },
-        takimidH2h: false,
+        takimidH2h: true,
+        // Ad tabanlı filtreleri temizle (ID yeterli)
+        takim: { ev: emptyLane, dep: emptyLane, her: emptyLane },
+        takimH2h: false,
       }));
     } else {
       const colId = REF_FIELD_TO_COL_ID[field];
@@ -1900,6 +1908,7 @@ export default function MatchTable() {
       if (te) p.set("bidir_takim_ev", te);
       if (td) p.set("bidir_takim_dep", td);
       if (th) p.set("bidir_takim_her", th);
+      if (bidirFilters.takimH2h && te && td) p.set("bidir_takim_h2h", "1");
       const tie = bidirFilters.takimid.ev.committed.trim();
       const tid = bidirFilters.takimid.dep.committed.trim();
       if (tie) p.set("bidir_takimid_ev", tie);
@@ -1992,6 +2001,7 @@ export default function MatchTable() {
       bidirFilters.takim.ev.committed,
       bidirFilters.takim.dep.committed,
       bidirFilters.takim.her.committed,
+      bidirFilters.takimH2h,
       bidirFilters.takimid.ev.committed,
       bidirFilters.takimid.dep.committed,
       bidirFilters.takimidH2h,      bidirFilters.personel.hakem.committed,
@@ -2098,7 +2108,7 @@ export default function MatchTable() {
         if (!colDef || !isHaneClickCol(colDef)) continue;
         const raw = pickerStubCellRaw(row, colDef);
         if (!raw) continue;
-        const pat = buildDigitPosPattern(raw, positions, effectiveDigitMode(colId));
+        const pat = buildDigitPosPattern(padValueForDigitPattern(colId, raw), positions, effectiveDigitMode(colId));
         if (pat) updates[colId] = pat;
       }
       if (Object.keys(updates).length === 0) return;
@@ -2708,13 +2718,6 @@ export default function MatchTable() {
             </a>
             <button
               type="button"
-              onClick={() => setShowTarama(true)}
-              title="Tarama modu: eşleşen maçları sıra sıra büyük kart olarak incele (↑/↓ ile geç)"
-              className="bg-slate-800 hover:bg-slate-700 border border-slate-900 text-white text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
-              🔍 Tarama
-            </button>
-            <button
-              type="button"
               onClick={resetAllListFiltersToDefault}
               title="Üst şerit (Lig, Takım, Tarih, skor, MBS…), tüm sütun aramaları, ⇄ satırı, maç odak / kayıtlı filtre şeridi, sıralama, skor kutusu ve tarama modunu sıfırlar. Sütun görünürlüğü / sırası (☰ Sütunlar) değişmez."
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
@@ -2862,7 +2865,6 @@ export default function MatchTable() {
 
                 {/* ── Araç çubuğu ── */}
                 <div className="flex flex-wrap gap-2 mb-3 pb-3 border-b border-gray-700">
-                  <button onClick={selectAll} className="text-xs bg-blue-700 hover:bg-blue-600 px-2 py-1 rounded">Hepsini Seç</button>
                   <button onClick={resetCols} className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-900 px-2 py-1 rounded border border-gray-300">Varsayılan</button>
                   <button onClick={hideAll}   className="text-xs bg-red-900/60 hover:bg-red-800/60 px-2 py-1 rounded">Hepsini Gizle</button>
                   <span className="text-xs text-gray-700 self-center ml-auto">{visibleIds.size} / {mergedCols.length}</span>
@@ -3130,7 +3132,7 @@ export default function MatchTable() {
               {refMatch.selected && (() => {
                 const rawVal = String(refMatch.selected[refMatch.field] ?? "").replace(/\D/g, "");
                 if (!rawVal) return null;
-            return (
+                return (
                   <div className="flex items-center gap-0.5">
                     <span className="text-gray-500 text-[10px]">Hane:</span>
                     {rawVal.split("").map((ch, i) => {
@@ -3150,13 +3152,13 @@ export default function MatchTable() {
                           }}
                           className={`w-[18px] h-[18px] text-[9px] flex items-center justify-center rounded border font-bold transition ${isSel ? "bg-blue-600 border-blue-700 text-white" : "bg-white border-gray-400 text-gray-600 hover:bg-blue-100"}`}>
                           {DIGIT_POS_LABEL[pos] ?? pos}
-              </button>
-            );
-          })}
+                        </button>
+                      );
+                    })}
                     <span className="text-[10px] font-mono text-blue-700 ml-1">
                       = {buildRefPattern(refMatch.selected, refMatch.field, refMatch.positions)}
                     </span>
-        </div>
+                  </div>
                 );
               })()}
 

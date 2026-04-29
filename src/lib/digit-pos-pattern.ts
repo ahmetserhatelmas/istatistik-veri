@@ -12,7 +12,11 @@ export function isHaneSeparator(ch: string): boolean {
 export type DigitPosMode = "contains" | "positional";
 
 /**
- * mode="contains"   → baş ve son ? blokları * olur: *09* (herhangi yerde bul, ilike %09%)
+ * mode="contains"   → seçilen pozisyonlara göre akıllı joker:
+ *   - Baş pozisyonlar seçilmemişse leading `*` eklenir  (*09)
+ *   - Son pozisyonlar seçilmemişse trailing `*` eklenir  (09*)
+ *   - Her iki uç da seçilmemişse her ikisi de eklenir    (*09*)
+ *   - D+E (son 2 hane) → *87  |  A+B (ilk 2 hane) → 08*  |  B+C+D → *86*
  * mode="positional" → ? karakterleri olduğu gibi kalır: ?09???? (tam pozisyon eşleşmesi)
  */
 export function buildDigitPosPattern(
@@ -33,9 +37,14 @@ export function buildDigitPosPattern(
     }
   }
   if (mode === "contains") {
-    result = result.replace(/^[?\s]+/, "*").replace(/[?\s]+$/, "*");
-    if (!result.startsWith("*")) result = `*${result}`;
-    if (!result.endsWith("*")) result = `${result}*`;
+    // Baş veya sondaki seçilmemiş (`?`) haneler varsa o tarafa `*` ekle;
+    // yoksa wildcard ekleme (prefix / suffix / exact arama).
+    const hadLeadingQ = /^[?\s]/.test(result);
+    const hadTrailingQ = /[?\s]$/.test(result);
+    result = result.replace(/^[?\s]+/, "").replace(/[?\s]+$/, "");
+    if (!result) return "*";
+    if (hadLeadingQ) result = "*" + result;
+    if (hadTrailingQ) result = result + "*";
   }
   return result;
 }
