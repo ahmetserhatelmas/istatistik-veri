@@ -19,7 +19,8 @@ export async function proxy(req: NextRequest) {
     p === "/api/matches" ||
     p === "/api/matches/raw-keys" ||
     p === "/api/sync-status" ||
-    p === "/api/balance"
+    p === "/api/balance" ||
+    p === "/api/filters"
   ) {
     return res;
   }

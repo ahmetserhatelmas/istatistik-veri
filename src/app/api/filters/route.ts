@@ -2,8 +2,8 @@
  * /api/filters — Kayıtlı filtre çekmeceleri (user-specific)
  *
  *   GET    /api/filters           → kullanıcının filtre listesi (en son güncellenen üstte)
- *   POST   /api/filters           → yeni filtre kaydet { name, payload }
- *   PATCH  /api/filters?id=...    → var olanı güncelle { name?, payload? }
+ *   POST   /api/filters           → yeni filtre kaydet { name, payload, folder? }
+ *   PATCH  /api/filters?id=...    → var olanı güncelle { name?, payload?, folder? }
  *   DELETE /api/filters?id=...    → sil
  *
  * Tüm işlemler RLS ile korunur (saved_filters tablosunda auth.uid() = user_id).
@@ -18,14 +18,25 @@ interface SavedFilterPayload {
   [key: string]: unknown;
 }
 
+const FOLDER_MAX = 60;
+
+function normalizeFolder(raw: unknown): string {
+  if (raw == null) return "";
+  const s = String(raw).trim();
+  if (!s) return "";
+  return s.length > FOLDER_MAX ? s.slice(0, FOLDER_MAX) : s;
+}
+
 interface CreateBody {
   name: string;
   payload: SavedFilterPayload;
+  folder?: string;
 }
 
 interface UpdateBody {
   name?: string;
   payload?: SavedFilterPayload;
+  folder?: string | null;
 }
 
 async function requireUser() {
@@ -43,7 +54,7 @@ export async function GET() {
   }
   const { data, error } = await supabase
     .from("saved_filters")
-    .select("id, name, payload, created_at, updated_at")
+    .select("id, name, folder, payload, created_at, updated_at")
     .order("updated_at", { ascending: false });
   if (error) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
@@ -70,11 +81,12 @@ export async function POST(req: NextRequest) {
   if (!body.payload || typeof body.payload !== "object") {
     return NextResponse.json({ ok: false, error: "payload zorunlu" }, { status: 400 });
   }
+  const folder = normalizeFolder(body.folder);
 
   const { data, error } = await supabase
     .from("saved_filters")
-    .insert({ user_id: user.id, name, payload: body.payload })
-    .select("id, name, payload, created_at, updated_at")
+    .insert({ user_id: user.id, name, folder, payload: body.payload })
+    .select("id, name, folder, payload, created_at, updated_at")
     .single();
 
   if (error) {
@@ -116,6 +128,11 @@ export async function PATCH(req: NextRequest) {
   if (body.payload && typeof body.payload === "object") {
     patch.payload = body.payload;
   }
+  // `folder: ""` ile grupsuz yapılabilmeli
+  if (body != null && typeof body === "object" && "folder" in body) {
+    const rawFolder = (body as Record<string, unknown>).folder;
+    patch.folder = rawFolder === null || rawFolder === undefined ? "" : normalizeFolder(String(rawFolder));
+  }
   if (Object.keys(patch).length === 0) {
     return NextResponse.json({ ok: false, error: "Güncellenecek alan yok" }, { status: 400 });
   }
@@ -124,7 +141,7 @@ export async function PATCH(req: NextRequest) {
     .from("saved_filters")
     .update(patch)
     .eq("id", id)
-    .select("id, name, payload, created_at, updated_at")
+    .select("id, name, folder, payload, created_at, updated_at")
     .single();
 
   if (error) {

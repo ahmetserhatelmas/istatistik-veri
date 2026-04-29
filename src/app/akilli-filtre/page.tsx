@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { ALL_COLS, OKBT_MULTI_SOURCES, type ColDef } from "@/lib/columns";
 import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
@@ -10,6 +10,7 @@ import { padValueForDigitPattern } from "@/lib/kod-format";
 type SavedFilter = {
   id: string;
   name: string;
+  folder?: string | null;
   payload: Record<string, unknown>;
 };
 
@@ -82,6 +83,20 @@ function formatDayMatchLabel(m: DayMatch): string {
   const t1 = trimStr(m.t1) || "?";
   const t2 = trimStr(m.t2) || "?";
   return `${sa} — ${m.id} — ${t1} & ${t2}`;
+}
+
+/** Combobox: takım adı, lig, maç ID veya tam satır etiketi ile gün listesini süz */
+function dayMatchMatchesComboQuery(m: DayMatch, q: string): boolean {
+  const t = trimStr(q).toLowerCase();
+  if (!t) return true;
+  const id = String(m.id ?? "");
+  if (/^\d+$/.test(t)) return id.includes(t);
+  const t1 = trimStr(m.t1).toLowerCase();
+  const t2 = trimStr(m.t2).toLowerCase();
+  const lig = trimStr(m.lig_adi).toLowerCase();
+  const label = formatDayMatchLabel(m).toLowerCase();
+  const hay = `${id} ${t1} ${t2} ${lig} ${label}`;
+  return hay.includes(t);
 }
 
 function extractDayOfMonth(value: unknown): string {
@@ -279,15 +294,46 @@ export default function AkilliFiltrePage() {
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [showMainTable, setShowMainTable] = useState(false);
   const [tableKey, setTableKey] = useState(0);
+  /** O günün maçları: yazılabilir combobox */
+  const [matchComboInput, setMatchComboInput] = useState("");
+  const [matchComboOpen, setMatchComboOpen] = useState(false);
+  const dayMatchComboRef = useRef<HTMLDivElement>(null);
 
   const selectedSaved = useMemo(
     () => filters.find((f) => f.id === savedId) ?? null,
     [filters, savedId],
   );
+
+  /** Filtreleri klasöre göre grupla: klasörlü olanlar önce (alfabetik), grupsuz en son. */
+  const groupedFilters = useMemo(() => {
+    const folderMap = new Map<string, SavedFilter[]>();
+    const ungrouped: SavedFilter[] = [];
+    for (const f of filters) {
+      const folder = f.folder?.trim() ?? "";
+      if (!folder) {
+        ungrouped.push(f);
+      } else {
+        const arr = folderMap.get(folder) ?? [];
+        arr.push(f);
+        folderMap.set(folder, arr);
+      }
+    }
+    const sorted = [...folderMap.entries()].sort(([a], [b]) => a.localeCompare(b, "tr"));
+    return { sorted, ungrouped };
+  }, [filters]);
   const selectedDayMatch = useMemo(
     () => dayMatches.find((m) => String(m.id) === selectedMatchId) ?? null,
     [dayMatches, selectedMatchId],
   );
+  const selectedDayMatchLabel = useMemo(
+    () => (selectedDayMatch ? formatDayMatchLabel(selectedDayMatch) : ""),
+    [selectedDayMatch],
+  );
+  const filteredDayMatches = useMemo(() => {
+    const q = matchComboInput.trim();
+    if (!q) return dayMatches;
+    return dayMatches.filter((m) => dayMatchMatchesComboQuery(m, q));
+  }, [dayMatches, matchComboInput]);
   const { comparePlainOptions, compareOkbtByGroup, allCompareOptionIds } = useMemo(() => {
     const seen = new Set<string>();
     const plain: CompareOption[] = [{ id: SPECIAL_COMPARE_DAY, label: "Tarih günü (dd)" }];
@@ -364,6 +410,8 @@ export default function AkilliFiltrePage() {
 
   const loadMatchesForDay = useCallback(async () => {
     setSelectedMatchId("");
+    setMatchComboInput("");
+    setMatchComboOpen(false);
     setRefRow(null);
     setShowMainTable(false);
     setSearchErr(null);
@@ -412,6 +460,16 @@ export default function AkilliFiltrePage() {
     if (!loggedIn) return;
     void loadMatchesForDay();
   }, [loggedIn, loadMatchesForDay]);
+
+  useEffect(() => {
+    function onDocMouseDown(e: MouseEvent) {
+      const el = dayMatchComboRef.current;
+      if (!el || el.contains(e.target as Node)) return;
+      setMatchComboOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, []);
 
   useEffect(() => {
     if (!selectedMatchId) {
@@ -510,29 +568,99 @@ export default function AkilliFiltrePage() {
                     className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
                   >
                     <option value="">— Kayıtlı filtre seç —</option>
-                    {filters.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name}
-                      </option>
+                    {groupedFilters.sorted.map(([folder, items]) => (
+                      <optgroup key={folder} label={folder}>
+                        {items.map((f) => (
+                          <option key={f.id} value={f.id}>{f.name}</option>
+                        ))}
+                      </optgroup>
                     ))}
+                    {groupedFilters.ungrouped.length > 0 && (
+                      groupedFilters.sorted.length > 0
+                        ? (
+                          <optgroup label="Grupsuz">
+                            {groupedFilters.ungrouped.map((f) => (
+                              <option key={f.id} value={f.id}>{f.name}</option>
+                            ))}
+                          </optgroup>
+                        )
+                        : groupedFilters.ungrouped.map((f) => (
+                          <option key={f.id} value={f.id}>{f.name}</option>
+                        ))
+                    )}
                   </select>
                 </label>
-                <label className="text-xs text-slate-700">
-                  O günün maçları
-                  <select
-                    value={selectedMatchId}
-                    onChange={(e) => setSelectedMatchId(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                <div ref={dayMatchComboRef} className="text-xs text-slate-700">
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="akilli-day-match-combo" className="cursor-default">
+                      O günün maçları
+                    </label>
+                    {selectedMatchId && !dayLoading && dayMatches.length > 0 ? (
+                      <button
+                        type="button"
+                        className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                        onClick={() => {
+                          setSelectedMatchId("");
+                          setMatchComboInput("");
+                          setMatchComboOpen(false);
+                        }}
+                        title="Maç seçimini temizle">
+                        Temizle
+                      </button>
+                    ) : null}
+                  </div>
+                  <input
+                    id="akilli-day-match-combo"
+                    type="text"
+                    value={matchComboInput}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setMatchComboInput(v);
+                      setMatchComboOpen(true);
+                      if (selectedMatchId && v !== selectedDayMatchLabel) {
+                        setSelectedMatchId("");
+                      }
+                    }}
+                    onFocus={() => setMatchComboOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setMatchComboOpen(false);
+                    }}
+                    placeholder={
+                      dayLoading
+                        ? "Yükleniyor…"
+                        : dayMatches.length === 0
+                          ? "Bu tarihte maç yok"
+                          : "Takım, lig veya maç ID — listeden de seçin"
+                    }
                     disabled={dayLoading || dayMatches.length === 0}
-                  >
-                    <option value="">— Maç seç —</option>
-                    {dayMatches.map((m) => (
-                      <option key={m.id} value={String(m.id)}>
-                        {formatDayMatchLabel(m)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs disabled:bg-slate-100"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {matchComboOpen && !dayLoading && dayMatches.length > 0 ? (
+                    <ul className="relative z-30 mt-0.5 max-h-52 w-full overflow-y-auto rounded border border-slate-200 bg-white py-0.5 shadow-md">
+                      {filteredDayMatches.length === 0 ? (
+                        <li className="px-2 py-1.5 text-[11px] text-slate-400">Eşleşen maç yok</li>
+                      ) : (
+                        filteredDayMatches.map((m) => (
+                          <li key={m.id}>
+                            <button
+                              type="button"
+                              className="w-full px-2 py-1 text-left text-[11px] text-slate-800 hover:bg-slate-50"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => {
+                                setSelectedMatchId(String(m.id));
+                                setMatchComboInput(formatDayMatchLabel(m));
+                                setMatchComboOpen(false);
+                              }}>
+                              {formatDayMatchLabel(m)}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  ) : null}
+                </div>
               </div>
             </div>
 
