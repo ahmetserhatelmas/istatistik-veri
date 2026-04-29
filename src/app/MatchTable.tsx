@@ -1493,6 +1493,8 @@ export default function MatchTable() {
   const [loadedSavedFilterName, setLoadedSavedFilterName] = useState<string | null>(null);
   /** Kayıtlı filtre şeridinde referans maç (picker); ana liste `cf_id` ile kısıtlanmaz — yalnızca desen / maça göre doldurma */
   const [focusMatchId, setFocusMatchId] = useState<string | null>(null);
+  /** Araç çubuğu “Referans Maç” ile tek maç seçildiğinde `cf_id` her zaman gönderilir (kayıtlı filtre açıkken bile). */
+  const [singleRefTableLock, setSingleRefTableLock] = useState(false);
   const [pickerRows, setPickerRows] = useState<PickerMatchRow[]>([]);
   const [pickerLoading, setPickerLoading] = useState(false);
   /** null = henüz maç seçilmedi (— Maç seç —); böylece ilk maça tıklanınca da onChange çalışır. */
@@ -1503,6 +1505,13 @@ export default function MatchTable() {
 
   // 🔍 Tarama Modu — sıra sıra maç inceleme
   const [showTarama, setShowTarama] = useState(false);
+
+  /** Toolbar: tek maç seçimi (modal) — takım çifti veya maç ID ile ara, seçileni tabloda yalnızca o satır olarak göster */
+  const [singleRefModalOpen, setSingleRefModalOpen] = useState(false);
+  const [singleRefQuery, setSingleRefQuery] = useState("");
+  const [singleRefResults, setSingleRefResults] = useState<Match[]>([]);
+  const [singleRefLoading, setSingleRefLoading] = useState(false);
+  const singleRefTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // çift yönlü arama
   const [bidirFilters, setBidirFilters] = useState<BidirFiltersState>(readBidirFiltersFromStorage);
@@ -1603,6 +1612,36 @@ export default function MatchTable() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setBidirFilters, setColFilters, digitPosMode]);
 
+  /** Takım adını prefix ILIKE desenine sarar: bar → bar* (index dostu, hızlı) */
+  const wrapPartial = (s: string) => {
+    const t = s.trim();
+    if (!t || t.includes('*') || t.includes('?')) return t;
+    return `${t}*`;
+  };
+
+  const fetchRefMatchSuggestions = useCallback(async (q: string): Promise<Match[]> => {
+    const trimmed = q.trim();
+    if (!trimmed) return [];
+    const p = new URLSearchParams({ limit: '20' });
+    const num = Number(trimmed);
+    if (!isNaN(num) && trimmed.length > 3) {
+      p.set('cf_id', trimmed);
+    } else {
+      const sepMatch = trimmed.match(/^(.+?)\s*(?:--|[-–—])\s*(.+)$/) ?? trimmed.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+      if (sepMatch) {
+        // Tireden önce = ev (t1), tireden sonra = deplasman (t2); yön korunur, H2H değil
+        p.set('bidir_takim_ev', wrapPartial(sepMatch[1]!));
+        p.set('bidir_takim_dep', wrapPartial(sepMatch[2]!));
+      } else {
+        p.set('bidir_takim_her', wrapPartial(trimmed));
+      }
+    }
+    const res = await fetch(`/api/matches?${p}`);
+    const json: ApiResponse = await res.json();
+    return json.data ?? [];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Ref maç arama (debounced)
   const searchRefMatches = useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -1611,31 +1650,29 @@ export default function MatchTable() {
     }
     setRefMatch((prev) => ({ ...prev, loading: true, isOpen: true }));
     try {
-      const p = new URLSearchParams({ limit: "20" });
-      const trimmed = q.trim();
-      const num = Number(trimmed);
-      if (!isNaN(num) && trimmed.length > 3) {
-        // Sayısal → maç ID ile ara
-        p.set("cf_id", trimmed);
-      } else {
-        // "t1 - t2" veya "t1 vs t2" formatı → H2H arama
-        const sepMatch = trimmed.match(/^(.+?)\s*[-–—]\s*(.+)$/) ?? trimmed.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
-        if (sepMatch) {
-          p.set("bidir_takim_ev", sepMatch[1]!.trim());
-          p.set("bidir_takim_dep", sepMatch[2]!.trim());
-          p.set("bidir_takim_h2h", "1");
-        } else {
-          // Tek takım adı → her iki yönde ara (Ev+Dep OR)
-          p.set("bidir_takim_her", trimmed);
-        }
-      }
-      const res = await fetch(`/api/matches?${p}`);
-      const json: ApiResponse = await res.json();
-      setRefMatch((prev) => ({ ...prev, results: json.data ?? [], loading: false, isOpen: true }));
+      const results = await fetchRefMatchSuggestions(q);
+      setRefMatch((prev) => ({ ...prev, results, loading: false, isOpen: true }));
     } catch {
       setRefMatch((prev) => ({ ...prev, results: [], loading: false }));
     }
-  }, []);
+  }, [fetchRefMatchSuggestions]);
+
+  const searchSingleRefModal = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setSingleRefResults([]);
+      setSingleRefLoading(false);
+      return;
+    }
+    setSingleRefLoading(true);
+    try {
+      const results = await fetchRefMatchSuggestions(q);
+      setSingleRefResults(results);
+    } catch {
+      setSingleRefResults([]);
+    } finally {
+      setSingleRefLoading(false);
+    }
+  }, [fetchRefMatchSuggestions]);
 
   const searchTakimSuggest = useCallback(async (q: string, lane: "ev" | "dep" | "her") => {
     const genRef = lane === "ev" ? takimSuggestEvGenRef : lane === "dep" ? takimSuggestDepGenRef : takimSuggestHerGenRef;
@@ -1732,6 +1769,15 @@ export default function MatchTable() {
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
+
+  useEffect(() => {
+    if (!singleRefModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSingleRefModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [singleRefModalOpen]);
 
   // görünüm presetleri
   const [viewPresets, setViewPresets] = useState<ViewPreset[]>(
@@ -1926,8 +1972,8 @@ export default function MatchTable() {
         if (v.trim()) p.set(k, v.trim());
       });
       const fid = focusMatchId?.trim();
-      /** Kayıtlı filtre + oynanmamış picker: referans maç yalnızca ⊞ desen / “Maça göre doldur” için; `cf_id` gönderilirse tablo tek maça kilitlenir (kullanıcı tüm DB’de `?????6` gibi arar). */
-      const omitPickerFocusCfId = Boolean(loadedSavedFilterName?.trim());
+      /** Kayıtlı filtre + picker: varsayılan olarak `cf_id` gönderilmez; “Referans Maç” modalından tek maç seçilince `singleRefTableLock` ile gönderilir. */
+      const omitPickerFocusCfId = Boolean(loadedSavedFilterName?.trim()) && !singleRefTableLock;
       Object.entries(dbColFiltersApplied).forEach(([id, v]) => {
         if (!v.trim()) return;
         if (anyKodSuffix && shouldSuppressCfWhenKsAny(id)) return;
@@ -1967,6 +2013,7 @@ export default function MatchTable() {
       bidirFilters.takim.ev.committed,
       bidirFilters.takim.dep.committed,
       bidirFilters.takim.her.committed,
+      bidirFilters.takimH2h,
       bidirFilters.takimid.ev.committed,
       bidirFilters.takimid.dep.committed,
       bidirFilters.takimidH2h,
@@ -1976,6 +2023,7 @@ export default function MatchTable() {
       bidirFilters.personel.antHer.committed,
       anyKodSuffix,
       loadedSavedFilterName,
+      singleRefTableLock,
     ],
   );
 
@@ -2155,7 +2203,7 @@ export default function MatchTable() {
     const idx = pickerRows.findIndex((r) => String(r.id) === focusMatchId);
     if (idx < 0) {
       setPickerSelectedIndex(null);
-      setFocusMatchId(null);
+      // cf_id ile tek maç gösterilebilir; picker listesinde olmayan odak ID’si geçerli kalabilir
       return;
     }
     setPickerSelectedIndex((prev) => (prev === idx ? prev : idx));
@@ -2170,6 +2218,7 @@ export default function MatchTable() {
     applyReferenceFieldsFromPickerRow(row);
     applyDigitPatternsFromPickerRow(row);
     setPickerSelectedIndex(ni);
+    setSingleRefTableLock(false);
     setFocusMatchId(String(row.id));
     setPage(1);
   }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow, applyDigitPatternsFromPickerRow]);
@@ -2182,6 +2231,7 @@ export default function MatchTable() {
     applyReferenceFieldsFromPickerRow(row);
     applyDigitPatternsFromPickerRow(row);
     setPickerSelectedIndex(ni);
+    setSingleRefTableLock(false);
     setFocusMatchId(String(row.id));
     setPage(1);
   }, [pickerRows, pickerSelectedIndex, applyReferenceFieldsFromPickerRow, applyDigitPatternsFromPickerRow]);
@@ -2190,6 +2240,7 @@ export default function MatchTable() {
   const clearPickerMatchFocus = useCallback(() => {
     setFocusMatchId(null);
     setPickerSelectedIndex(null);
+    setSingleRefTableLock(false);
     setPage(1);
   }, []);
 
@@ -2550,6 +2601,8 @@ export default function MatchTable() {
     personelAntHerGenRef.current += 1;
     if (refMatchTimerRef.current) clearTimeout(refMatchTimerRef.current);
     refMatchTimerRef.current = null;
+    if (singleRefTimerRef.current) clearTimeout(singleRefTimerRef.current);
+    singleRefTimerRef.current = null;
     if (takimEvTimerRef.current) clearTimeout(takimEvTimerRef.current);
     takimEvTimerRef.current = null;
     if (takimDepTimerRef.current) clearTimeout(takimDepTimerRef.current);
@@ -2582,6 +2635,10 @@ export default function MatchTable() {
     setApplied(top);
     lsSet(LS_TOP_FILT, top);
     setFocusMatchId(null);
+    setSingleRefTableLock(false);
+    setSingleRefModalOpen(false);
+    setSingleRefQuery("");
+    setSingleRefResults([]);
     setLoadedSavedFilterName(null);
     setSortCol(null);
     setSortDir("asc");
@@ -2716,6 +2773,22 @@ export default function MatchTable() {
               className="bg-white hover:bg-gray-100 border border-gray-300 text-gray-900 text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap">
               🧠 Akıllı Filtre
             </a>
+            <button
+              type="button"
+              onClick={() => {
+                setSingleRefModalOpen(true);
+                setSingleRefQuery("");
+                setSingleRefResults([]);
+              }}
+              title="Takım çifti (örn. Barcelona - Real Madrid) veya maç ID ile ara; listeden bir maç seçince tablo yalnızca o satırı gösterir."
+              className={`border text-xs px-3 py-1.5 rounded transition font-medium whitespace-nowrap ${
+                singleRefTableLock && focusMatchId
+                  ? "bg-emerald-50 border-emerald-600 text-emerald-900 hover:bg-emerald-100"
+                  : "bg-white border-gray-300 text-gray-900 hover:bg-gray-100"
+              }`}
+            >
+              {singleRefTableLock && focusMatchId ? "📌 Referans Maç ✓" : "📌 Referans Maç"}
+            </button>
             <button
               type="button"
               onClick={resetAllListFiltersToDefault}
@@ -4024,6 +4097,7 @@ export default function MatchTable() {
                   applyReferenceFieldsFromPickerRow(row);
                   applyDigitPatternsFromPickerRow(row);
                   setPickerSelectedIndex(i);
+                  setSingleRefTableLock(false);
                   setFocusMatchId(String(row.id));
                   setPage(1);
                 }}
@@ -4071,6 +4145,104 @@ export default function MatchTable() {
         </div>
       )}
 
+      {/* ── Referans Maç: tek satır tablo (cf_id) ── */}
+      {singleRefModalOpen && (
+        <div
+          className="fixed inset-0 z-[240] flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-16 sm:pt-24"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="single-ref-match-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSingleRefModalOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-4 text-sm shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <h2 id="single-ref-match-title" className="text-base font-semibold text-gray-900">
+                Referans Maç
+              </h2>
+              <button
+                type="button"
+                className="shrink-0 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-50"
+                onClick={() => setSingleRefModalOpen(false)}
+                aria-label="Kapat"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="mb-2 text-xs text-gray-600">
+              Takım çifti yazın (örn. <span className="font-mono">barcelona - real madrid</span>) veya maç ID. Aşağıdan bir maç seçin; tabloda yalnızca o maç listelenir.
+            </p>
+            <input
+              value={singleRefQuery}
+              onChange={(e) => {
+                const q = e.target.value;
+                setSingleRefQuery(q);
+                if (singleRefTimerRef.current) clearTimeout(singleRefTimerRef.current);
+                singleRefTimerRef.current = setTimeout(() => {
+                  void searchSingleRefModal(q);
+                }, 350);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setSingleRefModalOpen(false);
+              }}
+              placeholder="Takım1 - Takım2 veya maç ID…"
+              className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
+              autoFocus
+            />
+            <div className="mt-2 max-h-56 overflow-y-auto rounded border border-gray-200 bg-gray-50/80">
+              {singleRefLoading && (
+                <div className="px-2 py-2 text-xs text-gray-500">Aranıyor…</div>
+              )}
+              {!singleRefLoading && singleRefQuery.trim() && singleRefResults.length === 0 && (
+                <div className="px-2 py-2 text-xs text-gray-400">Sonuç yok</div>
+              )}
+              {!singleRefLoading &&
+                singleRefResults.map((m, i) => (
+                  <button
+                    key={`${String(m.id)}-${i}`}
+                    type="button"
+                    className="w-full border-b border-gray-100 px-2 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-blue-50"
+                    onClick={() => {
+                      setSingleRefTableLock(true);
+                      setFocusMatchId(String(m.id));
+                      setPage(1);
+                      setSingleRefModalOpen(false);
+                      setSingleRefQuery("");
+                      setSingleRefResults([]);
+                    }}
+                  >
+                    <span className="mr-1 font-mono text-gray-500">{String(m.id)}</span>
+                    <span className="text-gray-800">
+                      {String(m.t1 ?? "")} – {String(m.t2 ?? "")}
+                    </span>
+                  </button>
+                ))}
+            </div>
+            {singleRefTableLock && focusMatchId && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3 text-xs">
+                <span className="text-gray-600">
+                  Aktif: <span className="font-mono font-medium text-emerald-800">{focusMatchId}</span>
+                </span>
+                <button
+                  type="button"
+                  className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-emerald-900 hover:bg-emerald-100"
+                  onClick={() => {
+                    clearPickerMatchFocus();
+                    setSingleRefModalOpen(false);
+                  }}
+                >
+                  Tek maç filtresini kaldır
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Eşleştirme Paneli (modal) ── */}
       <EslestirmePaneli
         open={showEslestirme}
@@ -4088,6 +4260,7 @@ export default function MatchTable() {
           applyFilterSnapshot(payload, name);
           setLoadedSavedFilterName(name);
           setFocusMatchId(null);
+          setSingleRefTableLock(false);
         }}
       />
 

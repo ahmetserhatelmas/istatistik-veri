@@ -441,7 +441,9 @@ function escapeIlikeExactLiteral(s: string): string {
 function plainOrWildcardIlikePattern(raw: string): string {
   const t = raw.trim();
   if (!t) return "";
-  return t.includes("*") || t.includes("?") ? cfPatternToIlikePattern(t) : escapeIlikeExactLiteral(t);
+  // `--` SQL yorum başlatıcısı: PostgREST ILIKE string'i içinde yine de sorun çıkarabilir → tek tireye indir
+  const safe = t.replace(/--+/g, "-");
+  return safe.includes("*") || safe.includes("?") ? cfPatternToIlikePattern(safe) : escapeIlikeExactLiteral(safe);
 }
 
 // ─── Genel filtre parser ───────────────────────────────────────────────────
