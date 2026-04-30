@@ -1154,21 +1154,22 @@ function escapePostgresRegexForImatch(s: string): string {
 }
 
 /**
- * `tarih_tr_gunlu` ≈ "26.04.2026 pazartesi" — kullanıcı `*r` = gün adı **r ile başlasın** ister;
- * eski davranış `*r` → `%r%` tüm metinde "pazartesi" içindeki `r` yüzünden yanlış pozitifti.
- * - `*perş`, `*pazar` → tarih + boşluktan sonra önek eşleşmesi (PostgREST `imatch`)
- * - `paz*`, `cum*` → aynı (sondaki `*` glob önek)
+ * `tarih_tr_gunlu` ≈ "26.04.2026 pazartesi"
+ * - `cum*`, `paz*`  → trailing wildcard → gün adı bu ÖN EK ile başlasın  → prefix regex
+ * - `*a`, `*esi`    → leading wildcard  → gün adı bu SON EK ile bitsin   → suffix regex
  * İçinde `*`,`?` karmaşası veya `_` boş → eski ILIKE `gunCfValueForSubstringIlike` yolu.
  */
 function parseGunWeekdayPrefixImatchPattern(atom: string): string | null {
   const t = atom.trim();
   if (!t || isBlankCellOrToken(t)) return null;
+  // *a → gün adı 'a' ile bitmeli (leading wildcard = suffix match)
   const lead = /^\*+([^*?+,]+)$/.exec(t);
   if (lead) {
     const p = lead[1]!.trim();
     if (!p) return null;
-    return `^[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{4}\\s+${escapePostgresRegexForImatch(p)}`;
+    return `^[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{4}\\s+.*${escapePostgresRegexForImatch(p)}$`;
   }
+  // a* → gün adı 'a' ile başlamalı (trailing wildcard = prefix match)
   const trail = /^([^*?+,]+)\*+$/.exec(t);
   if (trail) {
     const p = trail[1]!.trim();
@@ -1476,6 +1477,22 @@ const OKBT_SRC_MAX_IDX: Record<string, number> = {
   kodhms11: 25, kodhms12: 25, kodhms21: 25, kodhms22: 25,
 };
 
+/**
+ * Sadece raw_data JSONB üzerinden hesaplanan OKBT kaynakları.
+ * Bu kaynaklar için sunucu tarafı filtreleme tarih kısıtı olmadan tam tablo
+ * taraması yapar (~400k satır × fonksiyon çağrısı) → timeout.
+ * Çözüm: tarih filtresi yoksa sunucu filtresini atla, istemci uygular.
+ */
+const OKBT_RAW_DATA_SRCS = new Set<string>([
+  'kodig','kodikys',
+  'kodiyau05','kodiyau15','kodiyau25','kodiyms','kodkg',
+  'kodmsau15','kodmsau25','kodmsau35','kodmsau45',
+  'kodsk','kodtc','kodtg',
+  'koddau05','koddau15','koddau25','koddau35','koddcgoy',
+  'kodeau05','kodeau15','kodeau25','kodeau35',
+  'kodhms11','kodhms12','kodhms21','kodhms22',
+]);
+
 function parseObktbSrcIdx(colId: string): { src: string; idx: number } | null {
   const m = /^([a-z][a-z0-9]*)_obktb_(\d{1,3})$/.exec(colId);
   if (!m) return null;
@@ -1555,6 +1572,34 @@ function parseObktbServerOrGroups(raw: string): OkbtSeg[][] | null {
     groups.push(andSegs);
   }
   return groups.length ? groups : null;
+}
+
+/**
+ * OkbtSeg gruplarını (OR-of-AND) 0..26 aralığında tam sayı listesine genişletir.
+ * RPC parametresi olarak kullanılır; "blank" (null) içeren gruplarda null döner (RPC desteklemez).
+ */
+function expandObktbGroupsToInts(groups: OkbtSeg[][]): number[] | "all" | "none" | null {
+  for (const andSegs of groups) {
+    if (andSegs.some((s) => s.kind === "blank")) return null;
+  }
+  const fullRange = Array.from({ length: 27 }, (_, i) => i); // 0..26
+  const matching = new Set<number>();
+  for (const andSegs of groups) {
+    for (const n of fullRange) {
+      const ok = andSegs.every((seg) => {
+        if (seg.kind === "blank") return false;
+        if (seg.kind === "neq") return n !== seg.n;
+        const { min, max } = seg;
+        if (min !== null && n < min) return false;
+        if (max !== null && n > max) return false;
+        return true;
+      });
+      if (ok) matching.add(n);
+    }
+  }
+  if (matching.size === 0) return "none";
+  if (matching.size === fullRange.length) return "all";
+  return [...matching];
 }
 
 function okbtSegToPostgrestStr(fnName: string, seg: OkbtSeg): string {
@@ -1877,6 +1922,8 @@ export async function GET(req: NextRequest) {
 
   /** İndeks tablosu dolu + taban `matches` sorgusu → URL’de dev id listesi yok; `match_raw_kod_suffix!inner` ile filtre. */
   let ksAnyJoinSpec: { n: number; suffix: number } | null = null;
+  /** URL sınırı aşılan join yolunda RPC'nin döndürdüğü gerçek eşleşme sayısı (pagination için). */
+  let ksJoinTotalHint: number | null = null;
 
   const ksAnySuffixParsed = (() => {
     if (!/^\d+$/.test(ksAnySuffixRaw) || ksAnySuffixRaw.length !== ksAnyN || !KS_N_OK.has(ksAnyN)) {
@@ -1890,19 +1937,10 @@ export async function GET(req: NextRequest) {
   if (ksAnySuffixParsed !== null) {
     const suffixNum = ksAnySuffixParsed;
     const onSuffixColsView = useKsView && !pickStub;
-    /** `count: exact` bazen 0/null dönebiliyor; satır varlığı için limit(1) daha güvenilir. */
-    let indexTableHasRows = false;
-
-    if (!onSuffixColsView) {
-      const { data: mrsProbe, error: mrsE } = await supabase
-        .from("match_raw_kod_suffix")
-        .select("match_id")
-        .limit(1);
-      indexTableHasRows = !mrsE && Array.isArray(mrsProbe) && mrsProbe.length > 0;
-      if (indexTableHasRows) {
-        ksAnyJoinSpec = { n: ksAnyN, suffix: suffixNum };
-      }
-    }
+    // ksAnyJoinSpec (PostgREST !inner join) kaldırıldı: tablo dolu olsa bile
+    // matches + match_raw_kod_suffix join'i ORDER BY ile timeout yiyor.
+    // Bunun yerine her zaman get_matches_by_raw_kod_suffix RPC kullanılır —
+    // RPC hızlı yolda (tarih filtresi yoksa) sadece (n, suffix) indeksini tarar, anlık döner.
 
     if (!ksAnyJoinSpec) {
       const rpcArgs: Record<string, unknown> = {
@@ -1947,16 +1985,26 @@ export async function GET(req: NextRequest) {
         );
       }
       if (ksAnyFilterIds.length > 0 && findKsAnyOrChunkSize(ksAnyFilterIds) === null) {
-        const errSuffix = onSuffixColsView
-          ? "KOD sonek sütun görünümü (matches_with_suffix_cols) açıkken tüm eşleşen id’ler tek istek URL’sine sığmıyor. Üstte tarih aralığı (tarih_from / tarih_to) ile daraltın veya üst KOD sonek (◉) modunu kapatın."
-          : "`public.match_raw_kod_suffix` tablosunda satır yok veya API’den okunamıyor (RLS / şema). sql/create-get-matches-by-raw-kod-suffix-fn.sql + sql/backfill-match-raw-kod-suffix.sql ile indeksi doldurun; Supabase’te tablo API’ye açık ve service_role için SELECT izni olduğundan emin olun. Geçici olarak tarih aralığı ile daraltın.";
-        return NextResponse.json(
-          {
-            error: `${errSuffix} (KS_ANY_URL_LIMIT)`,
-            code: "KS_ANY_URL_LIMIT",
-          },
-          { status: 413 }
-        );
+        if (onSuffixColsView) {
+          return NextResponse.json(
+            {
+              error: "KOD sonek sütun görünümü (matches_with_suffix_cols) açıkken tüm eşleşen id'ler tek istek URL'sine sığmıyor. Üstte tarih aralığı (tarih_from / tarih_to) ile daraltin veya üst KOD sonek (◉) modunu kapatın. (KS_ANY_URL_LIMIT)",
+              code: "KS_ANY_URL_LIMIT",
+            },
+            { status: 413 }
+          );
+        }
+        // URL sınırı aşıldı → match_raw_kod_suffix!inner JOIN yaklaşımına geç.
+        // Tablo artık OKBT verisi içermiyor (backfill -exclude-okbt sonrası) → join hızlı.
+        // RPC sayısı jsonb_each fallback'ten şişirilmiş olabilir; tablo count'unu kullan.
+        const { count: ksExactCount } = await supabase
+          .from("match_raw_kod_suffix")
+          .select("match_id", { count: 'exact', head: true })
+          .eq("n", ksAnyN)
+          .eq("suffix", suffixNum);
+        ksJoinTotalHint = ksExactCount ?? ksAnyFilterIds.length;
+        ksAnyJoinSpec = { n: ksAnyN, suffix: suffixNum };
+        ksAnyFilterIds = null;
       }
     }
   }
@@ -2047,6 +2095,72 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // ── Ham veri OKBT ön-filtresi (RPC) ─────────────────────────────────────────
+  // Tarih kısıtı olmadan raw_data OKBT fonksiyonları tüm tabloyu tarar → timeout.
+  // get_matches_by_raw_okbt_filter (SECURITY DEFINER, 120s) ile id listesi alıp
+  // leading-wildcard ön-filtre kesişimine dahil ediyoruz.
+  const _rawOkbtTarihFrom = sp.get("tarih_from") || "";
+  const _rawOkbtTarihTo   = sp.get("tarih_to")   || "";
+  if (!_rawOkbtTarihFrom && !_rawOkbtTarihTo) {
+    for (const [k, v] of sp.entries()) {
+      if (!k.startsWith("cf_")) continue;
+      const colId = k.slice(3);
+      const parsedObktb = parseObktbSrcIdx(colId);
+      if (!parsedObktb || !OKBT_RAW_DATA_SRCS.has(parsedObktb.src)) continue;
+
+      const obktV = normalizeOkbtCfInput(v);
+
+      // Joker/virgül-OR yolu
+      let ints: number[] | "all" | "none" | null = null;
+      const wild = tryExpandOkbtMixedWildOr(obktV);
+      if (wild) {
+        if (wild.kind === "all") ints = "all";
+        else if (wild.kind === "none") ints = "none";
+        else ints = wild.ints;
+      }
+
+      // Aralık/karşılaştırma yolu (>= <> .. vb.) → 0..26 genişletme
+      if (ints === null) {
+        const groups = parseObktbServerOrGroups(obktV);
+        if (groups) ints = expandObktbGroupsToInts(groups);
+      }
+
+      if (ints === null) continue; // "blank" veya çözülemeyen ifade → cf_* döngüsüne bırak
+
+      if (ints === "all") {
+        preFilterColIds.add(colId);
+        continue;
+      }
+      if (ints === "none") {
+        preFilterColIds.add(colId);
+        idSetsForIntersect.push([]);
+        continue;
+      }
+
+      const { data: rpcIds, error: rpcErr } = await supabase.rpc(
+        "get_matches_by_raw_okbt_filter",
+        { p_src: parsedObktb.src, p_idx: parsedObktb.idx, p_values: ints }
+      );
+      if (!rpcErr) {
+        preFilterColIds.add(colId);
+        idSetsForIntersect.push(normalizeRpcIdArray(rpcIds));
+      } else {
+        // RPC kurulu değilse (42883: function does not exist) veya başka hata →
+        // timeout'lu PostgREST yoluna düşmemek için erken hata dön.
+        const hint = String((rpcErr as { code?: string }).code ?? "") === "42883"
+          ? " (sql/add-raw-okbt-filter-rpc.sql dosyasını Supabase SQL Editor'de çalıştırın)"
+          : ` (${(rpcErr as { message?: string }).message ?? "bilinmeyen hata"})`;
+        return NextResponse.json(
+          {
+            error: `Ham veri OKBT filtresi (${colId.replace(/_obktb_\d+$/, "").toUpperCase()}) için gerekli sunucu fonksiyonu bulunamadı.${hint}`,
+            code: "RAW_OKBT_RPC_MISSING",
+          },
+          { status: 503 }
+        );
+      }
+    }
+  }
+
   // Birden fazla leading-wildcard kolonu: AND semantiği → kesişim (intersection)
   let preFilteredIds: number[] | null = null;
   if (idSetsForIntersect.length > 0) {
@@ -2079,6 +2193,9 @@ export async function GET(req: NextRequest) {
     }
     return false;
   })();
+  // ksAnyJoinSpec (match_raw_kod_suffix!inner JOIN): 'planned' sayım tahmini düşük çıkınca PostgREST
+  // offset >= tahmin → PGRST103 preemptive reddeder. 'exact' ile gerçek sayım alınır, sayfa 2+ çalışır.
+  // Tablo OKBT verisi içermiyor (backfill -exclude-okbt sonrası) → EXISTS sayımı hızlı.
   const countMode: 'exact' | 'planned' = (!hasAnyFilter || rawCfWithoutIdPrefilter) ? 'planned' : 'exact';
 
   const fromTable = useKsView && !pickStub ? "matches_with_suffix_cols" : "matches";
@@ -2479,6 +2596,11 @@ export async function GET(req: NextRequest) {
     // Sayısal + `_` boş + `+` AND sunucuda; `* ?` joker ayrı; kalan karmaşık → istemci.
     const parsedObktb = parseObktbSrcIdx(colId);
     if (parsedObktb) {
+      // Ham veri OKBT kaynakları (raw_data JSONB fonksiyonu): tarih kısıtı yoksa
+      // get_matches_by_raw_okbt_filter RPC ön-filtresiyle zaten işlendi → atla.
+      // Tarih kısıtı varsa normal PostgREST yolu güvenli (az satır).
+      if (preFilterColIds.has(colId)) continue;
+
       const fnName =
         parsedObktb.src === "macid"
           ? `m7_obktb_${parsedObktb.idx}`
@@ -2577,6 +2699,16 @@ export async function GET(req: NextRequest) {
     await headPromise.catch(() => {});
     const e = error as { message?: string; details?: string; hint?: string; code?: string };
     const msg = [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
+
+    // PGRST103: offset >= total (join path'te ksJoinTotalHint yanlış tahminlenmişse).
+    // Gerçek toplam ksJoinTotalHint veya headTotal ile bilin; boş sayfa döndür.
+    if (e.code === "PGRST103" || /range not satisfiable/i.test(msg)) {
+      const safePage = page;
+      const safeTotal = ksJoinTotalHint ?? headTotal ?? 0;
+      const safeTotalPages = Math.max(1, Math.ceil(safeTotal / limit));
+      return NextResponse.json({ data: [], page: safePage, limit, total: safeTotal, totalPages: safeTotalPages });
+    }
+
     const statementTimeout =
       e.code === "57014" ||
       /statement timeout|canceling statement due to statement timeout/i.test(msg);
@@ -2827,6 +2959,9 @@ export async function GET(req: NextRequest) {
     total = rows.length;
   } else if (rows.length === 0 && page === 1) {
     total = 0;
+  } else if (ksJoinTotalHint !== null && (total === 0 || total === null)) {
+    // Join yolunda exact count başarısız olursa ksExactCount'tan gelen tahmin yedek olarak kullanılır.
+    total = ksJoinTotalHint;
   } else if (countMode === "planned" && headTotal === null) {
     // planned tahmin << gerçek olduğunda (özellikle son sayfa dışında) en azından
     // elimizdeki satırları yansıtacak kadar yüksek tutalım.

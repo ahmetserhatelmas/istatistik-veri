@@ -15,6 +15,7 @@ import {
   ALL_COLS,
   CF_CLIENT_ONLY_COL_IDS,
   OKBT_MULTI_SOURCE_MAP,
+  OKBT_MULTI_SOURCES,
   DEFAULT_VISIBLE,
   GROUP_COLORS,
   mergeAllCols,
@@ -57,28 +58,64 @@ function formatAnyKodSuffixLabel(s: AnyKodSuffixState): string {
 type CodePickEntry = { key: string; colId: string; value: number };
 type CodePickPanel = { entries: CodePickEntry[]; x: number; y: number } | null;
 
-/** Üst düzey + bir seviye iç içe nesne — get_matches_by_raw_kod_suffix ile aynı kapsam. */
-function collectKodCodePickEntries(rd: Record<string, unknown>): CodePickEntry[] {
+/**
+ * raw_data içinden OKBT hesaplaması için kullanılan ham kaynak anahtarları (KODIG, KODIYMS, vs.).
+ * Bu anahtarlar "kod veren" oyun kodu sütunları değil, OKBT basamak formülü kaynaklarıdır;
+ * son hane vurgusu / suffix aramasından dışlanır.
+ */
+const RAW_OKBT_JSON_KEYS: Set<string> = new Set(
+  OKBT_MULTI_SOURCES
+    .filter((s) => s.dbCol === "raw_data")
+    .map((s) => s.rowKey.replace(/^__raw_/, ""))
+);
+
+/** Maç satırından KOD paneli girdilerini toplar.
+ *  Önce daima mevcut olan standart sütunlar (id, kod_ms, kod_iy, kod_cs, kod_au);
+ *  raw_data varsa ek KOD* anahtarları da eklenir (OKBT kaynakları hariç).
+ *  raw_data getirilmese bile (skip_raw_data=1) panel her zaman kod gösterebilir. */
+function buildKodPickEntriesFromRow(m: Match): CodePickEntry[] {
   const entries: CodePickEntry[] = [];
   const seen = new Set<string>();
-  const push = (k: string, v: unknown) => {
-    if (!k.startsWith("KOD")) return;
+
+  const pushEntry = (key: string, colId: string, v: unknown) => {
+    if (seen.has(key)) return;
     const raw = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-    if (!Number.isFinite(raw)) return;
-    if (seen.has(k)) return;
-    seen.add(k);
-    const intVal = Math.abs(Math.round(raw));
-    entries.push({ key: k, colId: k.toLowerCase(), value: intVal });
+    if (!Number.isFinite(raw) || raw === 0) return;
+    seen.add(key);
+    entries.push({ key, colId, value: Math.abs(Math.round(raw)) });
   };
-  for (const [k, v] of Object.entries(rd)) {
-    push(k, v);
-    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
-        push(k2, v2);
+
+  // Standart KOD sütunları — raw_data olmasa da her zaman gelir
+  pushEntry("ID", "id", m["id"]);
+  pushEntry("KOD_MS", "kod_ms", m["kod_ms"]);
+  pushEntry("KOD_İY", "kod_iy", m["kod_iy"]);
+  pushEntry("KOD_ÇŞ", "kod_cs", m["kod_cs"]);
+  pushEntry("KOD_AÜ", "kod_au", m["kod_au"]);
+
+  // raw_data varsa ek KOD* anahtarları (OKBT kaynakları hariç)
+  const rd = m["raw_data"] as Record<string, unknown> | null;
+  if (rd && typeof rd === "object") {
+    const pushRaw = (k: string, v: unknown) => {
+      if (!k.toUpperCase().startsWith("KOD")) return;
+      if (RAW_OKBT_JSON_KEYS.has(k.toUpperCase())) return;
+      pushEntry(k, k.toLowerCase(), v);
+    };
+    for (const [k, v] of Object.entries(rd)) {
+      pushRaw(k, v);
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+        for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) pushRaw(k2, v2);
       }
     }
   }
-  entries.sort((a, b) => a.key.localeCompare(b.key));
+
+  // Standart sütunlar önde, raw ek sütunlar alfabetik
+  const stdKeys = new Set(["ID","KOD_MS","KOD_İY","KOD_ÇŞ","KOD_AÜ"]);
+  entries.sort((a, b) => {
+    const aStd = stdKeys.has(a.key) ? 0 : 1;
+    const bStd = stdKeys.has(b.key) ? 0 : 1;
+    if (aStd !== bStd) return aStd - bStd;
+    return a.key.localeCompare(b.key);
+  });
   return entries;
 }
 
@@ -614,11 +651,18 @@ const KOD_SUFFIX_SKIP_COLS = new Set([
 ]);
 
 function shouldScanColForKodSuffix(col: ColDef): boolean {
-  if (col.id.startsWith("obktb_")) return false;
+  // OKBT hesaplama sütunları (…_obktb_N) ve raw OKBT kaynak sütunları hariç
+  if (col.id.startsWith("obktb_") || /[_]obktb_\d+$/i.test(col.id)) return false;
   if (KOD_SUFFIX_SKIP_COLS.has(col.id)) return false;
-  if (ODDS_GROUPS.has(col.group)) return true;
+  // Ham veri (API) grubundaki OKBT kaynak anahtarları hariç (KODIG, KODIYMS, vs.)
+  if (col.group === RAW_API_GROUP) {
+    const rawKey = String(col.key ?? "").trim().toUpperCase();
+    if (RAW_OKBT_JSON_KEYS.has(rawKey)) return false;
+    return true;
+  }
+  // Oyun kodu sütunları (id, kod_ms, kod_iy, kod_cs, kod_au)
   if (col.id === "id" || col.id === "kod_ms" || col.id === "kod_cs" || col.id === "kod_iy" || col.id === "kod_au") return true;
-  if (col.group === RAW_API_GROUP) return true;
+  // Oran sütunları: suffix arama için değil (yalnızca vurgulama değil)
   return false;
 }
 
@@ -1999,12 +2043,8 @@ export default function MatchTable() {
         ])
       );
       if (okbtColIds.length > 0) p.set("okbt_cols", okbtColIds.join(","));
-      // raw_data büyük JSONB — raw_* sütun görünür veya filtreli değilse çekme.
-      // ◉ KOD paneli raw_data'ya bakar; raw_* yokken paneli açmak boş gelir (kabul edilebilir).
-      const needsRawData =
-        [...visibleIds].some((id) => id.startsWith("raw_")) ||
-        Object.entries(dbColFiltersApplied).some(([id, v]) => id.startsWith("raw_") && v?.trim());
-      if (!needsRawData) p.set("skip_raw_data", "1");
+      // raw_data her zaman çekilir — ◉ KOD paneli raw_data KOD* alanlarını gösterir.
+      // (raw_* sütunlar görünmese bile popup tüm oyun kodlarını listeler.)
       return p;
     },
     [
@@ -4654,8 +4694,7 @@ export default function MatchTable() {
                         className="w-4 h-4 flex items-center justify-center text-[9px] text-amber-500 hover:text-amber-800 hover:bg-amber-100 rounded"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const rd = m.raw_data as Record<string, unknown> | null;
-                          const entries = rd ? collectKodCodePickEntries(rd) : [];
+                          const entries = buildKodPickEntriesFromRow(m);
                           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           setCodePick({ entries, x: rect.right + 4, y: rect.top });
                         }}
@@ -4672,10 +4711,12 @@ export default function MatchTable() {
                         !!suffixForRow &&
                         shouldScanColForKodSuffix(c) &&
                         cellDigitsEndWith(val, suffixForRow);
-                      // ◉ panel KOD son hane: sadece KOD/oyun kodu sütunlarını vurgula (oran sütunları hariç)
+                      // ◉ panel KOD son hane: sadece KOD/oyun kodu sütunlarını vurgula (OKBT raw kaynak + oran sütunları hariç)
                       const isKodCol =
                         KOD_ID_COL_IDS.has(c.id) ||
-                        (c.group === RAW_API_GROUP && (c.key as string).startsWith("KOD"));
+                        (c.group === RAW_API_GROUP &&
+                          (c.key as string).toUpperCase().startsWith("KOD") &&
+                          !RAW_OKBT_JSON_KEYS.has(String(c.key).trim().toUpperCase()));
                       const rowClickHit =
                         !!anyKodSuffix &&
                         isKodCol &&
@@ -4686,7 +4727,9 @@ export default function MatchTable() {
                         })();
                       const kodLikeCell =
                         KOD_ID_COL_IDS.has(c.id) ||
-                        (c.group === RAW_API_GROUP && /^kod/i.test(String(c.key)));
+                        (c.group === RAW_API_GROUP &&
+                          /^kod/i.test(String(c.key)) &&
+                          !RAW_OKBT_JSON_KEYS.has(String(c.key).trim().toUpperCase()));
                       let cls: string;
                       if (kodSonHit || rowClickHit) {
                         cls = "bg-yellow-300/90 text-gray-900 font-semibold";
