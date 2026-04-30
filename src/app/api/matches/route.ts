@@ -2701,10 +2701,11 @@ export async function GET(req: NextRequest) {
     const msg = [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
 
     // PGRST103: offset >= total (join path'te ksJoinTotalHint yanlış tahminlenmişse).
-    // Gerçek toplam ksJoinTotalHint veya headTotal ile bilin; boş sayfa döndür.
+    // Gerçek toplam ksJoinTotalHint veya headPromise ile bilin; boş sayfa döndür.
     if (e.code === "PGRST103" || /range not satisfiable/i.test(msg)) {
       const safePage = page;
-      const safeTotal = ksJoinTotalHint ?? headTotal ?? 0;
+      const resolvedHead = await headPromise.catch(() => null);
+      const safeTotal = ksJoinTotalHint ?? resolvedHead ?? 0;
       const safeTotalPages = Math.max(1, Math.ceil(safeTotal / limit));
       return NextResponse.json({ data: [], page: safePage, limit, total: safeTotal, totalPages: safeTotalPages });
     }
