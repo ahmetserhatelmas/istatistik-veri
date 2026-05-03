@@ -2453,6 +2453,7 @@ export async function GET(req: NextRequest) {
   const bidirHakem = sp.get("bidir_hakem")?.trim() ?? "";
   const bidirAntEv = sp.get("bidir_ant_ev")?.trim() ?? "";
   const bidirAntDep = sp.get("bidir_ant_dep")?.trim() ?? "";
+  const bidirAntH2h = sp.get("bidir_ant_h2h") === "1";
   const bidirAntLegacy = sp.get("bidir_ant")?.trim();
   const bidirPersonelLegacy = sp.get("bidir_personel")?.trim();
 
@@ -2488,8 +2489,19 @@ export async function GET(req: NextRequest) {
 
   if (bidirHakem || bidirAntEv || bidirAntDep || bidirAntLegacy) {
     if (bidirHakem) applyBidirPersonelPats(["hakem"], bidirHakem);
-    if (bidirAntEv) applyBidirPersonelPats(["t1_antrenor"], bidirAntEv);
-    if (bidirAntDep) applyBidirPersonelPats(["t2_antrenor"], bidirAntDep);
+    if (bidirAntH2h && bidirAntEv && bidirAntDep) {
+      // H2H: (t1_antrenor ILIKE ev AND t2_antrenor ILIKE dep) OR (t1_antrenor ILIKE dep AND t2_antrenor ILIKE ev)
+      const antIlikeSegment = (col: "t1_antrenor" | "t2_antrenor", raw: string): string => {
+        const pat = plainOrWildcardIlikePattern(raw.trim());
+        return `${col}.ilike."${pat.replace(/"/g, '""')}"`;
+      };
+      const dir1 = [antIlikeSegment("t1_antrenor", bidirAntEv), antIlikeSegment("t2_antrenor", bidirAntDep)];
+      const dir2 = [antIlikeSegment("t1_antrenor", bidirAntDep), antIlikeSegment("t2_antrenor", bidirAntEv)];
+      query = query.or(`and(${dir1.join(",")}),and(${dir2.join(",")})`);
+    } else {
+      if (bidirAntEv) applyBidirPersonelPats(["t1_antrenor"], bidirAntEv);
+      if (bidirAntDep) applyBidirPersonelPats(["t2_antrenor"], bidirAntDep);
+    }
     // Ev veya dep TD'de eşleşme (OR); ev/dep ayrı kutularla birlikte VE ile birleşir.
     if (bidirAntLegacy) applyBidirPersonelPats(["t1_antrenor", "t2_antrenor"], bidirAntLegacy);
   } else if (bidirPersonelLegacy) {

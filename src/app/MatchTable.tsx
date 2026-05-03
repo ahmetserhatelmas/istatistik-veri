@@ -1039,6 +1039,8 @@ interface BidirPersonelLanesState {
   antDep: { pattern: string; committed: string };
   /** Ev veya dep TD’de eşleşme (t1_antrenor | t2_antrenor OR). */
   antHer: { pattern: string; committed: string };
+  /** TD H2H: (t1_ant=A AND t2_ant=B) OR (t1_ant=B AND t2_ant=A) */
+  antH2h: boolean;
 }
 
 interface BidirFiltersState {
@@ -1061,6 +1063,7 @@ const BIDIR_INIT: BidirFiltersState = {
     antEv: { pattern: "", committed: "" },
     antDep: { pattern: "", committed: "" },
     antHer: { pattern: "", committed: "" },
+    antH2h: false,
   },
 };
 
@@ -1087,13 +1090,13 @@ function migratePersonelV1(o: {
 }): BidirPersonelLanesState {
   const z = { pattern: "", committed: "" };
   if (o.mode === "hakem") {
-    return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z } };
+    return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z }, antH2h: false };
   }
   if (o.mode === "ant") {
-    return { hakem: { ...z }, antEv: { ...z }, antDep: { ...z }, antHer: { pattern: o.pattern, committed: o.committed } };
+    return { hakem: { ...z }, antEv: { ...z }, antDep: { ...z }, antHer: { pattern: o.pattern, committed: o.committed }, antH2h: false };
   }
   // Eski "tüm personel" (tek OR): yalnızca hakem kutusuna taşınır; gerekirse kullanıcı yeniden ayırır.
-  return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z } };
+  return { hakem: { pattern: o.pattern, committed: o.committed }, antEv: { ...z }, antDep: { ...z }, antHer: { ...z }, antH2h: false };
 }
 
 function isPersonelLane(x: unknown): x is { pattern: string; committed: string } {
@@ -1115,7 +1118,7 @@ function normalizePersonelLanes(raw: unknown): BidirPersonelLanesState {
   const legacyAnt = o.ant;
   if (isPersonelLane(hk) && isPersonelLane(antEv) && isPersonelLane(antDep)) {
     const antHer = isPersonelLane(antHerRaw) ? antHerRaw : { pattern: "", committed: "" };
-    return { hakem: hk, antEv, antDep, antHer };
+    return { hakem: hk, antEv, antDep, antHer, antH2h: typeof (o.antH2h) === "boolean" ? o.antH2h : false };
   }
   if (isPersonelLane(hk) && isPersonelLane(legacyAnt)) {
     return {
@@ -1123,6 +1126,7 @@ function normalizePersonelLanes(raw: unknown): BidirPersonelLanesState {
       antEv: { pattern: "", committed: "" },
       antDep: { pattern: "", committed: "" },
       antHer: legacyAnt,
+      antH2h: false,
     };
   }
   if ("mode" in o && typeof o.mode === "string") {
@@ -2014,6 +2018,7 @@ export default function MatchTable() {
       if (pEv) p.set("bidir_ant_ev", pEv);
       if (pDep) p.set("bidir_ant_dep", pDep);
       if (pHer) p.set("bidir_ant", pHer);
+      if (bidirFilters.personel.antH2h && pEv && pDep) p.set("bidir_ant_h2h", "1");
       Object.entries(applied).forEach(([k, v]) => {
         if (v.trim()) p.set(k, v.trim());
       });
@@ -2063,6 +2068,7 @@ export default function MatchTable() {
       bidirFilters.personel.antEv.committed,
       bidirFilters.personel.antDep.committed,
       bidirFilters.personel.antHer.committed,
+      bidirFilters.personel.antH2h,
       anyKodSuffix,
       loadedSavedFilterName,
       singleRefTableLock,
@@ -2083,6 +2089,7 @@ export default function MatchTable() {
         pEv: bidirFilters.personel.antEv.committed,
         pDep: bidirFilters.personel.antDep.committed,
         pHer: bidirFilters.personel.antHer.committed,
+        antH2h: bidirFilters.personel.antH2h,
         ks: anyKodSuffix,
       }),
     [
@@ -2098,6 +2105,7 @@ export default function MatchTable() {
       bidirFilters.personel.antEv.committed,
       bidirFilters.personel.antDep.committed,
       bidirFilters.personel.antHer.committed,
+      bidirFilters.personel.antH2h,
       anyKodSuffix,
     ],
   );
@@ -3983,6 +3991,23 @@ export default function MatchTable() {
                   </div>
                 )}
               </div>
+              {/* H2H toggle — sadece Ev TD ve Dep TD dolu iken göster */}
+              {(bidirFilters.personel.antEv.committed && bidirFilters.personel.antDep.committed) && (
+                <button
+                  type="button"
+                  title={bidirFilters.personel.antH2h ? "H2H aktif: her iki yön gösteriliyor. Kapat → sadece Ev TD=A ve Dep TD=B." : "H2H: iki teknik direktörün her iki yöndeki karşılaşmaları"}
+                  onClick={() => {
+                    setBidirFilters((prev) => ({ ...prev, personel: { ...prev.personel, antH2h: !prev.personel.antH2h } }));
+                    setPage(1);
+                  }}
+                  className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition ${
+                    bidirFilters.personel.antH2h
+                      ? "bg-purple-600 text-white border-purple-700"
+                      : "bg-white text-gray-500 border-gray-300 hover:bg-purple-50 hover:text-purple-700"
+                  }`}>
+                  H2H
+                </button>
+              )}
               <div
                 className="relative flex items-center gap-0.5 rounded border border-gray-300 bg-white px-0.5"
                 ref={personelAntHerDropdownRef}>
