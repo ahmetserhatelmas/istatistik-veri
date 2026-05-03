@@ -41,6 +41,7 @@ import {
   textColBandingWidth,
 } from "@/lib/kod-format";
 import { ardisikSatirCfTarihDegeri, TARIH_ARDISIK_ROW_COUNT } from "@/lib/tarih-ardisik";
+import { expandPermFilter } from "@/lib/perm-filter";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
 import { AuthBar } from "./AuthBar";
 import { SavedFiltersPanel } from "./SavedFiltersPanel";
@@ -204,7 +205,9 @@ const SCORE_COLS = new Set(["sonuc_iy", "sonuc_ms"]);
 // "," → OR, "+" → AND (sunucu tarafı ile tutarlı); joker yoksa tam metin eşleşmesi
 function matchWildcard(value: string, pattern: string): boolean {
   const val = value.trim().toLowerCase();
-  const orParts = pattern.split(",").map((s) => s.trim()).filter(Boolean);
+  // ~385 → permütasyon genişletme (API ile tutarlı)
+  const expanded = expandPermFilter(pattern);
+  const orParts = expanded.split(",").map((s) => s.trim()).filter(Boolean);
   if (!orParts.length) return true;
   const testPart = (part: string): boolean => {
     const p = part.trim();

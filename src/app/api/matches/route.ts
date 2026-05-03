@@ -22,6 +22,7 @@ import {
   normalizeCfPipelineBeforeApi,
   rawKodJsonWildcardPadLen,
 } from "@/lib/kod-format";
+import { expandPermFilter } from "@/lib/perm-filter";
 
 /** Tarih ILIKE + büyük tablo: exact count ağır; planned + süre sınırı zaman aşımını azaltır. */
 /** KOD* sonek RPC tam tablo taraması uzun sürebilir; Vercel planda üst sınırı aşarsanız düşürün. */
@@ -2023,7 +2024,7 @@ export async function GET(req: NextRequest) {
     if (!jsonKey) continue;
     const trimmed = normalizeRawKodWildcardInput(
       jsonKey,
-      normalizeCfPipelineBeforeApi(colId, v.trim())
+      normalizeCfPipelineBeforeApi(colId, expandPermFilter(v.trim()))
     );
 
     // KOD* (KODHMS hariç): ham JSON metni padlenmeden joker aranıyordu (ör. 0* → 2072 kaçıyordu).
@@ -2548,7 +2549,7 @@ export async function GET(req: NextRequest) {
     if (!paramKey.startsWith("cf_") || !val.trim()) continue;
     const colId = paramKey.slice(3);
     if (colId === "tarih") continue;
-    const v = normalizeCfPipelineBeforeApi(colId, val.trim());
+    const v = normalizeCfPipelineBeforeApi(colId, expandPermFilter(val.trim()));
     if (colId === "saat") {
       query = applyCfSaatColumnFilter(query, v);
       continue;
