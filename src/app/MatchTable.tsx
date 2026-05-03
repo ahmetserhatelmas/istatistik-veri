@@ -5037,7 +5037,7 @@ export default function MatchTable() {
         tableLoadGuardRect &&
         createPortal(
           <div
-            className="pointer-events-auto flex items-center justify-center bg-gray-200/90 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.06)] backdrop-blur-[1px]"
+            className="pointer-events-none flex items-center justify-center bg-gray-200/90 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.06)] backdrop-blur-[1px]"
             style={{
               position: "fixed",
               top: tableLoadGuardRect.top,
