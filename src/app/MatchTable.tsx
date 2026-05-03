@@ -5044,7 +5044,7 @@ export default function MatchTable() {
               left: tableLoadGuardRect.left,
               width: Math.max(1, tableLoadGuardRect.width),
               height: Math.max(1, tableLoadGuardRect.height),
-              zIndex: 75,
+              zIndex: 10,
             }}
             aria-busy="true"
             aria-live="polite"
