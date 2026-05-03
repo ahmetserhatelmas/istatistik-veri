@@ -3485,6 +3485,24 @@ export default function MatchTable() {
               </div>
             </div>
 
+            {/* H2H toggle — sadece her iki Takım adı doluysa göster */}
+            {(bidirFilters.takim.ev.committed && bidirFilters.takim.dep.committed) && (
+              <button
+                type="button"
+                title={bidirFilters.takimH2h ? "H2H aktif: her iki yön gösteriliyor. Kapat → sadece Ev=A ve Dep=B." : "H2H: iki takım arasındaki tüm karşılaşmalar (her iki yön)"}
+                onClick={() => {
+                  setBidirFilters((prev) => ({ ...prev, takimH2h: !prev.takimH2h }));
+                  setPage(1);
+                }}
+                className={`px-1.5 py-0.5 text-[10px] font-semibold rounded border transition ${
+                  bidirFilters.takimH2h
+                    ? "bg-purple-600 text-white border-purple-700"
+                    : "bg-white text-gray-500 border-gray-300 hover:bg-purple-50 hover:text-purple-700"
+                }`}>
+                H2H
+              </button>
+            )}
+
             {/* Takım adı — Ev+Dep (her ikisinde OR arama) */}
             <div
               className="relative flex items-center gap-0.5 rounded border border-orange-300 bg-orange-50 px-0.5"
