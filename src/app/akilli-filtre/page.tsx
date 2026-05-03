@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase/client";
 import { ALL_COLS, OKBT_MULTI_SOURCES, type ColDef } from "@/lib/columns";
 import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
-import { padValueForDigitPattern } from "@/lib/kod-format";
+import { padValueForDigitPattern, textColBandingWidth } from "@/lib/kod-format";
 
 type SavedFilter = {
   id: string;
@@ -262,7 +262,7 @@ function buildSmartTableState(
       const v = readReferenceValue(selectedRefRow, colId, colById);
       if (!v) continue;
       const mode = colDigitMode[colId] ?? digitPosMode;
-      const pat = buildDigitPosPattern(padValueForDigitPattern(colId, v), positions, mode);
+      const pat = buildDigitPosPattern(padValueForDigitPattern(colId, v), positions, mode, textColBandingWidth(colId));
       if (pat) colFiltersOut[colId] = pat;
     }
   }

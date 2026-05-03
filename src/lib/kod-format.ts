@@ -210,6 +210,38 @@ export function isCfColIdMatchCodeId(colId: string): boolean {
   return colId === MAÇ_KODU_COL_ID;
 }
 
+/**
+ * Hane seçimi (⊞) rubber band eşlemesi için metin sütun genişliği.
+ * Metin sütunları (hakem, t1, t2, antrenörler vb.) değişken uzunluklu isimlere sahip;
+ * 6 kutulu şablonda son iki kutunun her zaman son iki harfe denk gelmesi gerekir.
+ * Bu fonksiyon bilinen metin sütunları için 6, diğerleri için undefined döndürür.
+ */
+export function textColBandingWidth(colId: string): number | undefined {
+  // Sabit genişlik sayısal sütunlar → rubber band gerekmez
+  if (colId === "id") return undefined;
+  if (FIVE_DIGIT_KOD_COL_IDS.has(colId)) return undefined;
+  if (PAD_ID_COL_IDS.has(colId)) return undefined;
+  if (["sonuc_iy", "sonuc_ms", "saat", "mbs", "suffix3", "suffix4", "tarih"].includes(colId)) return undefined;
+  if (/^[a-z][a-z0-9]*_obktb_\d+$/i.test(colId)) return undefined;
+  if (colId.startsWith("raw_")) {
+    const key = colId.slice(4).toUpperCase();
+    if (/^KOD/.test(key)) return undefined;
+    if (/^(LIGID|ALTLIGID|SEZONID|T1I|T2I)$/.test(key)) return undefined;
+  }
+  // Oran sütunları "#.##" şablonu → banding gerekmez
+  const ODDS_GROUPS_CHECK = new Set(["Maç Sonucu","İlk Yarı","2. Yarı MS","İYMS","KG","Tek/Çift","Top.Gol","Alt/Üst","IY A/Ü","Ev A/Ü","Dep A/Ü","MS A/Ü","Çift Şans","İlk Gol","IY Skoru"]);
+  void ODDS_GROUPS_CHECK; // colId üzerinden grup bilinmiyor; buraya düşmemeli
+
+  // Bilinen metin sütunları (isim / metin içerikli)
+  const TEXT_COLS = new Set([
+    "hakem", "t1", "t2", "t1_antrenor", "t2_antrenor",
+    "lig_adi", "lig_kodu", "alt_lig", "sezon", "gun",
+  ]);
+  if (TEXT_COLS.has(colId)) return 6;
+
+  return undefined;
+}
+
 /** Ham veri: skor kodu şablonu 8 hane (KODHMS…). */
 export function isRawSkorKodEightKey(key: string): boolean {
   return /^KODHMS/i.test(key.trim());

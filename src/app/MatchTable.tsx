@@ -38,6 +38,7 @@ import {
   padRawKodNumericDisplay,
   padSevenDigitMatchIdDisplay,
   padValueForDigitPattern,
+  textColBandingWidth,
 } from "@/lib/kod-format";
 import { ardisikSatirCfTarihDegeri, TARIH_ARDISIK_ROW_COUNT } from "@/lib/tarih-ardisik";
 import { EslestirmePaneli, type EslestirmeScope } from "./EslestirmePaneli";
@@ -2206,7 +2207,7 @@ export default function MatchTable() {
         if (!colDef || !isHaneClickCol(colDef)) continue;
         const raw = pickerStubCellRaw(row, colDef);
         if (!raw) continue;
-        const pat = buildDigitPosPattern(padValueForDigitPattern(colId, raw), positions, effectiveDigitMode(colId));
+        const pat = buildDigitPosPattern(padValueForDigitPattern(colId, raw), positions, effectiveDigitMode(colId), textColBandingWidth(colId));
         if (pat) updates[colId] = pat;
       }
       if (Object.keys(updates).length === 0) return;
@@ -4783,7 +4784,7 @@ export default function MatchTable() {
                             const positions = colClickPos[c.id] ?? [];
                             const filterVal =
                               positions.length > 0 && isHaneClickCol(c)
-                                ? buildDigitPosPattern(val, positions, effectiveDigitMode(c.id))
+                                ? buildDigitPosPattern(val, positions, effectiveDigitMode(c.id), textColBandingWidth(c.id))
                                 : val;
                             const next = { ...colFilters, [c.id]: filterVal };
                             setColFilters(next);
