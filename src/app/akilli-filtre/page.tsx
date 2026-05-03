@@ -594,20 +594,61 @@ export default function AkilliFiltrePage() {
                   <div className="flex items-center justify-between gap-2">
                     <label htmlFor="akilli-day-match-combo" className="cursor-default">
                       O günün maçları
+                      {dayMatches.length > 0 && !dayLoading && (
+                        <span className="ml-1 text-slate-400">
+                          ({selectedMatchId
+                            ? `${dayMatches.findIndex((m) => String(m.id) === selectedMatchId) + 1} / ${dayMatches.length}`
+                            : dayMatches.length})
+                        </span>
+                      )}
                     </label>
-                    {selectedMatchId && !dayLoading && dayMatches.length > 0 ? (
-                      <button
-                        type="button"
-                        className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
-                        onClick={() => {
-                          setSelectedMatchId("");
-                          setMatchComboInput("");
-                          setMatchComboOpen(false);
-                        }}
-                        title="Maç seçimini temizle">
-                        Temizle
-                      </button>
-                    ) : null}
+                    <div className="flex items-center gap-1">
+                      {!dayLoading && dayMatches.length > 1 && (
+                        <>
+                          <button
+                            type="button"
+                            className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                            title="Önceki maç"
+                            onClick={() => {
+                              const idx = dayMatches.findIndex((m) => String(m.id) === selectedMatchId);
+                              const next = idx <= 0 ? dayMatches.length - 1 : idx - 1;
+                              const m = dayMatches[next]!;
+                              setSelectedMatchId(String(m.id));
+                              setMatchComboInput(formatDayMatchLabel(m));
+                              setMatchComboOpen(false);
+                            }}>
+                            ◀
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                            title="Sonraki maç"
+                            onClick={() => {
+                              const idx = dayMatches.findIndex((m) => String(m.id) === selectedMatchId);
+                              const next = idx < 0 || idx >= dayMatches.length - 1 ? 0 : idx + 1;
+                              const m = dayMatches[next]!;
+                              setSelectedMatchId(String(m.id));
+                              setMatchComboInput(formatDayMatchLabel(m));
+                              setMatchComboOpen(false);
+                            }}>
+                            ▶
+                          </button>
+                        </>
+                      )}
+                      {selectedMatchId && !dayLoading && dayMatches.length > 0 ? (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50"
+                          onClick={() => {
+                            setSelectedMatchId("");
+                            setMatchComboInput("");
+                            setMatchComboOpen(false);
+                          }}
+                          title="Maç seçimini temizle">
+                          Temizle
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <input
                     id="akilli-day-match-combo"
@@ -623,7 +664,21 @@ export default function AkilliFiltrePage() {
                     }}
                     onFocus={() => setMatchComboOpen(true)}
                     onKeyDown={(e) => {
-                      if (e.key === "Escape") setMatchComboOpen(false);
+                      if (e.key === "Escape") {
+                        setMatchComboOpen(false);
+                      } else if (e.key === "ArrowLeft" && !matchComboOpen) {
+                        e.preventDefault();
+                        const idx = dayMatches.findIndex((m) => String(m.id) === selectedMatchId);
+                        const next = idx <= 0 ? dayMatches.length - 1 : idx - 1;
+                        const m = dayMatches[next];
+                        if (m) { setSelectedMatchId(String(m.id)); setMatchComboInput(formatDayMatchLabel(m)); }
+                      } else if (e.key === "ArrowRight" && !matchComboOpen) {
+                        e.preventDefault();
+                        const idx = dayMatches.findIndex((m) => String(m.id) === selectedMatchId);
+                        const next = idx < 0 || idx >= dayMatches.length - 1 ? 0 : idx + 1;
+                        const m = dayMatches[next];
+                        if (m) { setSelectedMatchId(String(m.id)); setMatchComboInput(formatDayMatchLabel(m)); }
+                      }
                     }}
                     placeholder={
                       dayLoading
