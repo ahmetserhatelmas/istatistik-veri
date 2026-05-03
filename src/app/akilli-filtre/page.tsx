@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase/client";
 import { ALL_COLS, OKBT_MULTI_SOURCES, type ColDef } from "@/lib/columns";
 import { buildDigitPosPattern } from "@/lib/digit-pos-pattern";
 import { padValueForDigitPattern, textColBandingWidth } from "@/lib/kod-format";
+import { ardisikSatirCfTarihDegeri, TARIH_ARDISIK_ROW_COUNT } from "@/lib/tarih-ardisik";
 
 type SavedFilter = {
   id: string;
@@ -289,6 +290,9 @@ export default function AkilliFiltrePage() {
   const [selectedMatchId, setSelectedMatchId] = useState("");
   const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [showCompareFilters, setShowCompareFilters] = useState(false);
+  const [ardisikRow, setArdisikRow] = useState<number | null>(() => {
+    try { const v = localStorage.getItem("ak_ardisik_row"); return v ? Number(v) : null; } catch { return null; }
+  });
   const [refRow, setRefRow] = useState<Record<string, unknown> | null>(null);
   const [refRowLoading, setRefRowLoading] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
@@ -375,8 +379,8 @@ export default function AkilliFiltrePage() {
     };
   }, []);
   const hasAnyCriteria = useMemo(
-    () => Boolean(selectedSaved) || selectedCompareIds.length > 0,
-    [selectedSaved, selectedCompareIds.length],
+    () => Boolean(selectedSaved) || selectedCompareIds.length > 0 || ardisikRow !== null,
+    [selectedSaved, selectedCompareIds.length, ardisikRow],
   );
 
   useEffect(() => {
@@ -515,6 +519,10 @@ export default function AkilliFiltrePage() {
         refRow,
       );
       localStorage.setItem(LS_TOP_FILT, JSON.stringify(smart.topFilters));
+      // Ardışık tarih: cf_tarih alanını ardışık desen değeriyle üstüne yaz
+      if (ardisikRow !== null) {
+        smart.colFilters = { ...smart.colFilters, tarih: ardisikSatirCfTarihDegeri(ardisikRow) };
+      }
       localStorage.setItem(LS_COL_FILT, JSON.stringify(smart.colFilters));
       localStorage.setItem(LS_BIDIR, JSON.stringify(smart.bidirFilters));
       localStorage.setItem(LS_COL_CLICK_POS, JSON.stringify(smart.colClickPos));
@@ -529,7 +537,7 @@ export default function AkilliFiltrePage() {
       setShowMainTable(false);
       setSearchErr("Akıllı filtre ana tabloya uygulanamadı.");
     }
-  }, [selectedDayMatch, refRow, hasAnyCriteria, selectedSaved?.payload, selectedCompareIds]);
+  }, [selectedDayMatch, refRow, hasAnyCriteria, selectedSaved?.payload, selectedCompareIds, ardisikRow]);
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 sm:p-6">
@@ -734,6 +742,28 @@ export default function AkilliFiltrePage() {
               </button>
               {showCompareFilters && (
                 <div className="border-t border-slate-200 p-3">
+                  {/* Ardışık tarih satırı seçimi */}
+                  <div className="mb-3 flex items-center gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5">
+                    <span className="text-[11px] font-medium text-slate-600 shrink-0">Ardışık tarih satırı:</span>
+                    <select
+                      value={ardisikRow ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value === "" ? null : Number(e.target.value);
+                        setArdisikRow(v);
+                        try { if (v === null) localStorage.removeItem("ak_ardisik_row"); else localStorage.setItem("ak_ardisik_row", String(v)); } catch { /* ignore */ }
+                      }}
+                      className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700">
+                      <option value="">— Yok —</option>
+                      {Array.from({ length: TARIH_ARDISIK_ROW_COUNT }, (_, i) => (
+                        <option key={i + 1} value={i + 1}>Ardışık {i + 1}</option>
+                      ))}
+                    </select>
+                    {ardisikRow !== null && (
+                      <span className="text-[10px] text-slate-500">
+                        (tüm maçlarda {ardisikRow}. gün deseni uygulanır)
+                      </span>
+                    )}
+                  </div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="text-[11px] text-slate-500">
                       Bir veya birden çok alan seçebilirsiniz. Seçilen alanlar, referans maçın değeriyle filtrelenir.
