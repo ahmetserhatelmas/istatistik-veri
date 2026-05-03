@@ -460,6 +460,15 @@ export function staticCfRawJsonKeyByColId(): Record<string, string> {
     if (!c.key || c.key.startsWith("__")) continue;
     m[c.id] = c.key;
   }
+  // Ham veri OKBT kaynakları (raw_data JSONB): rowKey "__raw_KODTC" → jsonKey "KODTC".
+  // Bunlar ALL_COLS’ta doğrudan yok (yalnızca obktb alt-sütunları var), bu yüzden
+  // yukarıdaki döngü bunları atlıyor; burada elle ekliyoruz.
+  for (const src of OKBT_MULTI_SOURCES) {
+    if (src.dbCol !== "raw_data") continue;
+    if (!src.rowKey.startsWith("__raw_")) continue;
+    const rawKey = src.rowKey.slice(6); // "__raw_KODTC" → "KODTC"
+    if (rawKey) m[src.id] = rawKey;     // "kodtc" → "KODTC"
+  }
   return m;
 }
 

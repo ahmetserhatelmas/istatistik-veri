@@ -143,6 +143,7 @@ function readReferenceValue(row: Record<string, unknown>, colId: string, colById
   const col = colById.get(colId);
   const candidates = new Set<string>([
     colId,
+    colId.toUpperCase(),   // raw_data (JSONB) alanları büyük harfle düzleştirilir (ör. "KODTC")
     col?.key ?? "",
     (col?.key ?? "").toLowerCase(),
     (col?.key ?? "").toUpperCase(),
@@ -259,7 +260,9 @@ function buildSmartTableState(
     for (const [colId, positions] of Object.entries(colClickPos)) {
       if (!Array.isArray(positions) || positions.length === 0) continue;
       const col = colById.get(colId);
-      if (!col || col.id === "tarih" || col.id.startsWith("__")) continue;
+      // "tarih" ve "__" önekli sütunlar atlanır; ALL_COLS'ta olmayan (raw_data) sütunlar atlanmaz
+      if (col && (col.id === "tarih" || col.id.startsWith("__"))) continue;
+      if (!col && (colId === "tarih" || colId.startsWith("__"))) continue;
       const v = readReferenceValue(selectedRefRow, colId, colById);
       if (!v) continue;
       const mode = colDigitMode[colId] ?? digitPosMode;
@@ -290,9 +293,7 @@ export default function AkilliFiltrePage() {
   const [selectedMatchId, setSelectedMatchId] = useState("");
   const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [showCompareFilters, setShowCompareFilters] = useState(false);
-  const [ardisikRow, setArdisikRow] = useState<number | null>(() => {
-    try { const v = localStorage.getItem("ak_ardisik_row"); return v ? Number(v) : null; } catch { return null; }
-  });
+  const [ardisikRow, setArdisikRow] = useState<number | null>(null);
   const [refRow, setRefRow] = useState<Record<string, unknown> | null>(null);
   const [refRowLoading, setRefRowLoading] = useState(false);
   const [searchErr, setSearchErr] = useState<string | null>(null);
@@ -750,7 +751,6 @@ export default function AkilliFiltrePage() {
                       onChange={(e) => {
                         const v = e.target.value === "" ? null : Number(e.target.value);
                         setArdisikRow(v);
-                        try { if (v === null) localStorage.removeItem("ak_ardisik_row"); else localStorage.setItem("ak_ardisik_row", String(v)); } catch { /* ignore */ }
                       }}
                       className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700">
                       <option value="">— Yok —</option>
